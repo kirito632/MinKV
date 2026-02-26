@@ -73,3 +73,6 @@ Thumbs.db
 desktop.ini
 .DS_Store
 build_debug/
+
+# Assets (local only, not for GitHub)
+assets/
