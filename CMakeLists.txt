@@ -23,10 +23,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # 包含头文件路径
 include_directories(src)
 
-# 查找所有源文件 (缓存库核心: db 目录)
+# 查找所有源文件
 file(GLOB_RECURSE SOURCES 
-    "src/db/*.cpp"
     "src/base/*.cpp"
+    "src/core/*.cpp"
+    "src/db/*.cpp"
+    "src/persistence/*.cpp"
+    "src/server/*.cpp"
+    "src/vector/*.cpp"
 )
 
 # 以后这里会添加 executable
