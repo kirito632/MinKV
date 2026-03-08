@@ -1,23 +1,30 @@
 #pragma once
 
-#include <mutex>
-#include <shared_mutex>
-#include <unordered_map>
 #include <list>
+#include <unordered_map>
+#include <shared_mutex>
 #include <optional>
-#include <string>
 #include <chrono>
-#include <functional>
+#include <iostream>
 #include <atomic>
+#include <thread>
+#include <map>
+#include <functional>
 
 namespace minkv {
 namespace db {
 
 /**
- * @brief 缓存统计信息
+ * @brief 缓存统计信息结构体
  * 
- * 记录缓存的命中、未命中、过期、淘汰等统计数据。
- * 用于监控缓存效果和调优缓存策略。
+ * [监控体系] 记录缓存的命中、未命中、过期、淘汰等统计数据。
+ * 用于监控缓存效果和调优缓存策略，这是生产环境必备的可观测性组件。
+ * 
+ * 统计维度：
+ * - 基础指标：命中率、未命中率、过期率、淘汰率
+ * - 时间指标：启动时间、最后访问时间、运行时长
+ * - 峰值指标：历史最大容量、峰值QPS
+ * - 容量指标：当前大小、总容量、使用率
  */
 struct CacheStats {
     // ==================== 基础统计 ====================
@@ -160,6 +167,42 @@ public:
      */
     void clear();
 
+    /**
+     * @brief 启动后台过期键清理线程
+     * 
+     * 定期扫描缓存中的过期键并删除，防止内存泄漏。
+     * 清理间隔可通过 cleanup_interval_ms 参数设置。
+     * 
+     * @param cleanup_interval_ms 清理间隔（毫秒），默认 1000ms
+     */
+    void start_cleanup_thread(int64_t cleanup_interval_ms = 1000);
+
+    /**
+     * @brief 停止后台清理线程
+     * 
+     * 调用此方法会等待清理线程优雅退出。
+     * 通常在缓存销毁前调用。
+     */
+    void stop_cleanup_thread();
+
+    /**
+     * @brief 手动触发一次过期键清理
+     * 
+     * 扫描所有键，删除已过期的键。
+     * 返回本次清理删除的键数量。
+     */
+    size_t cleanup_expired_keys();
+
+    /**
+     * @brief 获取所有有效的键值对（用于向量搜索等场景）
+     * 
+     * 返回所有未过期的键值对。
+     * 注意：这个操作会获取读锁，性能较好。
+     * 
+     * @return 包含所有有效键值对的 map
+     */
+    std::map<K, V> get_all() const;
+
 private:
     size_t capacity_; // 最大容量
     
@@ -198,6 +241,11 @@ private:
     // ==================== 峰值统计 ====================
     mutable std::atomic<size_t> peak_size_{0};           // 历史峰值大小
 
+    // ==================== 后台清理线程 ====================
+    std::thread cleanup_thread_;                         // 后台清理线程
+    mutable std::atomic<bool> cleanup_running_{false};   // 清理线程是否运行中
+    int64_t cleanup_interval_ms_{1000};                  // 清理间隔（毫秒）
+    
     // 辅助函数：检查节点是否过期
     bool is_expired(const Node& node) const;
 
@@ -206,6 +254,9 @@ private:
     
     // 辅助函数：更新峰值大小
     void update_peak_size() const;
+
+    // 辅助函数：后台清理线程的主函数
+    void cleanup_thread_main();
 };
 
 // ============ 模板实现 ============
@@ -255,7 +306,7 @@ std::optional<V> LruCache<K, V>::get(const K& key) {
         } else {
             // 没过期，检查是否需要 Promote
             uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
-            if (now - last <= 1000) {
+            if (now >= last && (now - last) <= 1000) {
                 // 不需要 Promote，直接返回！无锁（互斥锁）！
                 ++stats_hits_;
                 last_hit_time_ms_.store(now, std::memory_order_relaxed);
@@ -267,7 +318,7 @@ std::optional<V> LruCache<K, V>::get(const K& key) {
     // 2. 慢速路径 (Slow Path)：加写锁
     // 走到这里说明：要么没找到（但在读锁里已经判断了），
     // 要么过期了（需要删），要么需要 Promote。
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::shared_mutex> lock(mutex_);
     
     // 双重检查
     auto it = map_.find(key);
@@ -278,16 +329,23 @@ std::optional<V> LruCache<K, V>::get(const K& key) {
     }
 
     if (is_expired(*it->second)) {
-        cache_list_.erase(it->second);
-        map_.erase(it);
+        // 异常安全：先保存迭代器，确保删除顺序正确
+        auto list_it = it->second;
+        auto map_it = it;
+        
+        // 先从 map 删除（通常不会抛异常）
+        map_.erase(map_it);
+        // 再从 list 删除
+        cache_list_.erase(list_it);
+        
         ++stats_expired_;
         ++stats_misses_;
         return std::nullopt;
     }
 
-    // 执行 Promote
+    // 执行 Promote - 安全的时间比较，防止时钟回退导致的下溢
     uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
-    if (now - last > 1000) {
+    if (now >= last && (now - last) > 1000) {
         cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
         last_promote_time_ms_.store(now, std::memory_order_relaxed);
     }
@@ -299,8 +357,7 @@ std::optional<V> LruCache<K, V>::get(const K& key) {
 
 template<typename K, typename V>
 void LruCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    ++stats_puts_;
+    std::lock_guard<std::shared_mutex> lock(mutex_);
 
     int64_t expiry_time = 0;
     if (ttl_ms > 0) {
@@ -309,31 +366,57 @@ void LruCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
 
     auto it = map_.find(key);
     if (it != map_.end()) {
+        // 更新现有元素 - 异常安全
         it->second->value = value;
         it->second->expiry_time_ms = expiry_time;
         // 【LRU 核心】既然刚修改过，那就是最新的，移到队头
         cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
+        ++stats_puts_;  // 只在成功后递增
+        update_peak_size();
         return;
     }
 
+    // 新增元素 - 需要异常安全处理
     if (map_.size() >= capacity_) {
+        // 先准备要删除的元素，但不立即删除
         auto last = cache_list_.end();
         --last;
-        map_.erase(last->key);
-        cache_list_.pop_back();
-        ++stats_evictions_;
+        K key_to_remove = last->key;
+        
+        // 尝试插入新元素（可能抛异常）
+        cache_list_.push_front({key, value, expiry_time});
+        
+        try {
+            // 尝试更新 map（可能抛异常）
+            map_[key] = cache_list_.begin();
+            
+            // 成功后才删除旧元素
+            map_.erase(key_to_remove);
+            cache_list_.pop_back();
+            ++stats_evictions_;
+        } catch (...) {
+            // 如果 map 更新失败，回滚 list 操作
+            cache_list_.pop_front();
+            throw;
+        }
+    } else {
+        // 容量未满的情况
+        cache_list_.push_front({key, value, expiry_time});
+        try {
+            map_[key] = cache_list_.begin();
+        } catch (...) {
+            cache_list_.pop_front();
+            throw;
+        }
     }
-
-    cache_list_.push_front({key, value, expiry_time});
-    map_[key] = cache_list_.begin();
     
-    // 更新峰值大小
+    ++stats_puts_;  // 只在完全成功后递增
     update_peak_size();
 }
 
 template<typename K, typename V>
 bool LruCache<K, V>::remove(const K& key) {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::shared_mutex> lock(mutex_);
 
     auto it = map_.find(key);
     if (it == map_.end()) {
@@ -381,7 +464,7 @@ CacheStats LruCache<K, V>::getStats() const {
 
 template<typename K, typename V>
 void LruCache<K, V>::resetStats() {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::shared_mutex> lock(mutex_);
     // 重置基础统计
     stats_hits_.store(0, std::memory_order_relaxed);
     stats_misses_.store(0, std::memory_order_relaxed);
@@ -413,9 +496,91 @@ void LruCache<K, V>::update_peak_size() const {
 
 template<typename K, typename V>
 void LruCache<K, V>::clear() {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::lock_guard<std::shared_mutex> lock(mutex_);
     cache_list_.clear();
     map_.clear();
+}
+
+template<typename K, typename V>
+size_t LruCache<K, V>::cleanup_expired_keys() {
+    std::lock_guard<std::shared_mutex> lock(mutex_);
+    size_t removed_count = 0;
+    int64_t now = current_time_ms();
+    
+    // 遍历链表，删除所有过期的键
+    auto it = cache_list_.begin();
+    while (it != cache_list_.end()) {
+        if (is_expired(*it)) {
+            map_.erase(it->key);
+            it = cache_list_.erase(it);
+            ++removed_count;
+            ++stats_expired_;
+        } else {
+            ++it;
+        }
+    }
+    
+    return removed_count;
+}
+
+template<typename K, typename V>
+void LruCache<K, V>::cleanup_thread_main() {
+    while (cleanup_running_.load(std::memory_order_relaxed)) {
+        // 睡眠指定的间隔时间
+        std::this_thread::sleep_for(std::chrono::milliseconds(cleanup_interval_ms_));
+        
+        // 检查是否应该继续运行
+        if (!cleanup_running_.load(std::memory_order_relaxed)) {
+            break;
+        }
+        
+        // 执行清理
+        cleanup_expired_keys();
+    }
+}
+
+template<typename K, typename V>
+void LruCache<K, V>::start_cleanup_thread(int64_t cleanup_interval_ms) {
+    // 如果线程已经在运行，直接返回
+    if (cleanup_running_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    
+    cleanup_interval_ms_ = cleanup_interval_ms;
+    cleanup_running_.store(true, std::memory_order_relaxed);
+    
+    // 启动后台清理线程
+    cleanup_thread_ = std::thread([this]() {
+        this->cleanup_thread_main();
+    });
+}
+
+template<typename K, typename V>
+void LruCache<K, V>::stop_cleanup_thread() {
+    // 停止清理线程
+    cleanup_running_.store(false, std::memory_order_relaxed);
+    
+    // 等待线程退出
+    if (cleanup_thread_.joinable()) {
+        cleanup_thread_.join();
+    }
+}
+
+template<typename K, typename V>
+std::map<K, V> LruCache<K, V>::get_all() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    
+    std::map<K, V> result;
+    
+    // 遍历链表，收集所有未过期的键值对
+    // const版本不进行清理操作，只返回当前有效数据
+    for (const auto& node : cache_list_) {
+        if (!is_expired(node)) {
+            result[node.key] = node.value;
+        }
+    }
+    
+    return result;
 }
 
 } // namespace db
