@@ -1,4 +1,4 @@
-#include "../base/group_commit.h"
+#include "../persistence/group_commit.h"
 #include "../base/append_file.h"
 #include <iostream>
 #include <thread>
