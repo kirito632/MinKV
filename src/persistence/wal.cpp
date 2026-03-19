@@ -2,6 +2,10 @@
 #include <chrono>
 #include <filesystem>
 #include <algorithm>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 namespace minkv {
 namespace db {
@@ -47,24 +51,37 @@ WriteAheadLog::WriteAheadLog(
         // 初始化缓冲区（可能抛 bad_alloc）
         buffer_.reserve(buffer_size);
         
-        // 打开 WAL 文件（追加模式）
-        wal_stream_.open(wal_file_, std::ios::binary | std::ios::app);
-        if (!wal_stream_.is_open()) {
-            throw std::runtime_error("Failed to open WAL file: " + wal_file_);
+        // 用 POSIX open 打开 WAL 文件，O_SYNC 保证每次 write 都落盘
+        // 这里不用 O_SYNC，而是手动 fsync，以便批量刷盘控制性能
+        wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (wal_fd_ < 0) {
+            throw std::runtime_error(
+                std::string("Failed to open WAL file: ") + wal_file_ +
+                " (" + std::strerror(errno) + ")"
+            );
         }
+
+        // wal_stream_ 仅用于 read_all() 读取，保持只读打开
+        wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
     } catch (...) {
-        // 构造失败时的清理工作
+        if (wal_fd_ >= 0) {
+            ::close(wal_fd_);
+            wal_fd_ = -1;
+        }
         if (wal_stream_.is_open()) {
             wal_stream_.close();
         }
-        // 注意：不删除目录，因为可能包含用户数据
-        throw;  // 重新抛出异常
+        throw;
     }
 }
 
 WriteAheadLog::~WriteAheadLog() {
     stop_background_fsync();
     flush();
+    if (wal_fd_ >= 0) {
+        ::close(wal_fd_);
+        wal_fd_ = -1;
+    }
     if (wal_stream_.is_open()) {
         wal_stream_.close();
     }
@@ -72,7 +89,14 @@ WriteAheadLog::~WriteAheadLog() {
 
 bool WriteAheadLog::append(const LogEntry& entry) {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
-    return write_to_buffer(entry);
+    if (!write_to_buffer(entry)) {
+        return false;
+    }
+    // fsync_interval_ms_ == 0 表示同步刷盘模式：每次写入立即 fsync
+    if (fsync_interval_ms_ == 0) {
+        return flush_buffer_to_disk();
+    }
+    return true;
 }
 
 bool WriteAheadLog::write_to_buffer(const LogEntry& entry) {
@@ -95,18 +119,29 @@ bool WriteAheadLog::flush_buffer_to_disk() {
     if (buffer_.empty()) {
         return true;
     }
-    
-    // 写入 WAL 文件
-    wal_stream_.write(reinterpret_cast<const char*>(buffer_.data()), buffer_.size());
-    if (!wal_stream_.good()) {
+
+    if (wal_fd_ < 0) {
         return false;
     }
-    
-    // fsync 到磁盘
-    wal_stream_.flush();
-    // 注意：在实际应用中，应该调用 fsync(fileno(wal_stream_))
-    // 这里简化处理
-    
+
+    // 用 POSIX write 写入，处理短写（partial write）
+    const uint8_t* ptr = buffer_.data();
+    size_t remaining = buffer_.size();
+    while (remaining > 0) {
+        ssize_t written = ::write(wal_fd_, ptr, remaining);
+        if (written < 0) {
+            if (errno == EINTR) continue;  // 被信号中断，重试
+            return false;                  // 真正的写入错误（磁盘满等）
+        }
+        ptr += written;
+        remaining -= written;
+    }
+
+    // 真正的 fsync：把 OS page cache 刷到磁盘
+    if (::fsync(wal_fd_) != 0) {
+        return false;
+    }
+
     buffer_.clear();
     return true;
 }
@@ -144,21 +179,25 @@ std::vector<LogEntry> WriteAheadLog::read_all() {
         
         if (offset + entry_size > data.size()) break;
         
-        LogEntry entry = deserialize_entry(data.data() + offset, entry_size);
-        entries.push_back(entry);
+        auto entry = deserialize_entry(data.data() + offset, entry_size);
+        if (!entry) {
+            // 校验和不匹配：遇到损坏条目，截断到此处
+            // 这是 WAL 恢复的标准做法：只重放到最后一个完整提交点
+            break;
+        }
+        entries.push_back(std::move(*entry));
         offset += entry_size;
     }
     
     return entries;
 }
 
-std::vector<LogEntry> WriteAheadLog::read_after_snapshot(int64_t snapshot_id) {
+std::vector<LogEntry> WriteAheadLog::read_after_snapshot(uint64_t snapshot_lsn) {
     auto all_entries = read_all();
     
-    // 过滤出 snapshot_id 之后的条目
     std::vector<LogEntry> result;
     for (const auto& entry : all_entries) {
-        if (entry.timestamp_ms > snapshot_id) {
+        if (entry.lsn > snapshot_lsn) {
             result.push_back(entry);
         }
     }
@@ -178,7 +217,11 @@ void WriteAheadLog::start_background_fsync() {
 }
 
 void WriteAheadLog::stop_background_fsync() {
-    fsync_running_.store(false, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(fsync_cv_mutex_);
+        fsync_running_.store(false, std::memory_order_relaxed);
+    }
+    fsync_cv_.notify_all();
     
     if (fsync_thread_.joinable()) {
         fsync_thread_.join();
@@ -186,13 +229,21 @@ void WriteAheadLog::stop_background_fsync() {
 }
 
 void WriteAheadLog::fsync_thread_main() {
-    while (fsync_running_.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(fsync_interval_ms_));
-        
+    // fsync_interval_ms_ == 0 时走同步刷盘模式，后台线程不参与
+    if (fsync_interval_ms_ == 0) {
+        return;
+    }
+    while (true) {
+        std::unique_lock<std::mutex> lock(fsync_cv_mutex_);
+        fsync_cv_.wait_for(lock,
+            std::chrono::milliseconds(fsync_interval_ms_),
+            [this] { return !fsync_running_.load(std::memory_order_relaxed); });
+
         if (!fsync_running_.load(std::memory_order_relaxed)) {
             break;
         }
-        
+
+        lock.unlock();
         flush();
     }
 }
@@ -217,24 +268,31 @@ size_t WriteAheadLog::get_buffer_size() const {
 
 void WriteAheadLog::clear_all() {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
-    
-    // 关闭 WAL 文件
+
+    // 关闭现有文件
+    if (wal_fd_ >= 0) {
+        ::close(wal_fd_);
+        wal_fd_ = -1;
+    }
     if (wal_stream_.is_open()) {
         wal_stream_.close();
     }
-    
-    // 删除 WAL 文件
+
+    // 只删除 WAL 文件，保留快照目录（快照由 CheckpointManager 管理）
     std::filesystem::remove(wal_file_);
-    
-    // 删除快照目录
-    std::filesystem::remove_all(snapshot_dir_);
-    std::filesystem::create_directories(snapshot_dir_);
-    
+
     // 清空缓冲区
     buffer_.clear();
-    
-    // 重新打开 WAL 文件
-    wal_stream_.open(wal_file_, std::ios::binary | std::ios::app);
+
+    // 重新打开
+    wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (wal_fd_ < 0) {
+        throw std::runtime_error(
+            std::string("clear_all: failed to reopen WAL file: ") + wal_file_ +
+            " (" + std::strerror(errno) + ")"
+        );
+    }
+    wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
 }
 
 // ============ 序列化/反序列化 ============
@@ -286,7 +344,13 @@ std::vector<uint8_t> WriteAheadLog::serialize_entry(const LogEntry& entry) {
         reinterpret_cast<const uint8_t*>(&entry.timestamp_ms) + 8
     );
     
-    // 写入校验和
+    // 写入 LSN（位于 timestamp 之后、checksum 之前）
+    data.insert(data.end(),
+        reinterpret_cast<const uint8_t*>(&entry.lsn),
+        reinterpret_cast<const uint8_t*>(&entry.lsn) + 8
+    );
+    
+    // 写入校验和（覆盖范围：key + value，lsn 不参与）
     uint32_t checksum = entry.compute_checksum();
     data.insert(data.end(),
         reinterpret_cast<const uint8_t*>(&checksum),
@@ -300,7 +364,7 @@ std::vector<uint8_t> WriteAheadLog::serialize_entry(const LogEntry& entry) {
     return data;
 }
 
-LogEntry WriteAheadLog::deserialize_entry(const uint8_t* data, size_t size) {
+std::optional<LogEntry> WriteAheadLog::deserialize_entry(const uint8_t* data, size_t size) {
     LogEntry entry;
     
     size_t offset = 0;
@@ -324,8 +388,16 @@ LogEntry WriteAheadLog::deserialize_entry(const uint8_t* data, size_t size) {
     entry.timestamp_ms = *reinterpret_cast<const int64_t*>(data + offset);
     offset += 8;
     
-    // 读取校验和（这里简化处理，不验证）
-    uint32_t checksum = *reinterpret_cast<const uint32_t*>(data + offset);
+    // 读取 LSN（位于 timestamp 之后、checksum 之前）
+    entry.lsn = *reinterpret_cast<const uint64_t*>(data + offset);
+    offset += 8;
+    
+    // 验证校验和：防止崩溃时 partial write 导致的数据损坏
+    uint32_t stored_checksum = *reinterpret_cast<const uint32_t*>(data + offset);
+    uint32_t computed_checksum = entry.compute_checksum();
+    if (stored_checksum != computed_checksum) {
+        return std::nullopt;  // 条目损坏，通知调用方截断
+    }
     
     return entry;
 }
