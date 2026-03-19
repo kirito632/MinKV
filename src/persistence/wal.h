@@ -8,9 +8,15 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <condition_variable>
 #include <atomic>
 #include <map>
+#include <optional>
 #include <type_traits>
+#include <filesystem>
+#include <algorithm>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace minkv {
 namespace db {
@@ -31,9 +37,10 @@ struct LogEntry {
     OpType op;                    // 操作类型
     std::string key;              // 键
     std::string value;            // 值（DELETE 时为空）
-    int64_t timestamp_ms;         // 时间戳（毫秒）
+    int64_t timestamp_ms;         // 时间戳（毫秒，保留用于调试/审计）
+    uint64_t lsn{0};              // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
     
-    // 计算校验和（简单的 CRC32）
+    // 计算校验和（key + value，lsn 不参与）
     uint32_t compute_checksum() const;
 };
 
@@ -90,12 +97,12 @@ public:
     std::vector<LogEntry> read_all();
     
     /**
-     * @brief 读取快照之后的日志
+     * @brief 读取快照之后的日志（按 LSN 过滤）
      * 
-     * @param snapshot_id 快照 ID（时间戳）
-     * @return 日志条目列表
+     * @param snapshot_lsn 快照时刻的 LSN（来自 SnapshotHeader::wal_lsn）
+     * @return 所有 entry.lsn > snapshot_lsn 的条目，顺序与文件一致
      */
-    std::vector<LogEntry> read_after_snapshot(int64_t snapshot_id);
+    std::vector<LogEntry> read_after_snapshot(uint64_t snapshot_lsn);
     
     /**
      * @brief 创建快照
@@ -112,11 +119,14 @@ public:
     /**
      * @brief 读取最新快照
      * 
+     * 扫描 snapshot_dir_，找文件名最大的 snapshot_*.bin（字典序 = 时间序），
+     * 读取并校验 SnapshotHeader，提取 wal_lsn 和数据。
+     * 
      * @param data 输出参数，快照数据
-     * @return 快照 ID（时间戳），失败返回 0
+     * @return 快照时刻的 wal_lsn；无快照或读取失败返回 0，data 不被修改
      */
     template<typename K, typename V>
-    int64_t read_latest_snapshot(std::map<K, V>& data);
+    uint64_t read_latest_snapshot(std::map<K, V>& data);
     
     /**
      * @brief 强制 fsync 到磁盘
@@ -170,11 +180,14 @@ private:
     std::vector<uint8_t> buffer_;             // 内存缓冲区
     mutable std::mutex buffer_mutex_;         // 缓冲区互斥锁
     
-    std::ofstream wal_stream_;                // WAL 文件输出流
+    std::ofstream wal_stream_;                // WAL 文件输出流（用于读取）
+    int wal_fd_{-1};                          // WAL 文件描述符（用于 write + fsync）
     
     // 后台 fsync 线程
     std::thread fsync_thread_;
     mutable std::atomic<bool> fsync_running_{false};
+    std::condition_variable fsync_cv_;
+    std::mutex              fsync_cv_mutex_;
     
     // 辅助函数
     static int64_t current_time_ms();
@@ -184,10 +197,22 @@ private:
     
     // 序列化/反序列化
     static std::vector<uint8_t> serialize_entry(const LogEntry& entry);
-    static LogEntry deserialize_entry(const uint8_t* data, size_t size);
+    // 返回 nullopt 表示校验和不匹配（条目损坏）
+    static std::optional<LogEntry> deserialize_entry(const uint8_t* data, size_t size);
 };
 
 // ============ 模板实现 ============
+
+// SnapshotHeader 与 SimpleCheckpointManager 保持一致的快照文件格式
+struct WalSnapshotHeader {
+    char     magic[4];       // 'M','K','V','S'
+    uint32_t version;        // 1
+    uint32_t record_count;
+    uint64_t wal_lsn;        // 快照时刻的 LSN
+    uint64_t timestamp;
+    uint32_t checksum;
+    char     reserved[32];
+};
 
 template<typename K, typename V>
 int64_t WriteAheadLog::create_snapshot(const std::map<K, V>& data) {
@@ -208,7 +233,6 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V>& data) {
     
     // 写入每个 key-value 对
     for (const auto& [key, value] : data) {
-        // 写入 key (对于string类型直接使用)
         std::string key_str;
         if constexpr (std::is_same_v<K, std::string>) {
             key_str = key;
@@ -219,7 +243,6 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V>& data) {
         file.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
         file.write(key_str.c_str(), key_len);
         
-        // 写入 value (对于string类型直接使用)
         std::string value_str;
         if constexpr (std::is_same_v<V, std::string>) {
             value_str = value;
@@ -236,12 +259,90 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V>& data) {
 }
 
 template<typename K, typename V>
-int64_t WriteAheadLog::read_latest_snapshot(std::map<K, V>& data) {
-    // TODO: 实现读取最新快照的逻辑
-    // 1. 扫描 snapshot_dir_，找到最新的快照文件
-    // 2. 打开文件，读取数据
-    // 3. 返回快照 ID
-    return 0;
+uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V>& data) {
+    namespace fs = std::filesystem;
+
+    // 1. 扫描 snapshot_dir_，找文件名最大的 snapshot_*.bin（字典序 = 时间序）
+    std::vector<std::string> files;
+    try {
+        if (!fs::exists(snapshot_dir_)) return 0;
+        for (const auto& entry : fs::directory_iterator(snapshot_dir_)) {
+            if (!entry.is_regular_file()) continue;
+            std::string name = entry.path().filename().string();
+            if (name.size() > 9 && name.substr(0, 9) == "snapshot_" &&
+                name.size() > 4 && name.substr(name.size() - 4) == ".bin") {
+                files.push_back(name);
+            }
+        }
+    } catch (...) {
+        return 0;
+    }
+    if (files.empty()) return 0;
+
+    std::string latest = *std::max_element(files.begin(), files.end());
+    std::string full_path = snapshot_dir_ + "/" + latest;
+
+    std::ifstream file(full_path, std::ios::binary);
+    if (!file.is_open()) return 0;
+
+    // 2. 读取并校验 SnapshotHeader
+    WalSnapshotHeader header{};
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!file.good()) return 0;
+
+    if (std::string(header.magic, 4) != "MKVS") return 0;
+    if (header.version != 1) return 0;
+
+    // 校验 checksum（与 SimpleCheckpointManager::calculate_checksum 保持一致）
+    uint32_t stored = header.checksum;
+    uint32_t calc = 0;
+    calc ^= header.version;
+    calc ^= header.record_count;
+    calc ^= static_cast<uint32_t>(header.wal_lsn);
+    calc ^= static_cast<uint32_t>(header.wal_lsn >> 32);
+    calc ^= static_cast<uint32_t>(header.timestamp);
+    calc ^= static_cast<uint32_t>(header.timestamp >> 32);
+    for (int i = 0; i < 4; ++i)
+        calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i])) << (i * 8);
+    if (stored != calc) return 0;
+
+    uint64_t snapshot_lsn = header.wal_lsn;
+
+    // 3. 读取 record_count 条 length-prefixed key/value，填充临时 map
+    std::map<K, V> tmp;
+    for (uint32_t i = 0; i < header.record_count; ++i) {
+        uint32_t key_len = 0;
+        file.read(reinterpret_cast<char*>(&key_len), 4);
+        if (!file.good()) return 0;
+        std::string key_str(key_len, '\0');
+        file.read(&key_str[0], key_len);
+        if (!file.good()) return 0;
+
+        uint32_t val_len = 0;
+        file.read(reinterpret_cast<char*>(&val_len), 4);
+        if (!file.good()) return 0;
+        std::string val_str(val_len, '\0');
+        file.read(&val_str[0], val_len);
+        if (!file.good()) return 0;
+
+        K key;
+        V val;
+        if constexpr (std::is_same_v<K, std::string>) {
+            key = key_str;
+        } else {
+            key = static_cast<K>(std::stoi(key_str));
+        }
+        if constexpr (std::is_same_v<V, std::string>) {
+            val = val_str;
+        } else {
+            val = static_cast<V>(std::stoi(val_str));
+        }
+        tmp[key] = val;
+    }
+
+    // 4. 全部读取成功后才写入 data（失败时 data 不被修改）
+    data = std::move(tmp);
+    return snapshot_lsn;
 }
 
 } // namespace db

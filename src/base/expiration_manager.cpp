@@ -2,22 +2,43 @@
 #include "async_logger.h"
 #include <algorithm>
 #include <numeric>
+#include <stdexcept>
 
 namespace minkv {
 namespace base {
 
-ExpirationManager::ExpirationManager(size_t shard_count,
+ExpirationManager::ExpirationManager(ExpirationCallback callback,
+                                   size_t shard_count,
                                    std::chrono::milliseconds check_interval,
                                    size_t sample_size)
     : shard_count_(shard_count),
       check_interval_(check_interval),
       sample_size_(sample_size),
+      callback_(std::move(callback)),
       running_(false),
+      // stats_mutex_ is default-constructed (no initialization needed)
       total_checks_(0),
       total_expired_(0),
       total_skipped_(0),
+      // expired_ratios_ is default-constructed (empty vector)
       rng_(std::random_device{}()),
-      shard_dist_(0, shard_count - 1) {
+      shard_dist_(0, shard_count - 1)
+      // cron_thread_ is NOT initialized here - will be started in constructor body
+{
+    
+    // [参数验证] 在线程启动前验证所有参数，确保强异常安全保证
+    if (!callback_) {
+        throw std::invalid_argument("ExpirationManager: callback cannot be null");
+    }
+    if (shard_count == 0) {
+        throw std::invalid_argument("ExpirationManager: shard_count must be > 0");
+    }
+    if (check_interval.count() <= 0) {
+        throw std::invalid_argument("ExpirationManager: check_interval must be > 0");
+    }
+    if (sample_size == 0) {
+        throw std::invalid_argument("ExpirationManager: sample_size must be > 0");
+    }
     
     // [性能优化] 预分配过期比例历史记录空间，避免动态扩容
     expired_ratios_.reserve(1000);
@@ -25,54 +46,36 @@ ExpirationManager::ExpirationManager(size_t shard_count,
     LOG_INFO << "[ExpirationManager] Initialized with " << shard_count 
              << " shards, check_interval=" << check_interval_.count() 
              << "ms, sample_size=" << sample_size;
-}
-
-ExpirationManager::~ExpirationManager() {
-    // [RAII] 析构时确保后台线程正确停止
-    if (running_) {
-        stop();
-    }
-}
-
-void ExpirationManager::start(ExpirationCallback callback) {
-    // [线程安全] 防止重复启动
-    if (running_) {
-        LOG_WARN << "[ExpirationManager] Already running, ignoring start request";
-        return;
-    }
     
-    // [参数验证] 确保回调函数有效
-    if (!callback) {
-        LOG_ERROR << "[ExpirationManager] Invalid callback function";
-        return;
-    }
-    
-    callback_ = std::move(callback);
-    
-    // [原子操作] 设置运行标志
-    running_ = true;
-    
-    // [生产者-消费者] 启动后台定时线程
+    // [RAII] 构造时自动启动后台线程
+    // [内存序] 使用 memory_order_release 确保所有初始化对线程可见
+    running_.store(true, std::memory_order_release);
     cron_thread_ = std::thread(&ExpirationManager::cronThreadFunc, this);
     
     LOG_INFO << "[ExpirationManager] Started expiration cleanup service";
 }
 
-void ExpirationManager::stop() {
-    // [线程安全] 防止重复停止
-    if (!running_) {
-        return;
+ExpirationManager::~ExpirationManager() noexcept {
+    // [RAII] 析构时自动停止后台线程
+    // [异常安全] 提供无抛出保证
+    
+    // [原子操作] 无条件设置停止标志
+    // 注意：不能提前 return，否则 cron_thread_ 可能仍是 joinable 状态，
+    // 导致析构时 std::terminate 被调用
+    running_.store(false, std::memory_order_release);
+    
+    // [快速唤醒] 唤醒可能正在睡眠的线程
+    {
+        std::lock_guard<std::mutex> lock(stop_mutex_);
+        stop_cv_.notify_all();
     }
     
-    // [原子操作] 设置停止标志
-    running_ = false;
-    
-    // [异常安全] 等待后台线程完成当前工作后再退出
+    // [异常安全] joinable() 自动处理线程已结束的情况，无需额外判断
     if (cron_thread_.joinable()) {
         cron_thread_.join();
     }
     
-    LOG_INFO << "[ExpirationManager] Stopped expiration cleanup service";
+    LOG_INFO << "[ExpirationManager] Stopped expiration cleanup service (RAII)";
 }
 
 void ExpirationManager::cronThreadFunc() {
@@ -90,10 +93,11 @@ void ExpirationManager::cronThreadFunc() {
             if (!running_) break;  // 检查停止标志
             
             size_t expired_count = processShard(shard_id);
-            if (expired_count == 0) {
-                // [性能统计] 如果返回0，可能是锁竞争导致的跳过
+            if (expired_count == SIZE_MAX) {
+                // [性能统计] SIZE_MAX 是锁竞争哨兵值，表示本次被跳过
                 total_skipped_this_round++;
             } else {
+                // expired_count 为 0 表示正常处理但无过期 key，不计入 skipped
                 total_expired_this_round += expired_count;
             }
         }
@@ -132,9 +136,17 @@ void ExpirationManager::cronThreadFunc() {
         }
         
         // [定时控制] 等待下一个检查周期
-        // 如果本轮处理时间超过了检查间隔，立即开始下一轮
+        // 使用条件变量实现可中断的睡眠，支持快速停止
         if (elapsed < check_interval_) {
-            std::this_thread::sleep_for(check_interval_ - elapsed);
+            std::unique_lock<std::mutex> lock(stop_mutex_);
+            stop_cv_.wait_for(lock, check_interval_ - elapsed, [this] {
+                return !running_.load(std::memory_order_acquire);
+            });
+        }
+        
+        // [快速退出] 如果被唤醒且 running_ 为 false，立即退出循环
+        if (!running_.load(std::memory_order_acquire)) {
+            break;
         }
     }
     
@@ -150,6 +162,10 @@ size_t ExpirationManager::processShard(size_t shard_id) {
         // [异常处理] 捕获回调函数中的异常，避免影响整个定时任务
         LOG_ERROR << "[ExpirationManager] Exception in shard " << shard_id 
                   << " processing: " << e.what();
+        return 0;
+    } catch (...) {
+        // [异常安全] 捕获所有未知异常，确保线程继续运行
+        LOG_ERROR << "[ExpirationManager] Unknown exception in shard " << shard_id;
         return 0;
     }
 }

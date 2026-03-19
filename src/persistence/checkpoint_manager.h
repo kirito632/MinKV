@@ -1,6 +1,6 @@
 #pragma once
 
-#include "sharded_cache.h"
+#include "../core/sharded_cache.h"
 #include "wal.h"
 #include <memory>
 #include <string>
@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <atomic>
 #include <thread>
+#include <condition_variable>
 
 namespace minkv {
 namespace db {
@@ -176,6 +177,8 @@ private:
     // 后台检查线程
     std::atomic<bool> background_running_{false};
     std::thread background_thread_;
+    std::condition_variable bg_cv_;
+    std::mutex              bg_cv_mutex_;
     
     // 统计信息 (线程安全)
     mutable std::mutex stats_mutex_;
@@ -335,13 +338,11 @@ bool SimpleCheckpointManager<K, V>::should_checkpoint() const {
     }
     
     // 规则B：WAL大小阈值触发 (防止WAL暴涨)
-    // 注意：这里需要cache_提供获取WAL大小的接口
-    // 暂时使用简化实现，实际项目中需要完善
-    size_t estimated_wal_size = cache_->size() * 100; // 简化估算：每条记录约100字节
+    size_t wal_size = cache_->get_wal_size();
     
-    if (estimated_wal_size >= config_.wal_size_threshold) {
+    if (wal_size >= config_.wal_size_threshold) {
         std::cout << "[CheckpointTrigger] WAL size threshold reached: " 
-                  << estimated_wal_size / (1024*1024) << "MB >= " 
+                  << wal_size / (1024*1024) << "MB >= " 
                   << config_.wal_size_threshold / (1024*1024) << "MB" << std::endl;
         return true;
     }
@@ -368,7 +369,11 @@ void SimpleCheckpointManager<K, V>::stop_background_checker() {
         return;
     }
     
-    background_running_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(bg_cv_mutex_);
+        background_running_.store(false);
+    }
+    bg_cv_.notify_all();
     
     if (background_thread_.joinable()) {
         background_thread_.join();
@@ -379,15 +384,16 @@ void SimpleCheckpointManager<K, V>::stop_background_checker() {
 
 template<typename K, typename V>
 void SimpleCheckpointManager<K, V>::background_checker_loop() {
-    while (background_running_.load()) {
-        // 等待检查间隔
-        std::this_thread::sleep_for(config_.check_interval);
-        
+    while (true) {
+        std::unique_lock<std::mutex> lock(bg_cv_mutex_);
+        bg_cv_.wait_for(lock, config_.check_interval,
+            [this] { return !background_running_.load(); });
+
         if (!background_running_.load()) {
             break;
         }
-        
-        // 检查是否需要checkpoint
+        lock.unlock();
+
         if (should_checkpoint()) {
             std::cout << "[BackgroundChecker] Triggering automatic checkpoint..." << std::endl;
             
@@ -405,42 +411,64 @@ bool SimpleCheckpointManager<K, V>::recover_from_disk() {
     std::cout << "[Recovery] Starting recovery from disk..." << std::endl;
     
     try {
-        // 1. 查找最新的快照文件
+        // 1. 查找最新快照，读取数据和 snapshot_lsn
         std::string latest_snapshot = find_latest_snapshot();
-        if (latest_snapshot.empty()) {
-            std::cout << "[Recovery] No snapshot found, starting with empty cache" << std::endl;
-            return true;
-        }
-        
-        // 2. 加载快照数据，获取LSN信息
         std::map<K, V> snapshot_data;
         uint64_t snapshot_lsn = 0;
-        
-        if (!read_snapshot_file(latest_snapshot, snapshot_data, snapshot_lsn)) {
-            std::cerr << "[Recovery] Failed to read snapshot: " << latest_snapshot << std::endl;
-            return false;
+
+        if (latest_snapshot.empty()) {
+            std::cout << "[Recovery] No snapshot found, replaying full WAL from lsn=0" << std::endl;
+        } else {
+            if (!read_snapshot_file(latest_snapshot, snapshot_data, snapshot_lsn)) {
+                std::cerr << "[Recovery] Failed to read snapshot: " << latest_snapshot << std::endl;
+                return false;
+            }
+            std::cout << "[Recovery] Loaded " << snapshot_data.size()
+                      << " records from snapshot, lsn=" << snapshot_lsn << std::endl;
+
+            // 2. 将快照数据写入 cache（不触发 WAL，直接写分片）
+            for (const auto& [key, value] : snapshot_data) {
+                cache_->put_for_recovery(key, value);
+            }
         }
-        
-        std::cout << "[Recovery] Loaded " << snapshot_data.size() << " records from snapshot: " 
-                  << latest_snapshot << std::endl;
-        std::cout << "[Recovery] Snapshot LSN: " << snapshot_lsn << std::endl;
-        
-        // 3. 将快照数据加载到缓存
-        for (const auto& [key, value] : snapshot_data) {
-            cache_->put(key, value, 0);  // 永不过期
+
+        // 3. 重放 snapshot_lsn 之后的 WAL 条目
+        auto entries = cache_->read_wal_after_lsn(snapshot_lsn);
+        std::cout << "[Recovery] Replaying " << entries.size()
+                  << " WAL entries after lsn=" << snapshot_lsn << std::endl;
+
+        uint64_t max_lsn = snapshot_lsn;
+        size_t recovered = 0, errors = 0;
+
+        for (const auto& entry : entries) {
+            try {
+                if (entry.op == db::LogEntry::PUT) {
+                    K key = Serializer<K>::deserialize(entry.key);
+                    V value = Serializer<V>::deserialize(entry.value);
+                    cache_->put_for_recovery(key, value);
+                    recovered++;
+                } else if (entry.op == db::LogEntry::DELETE) {
+                    K key = Serializer<K>::deserialize(entry.key);
+                    cache_->remove_for_recovery(key);
+                    recovered++;
+                }
+                if (entry.lsn > max_lsn) max_lsn = entry.lsn;
+            } catch (const std::exception& e) {
+                errors++;
+                std::cerr << "[Recovery] Failed to replay entry lsn=" << entry.lsn
+                          << ": " << e.what() << std::endl;
+            }
         }
-        
-        // 4. 重放WAL日志 (从LSN位置开始)
-        // 注意：这里需要cache_提供基于LSN的WAL重放接口
-        // 当前简化实现，实际项目中需要完善
-        std::cout << "[Recovery] Replaying WAL from LSN: " << snapshot_lsn << std::endl;
-        cache_->recover_from_disk(); // 重放快照之后的WAL
-        
-        std::cout << "[Recovery] Recovery completed successfully" << std::endl;
+
+        // 4. 恢复 global_lsn_，避免新写入与已恢复的 LSN 冲突
+        cache_->reset_lsn(max_lsn + 1);
+
+        std::cout << "[Recovery] Completed: " << recovered << " entries replayed, "
+                  << errors << " errors, next_lsn=" << (max_lsn + 1) << std::endl;
         std::cout << "[Recovery] Final cache size: " << cache_->size() << " records" << std::endl;
-        
+
         return true;
-        
+
     } catch (const std::exception& e) {
         std::cerr << "[Recovery] Exception: " << e.what() << std::endl;
         return false;
@@ -452,9 +480,9 @@ typename SimpleCheckpointManager<K, V>::CheckpointStats
 SimpleCheckpointManager<K, V>::get_stats() const {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     
-    // 更新当前WAL大小估算
+    // 更新当前WAL大小
     CheckpointStats current_stats = stats_;
-    current_stats.current_wal_size = cache_->size() * 100; // 简化估算
+    current_stats.current_wal_size = cache_->get_wal_size();
     
     return current_stats;
 }
@@ -524,9 +552,17 @@ bool SimpleCheckpointManager<K, V>::write_snapshot_file(
     const std::map<K, V>& data,
     uint64_t wal_lsn
 ) {
-    std::ofstream file(filepath, std::ios::binary);
+    // [原子重命名] 先写临时文件，写完后 rename() 到正式路径。
+    // rename() 在 Linux 上是原子操作（POSIX 保证），确保即使写入过程中宕机，
+    // 也不会产生损坏的快照文件：要么旧快照完整保留，要么新快照完整替换。
+    const std::string tmp_filepath = filepath + ".tmp";
+    
+    // 清理可能残留的上次失败的临时文件
+    std::filesystem::remove(tmp_filepath);
+    
+    std::ofstream file(tmp_filepath, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[Snapshot] Failed to create file: " << filepath << std::endl;
+        std::cerr << "[Snapshot] Failed to create tmp file: " << tmp_filepath << std::endl;
         return false;
     }
     
@@ -550,7 +586,6 @@ bool SimpleCheckpointManager<K, V>::write_snapshot_file(
         // 写入每个键值对
         size_t written_count = 0;
         for (const auto& [key, value] : data) {
-            // 序列化key (简化：假设K和V都是string或可转换为string)
             std::string key_str;
             std::string value_str;
             
@@ -566,32 +601,41 @@ bool SimpleCheckpointManager<K, V>::write_snapshot_file(
                 value_str = std::to_string(value);
             }
             
-            // 写入key
             uint32_t key_len = static_cast<uint32_t>(key_str.size());
             file.write(reinterpret_cast<const char*>(&key_len), sizeof(key_len));
             file.write(key_str.c_str(), key_len);
             
-            // 写入value
             uint32_t value_len = static_cast<uint32_t>(value_str.size());
             file.write(reinterpret_cast<const char*>(&value_len), sizeof(value_len));
             file.write(value_str.c_str(), value_len);
             
             written_count++;
             
-            // 进度输出
             if (written_count % 10000 == 0) {
                 std::cout << "[Snapshot] Progress: " << written_count << "/" << data.size() << " records" << std::endl;
             }
         }
         
-        // 强制同步到磁盘
+        // 确保数据落盘后再 rename，防止 rename 成功但数据未持久化
         file.flush();
+        if (!file.good()) {
+            std::cerr << "[Snapshot] Flush failed, aborting atomic rename" << std::endl;
+            std::filesystem::remove(tmp_filepath);
+            return false;
+        }
+        file.close();
         
-        std::cout << "[Snapshot] Successfully wrote " << written_count << " records to " << filepath << std::endl;
-        return file.good();
+        // [原子替换] rename() 是原子操作，此刻之后快照文件要么是旧的完整版，要么是新的完整版
+        std::filesystem::rename(tmp_filepath, filepath);
+        
+        std::cout << "[Snapshot] Atomically renamed tmp -> " << filepath 
+                  << " (" << written_count << " records)" << std::endl;
+        return true;
         
     } catch (const std::exception& e) {
         std::cerr << "[Snapshot] Write error: " << e.what() << std::endl;
+        // 清理临时文件，避免残留
+        std::filesystem::remove(tmp_filepath);
         return false;
     }
 }

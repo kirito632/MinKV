@@ -7,6 +7,7 @@
 #include <vector>
 #include <random>
 #include <mutex>
+#include <condition_variable>
 
 namespace minkv {
 namespace base {
@@ -34,18 +35,22 @@ public:
      * @brief 过期检查回调函数类型
      * @param shard_id 分片ID
      * @param sample_size 本次采样大小
-     * @return 返回实际删除的过期key数量
+     * @return 返回值语义：
+     *   - SIZE_MAX：锁竞争，本次跳过（不计入 expired，计入 skipped）
+     *   - 0：正常处理，但无过期 key（不计入 skipped）
+     *   - N > 0：正常处理，删除了 N 个过期 key
      * 
      * 回调函数应该：
      * 1. 使用 try_lock() 尝试获取分片锁
-     * 2. 如果获取失败，立即返回 0（说明业务繁忙）
+     * 2. 如果获取失败，立即返回 SIZE_MAX（说明业务繁忙，本次跳过）
      * 3. 如果获取成功，随机采样指定数量的 key
-     * 4. 检查并删除过期的 key，返回删除数量
+     * 4. 检查并删除过期的 key，返回删除数量（可以为 0）
      */
     using ExpirationCallback = std::function<size_t(size_t shard_id, size_t sample_size)>;
     
     /**
      * @brief 构造定期删除管理器
+     * @param callback 过期检查回调函数（必须非空）
      * @param shard_count 分片数量
      * @param check_interval 检查间隔，默认100ms
      * @param sample_size 每次采样大小，默认20个key
@@ -53,8 +58,11 @@ public:
      * [性能平衡] 
      * - 检查间隔：100ms 平衡了及时性和性能开销
      * - 采样大小：20个key 是 Redis 的经典配置，经过大量实践验证
+     * 
+     * @note 回调函数在构造时验证，如果为空则抛出异常
      */
-    explicit ExpirationManager(size_t shard_count,
+    explicit ExpirationManager(ExpirationCallback callback,
+                              size_t shard_count,
                               std::chrono::milliseconds check_interval = std::chrono::milliseconds(100),
                               size_t sample_size = 20);
     
@@ -62,27 +70,13 @@ public:
      * @brief 析构函数，确保资源正确释放
      * 
      * [RAII] 析构时自动停止后台线程
+     * [异常安全] 提供无抛出保证 (noexcept)
      */
-    ~ExpirationManager();
+    ~ExpirationManager() noexcept;
     
     // 禁止拷贝和赋值，确保资源管理的唯一性
     ExpirationManager(const ExpirationManager&) = delete;
     ExpirationManager& operator=(const ExpirationManager&) = delete;
-    
-    /**
-     * @brief 启动定期删除服务
-     * @param callback 过期检查回调函数
-     * 
-     * [生产者-消费者] 启动后台线程，定期调用回调函数处理过期数据
-     */
-    void start(ExpirationCallback callback);
-    
-    /**
-     * @brief 停止定期删除服务
-     * 
-     * [异常安全] 等待后台线程完成当前工作后再退出
-     */
-    void stop();
     
     /**
      * @brief 性能统计信息结构体
@@ -125,9 +119,8 @@ private:
     const std::chrono::milliseconds check_interval_;       ///< 检查间隔
     const size_t sample_size_;                              ///< 采样大小
     
-    std::atomic<bool> running_;                             ///< 运行状态标志
-    std::thread cron_thread_;                               ///< 后台定时线程
     ExpirationCallback callback_;                           ///< 过期检查回调
+    std::atomic<bool> running_;                             ///< 运行状态标志
     
     // 性能统计数据
     mutable std::mutex stats_mutex_;                        ///< 保护统计数据的互斥锁
@@ -139,6 +132,13 @@ private:
     // 随机数生成器
     std::mt19937 rng_;                                      ///< 随机数生成器
     std::uniform_int_distribution<size_t> shard_dist_;      ///< 分片选择分布
+    
+    // [快速停止] 条件变量和互斥锁，用于可中断的睡眠
+    std::condition_variable stop_cv_;                       ///< 停止信号条件变量
+    std::mutex stop_mutex_;                                 ///< 保护停止信号的互斥锁
+    
+    // [RAII] 线程必须最后声明，确保先于其他成员析构
+    std::thread cron_thread_;                               ///< 后台定时线程
 };
 
 } // namespace base

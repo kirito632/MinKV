@@ -39,8 +39,9 @@ namespace db {
  * 
  * @tparam K 键类型（必须支持 std::hash 和 operator==）
  * @tparam V 值类型
+ * @tparam EnableCacheAlign 是否启用缓存行对齐（默认false）
  */
-template<typename K, typename V>
+template<typename K, typename V, bool EnableCacheAlign = false>
 class ShardedCache {
 public:
     /**
@@ -99,13 +100,21 @@ public:
      * @brief 启动定期删除服务
      * @param check_interval 检查间隔，默认100ms
      * @param sample_size 每次采样大小，默认20
+     * 
+     * @deprecated 推荐使用RAII方式：在构造时传入参数自动启动
+     * @note 为保持向后兼容性暂时保留，未来版本将移除
      */
+    [[deprecated("Use RAII: pass parameters to constructor for automatic startup")]]
     void startExpirationService(std::chrono::milliseconds check_interval = std::chrono::milliseconds(100),
                                size_t sample_size = 20);
     
     /**
      * @brief 停止定期删除服务
+     * 
+     * @deprecated 推荐使用RAII方式：析构时自动停止
+     * @note 为保持向后兼容性暂时保留，未来版本将移除
      */
+    [[deprecated("Use RAII: destructor automatically stops the service")]]
     void stopExpirationService();
     
     /**
@@ -172,6 +181,55 @@ public:
         return (next > 0) ? (next - 1) : 0;
     }
 
+    /**
+     * @brief 重置 LSN 计数器（仅供 recover_from_disk 调用）
+     * 
+     * 恢复完成后将 global_lsn_ 设置为 max_lsn+1，
+     * 确保后续写入不与已恢复的 LSN 冲突。
+     * 调用时必须保证无并发写入。
+     */
+    void reset_lsn(uint64_t lsn) {
+        global_lsn_.store(lsn, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief 获取当前 WAL 文件大小（字节）
+     * 
+     * 供 CheckpointManager::should_checkpoint 使用，
+     * 替代原来的 size() * 100 粗估。
+     */
+    size_t get_wal_size() const {
+        std::lock_guard<std::mutex> lock(persistence_mutex_);
+        return wal_ ? wal_->get_log_size() : 0;
+    }
+
+    /**
+     * @brief 读取 lsn > snapshot_lsn 的 WAL 条目（供 recover_from_disk 使用）
+     */
+    std::vector<db::LogEntry> read_wal_after_lsn(uint64_t snapshot_lsn) const {
+        std::lock_guard<std::mutex> lock(persistence_mutex_);
+        if (!wal_) return {};
+        return wal_->read_after_snapshot(snapshot_lsn);
+    }
+
+    /**
+     * @brief 恢复专用写入：直接写分片，不触发 WAL
+     * 
+     * 仅供 recover_from_disk 调用，此时无并发写入。
+     */
+    void put_for_recovery(const K& key, const V& value) {
+        size_t shard_idx = get_shard_index(key);
+        shards_[shard_idx]->put(key, value, 0);
+    }
+
+    /**
+     * @brief 恢复专用删除：直接删分片，不触发 WAL
+     */
+    void remove_for_recovery(const K& key) {
+        size_t shard_idx = get_shard_index(key);
+        shards_[shard_idx]->remove(key);
+    }
+
 private:
     // ==========================================
     // 核心数据结构
@@ -202,8 +260,16 @@ private:
         size_t expireKeys(const std::vector<K>& keys);
         
     private:
+        // 条件对齐的互斥锁包装
+        struct alignas(EnableCacheAlign ? 64 : 1) AlignedMutex {
+            mutable std::mutex mutex;
+            // 填充至 64 字节（仅在对齐时生效）
+            static constexpr size_t padding_size = EnableCacheAlign ?
+                (64 - sizeof(std::mutex)) : 0;
+            char padding[padding_size];
+        } mutex_wrapper_;
+
         std::unique_ptr<LruCache<K, V>> cache_;
-        mutable std::mutex mutex_;
         mutable std::mt19937 rng_;
     };
     
@@ -255,8 +321,8 @@ private:
 
 // ============ 实现部分 ============
 
-template<typename K, typename V>
-ShardedCache<K, V>::ShardedCache(size_t capacity_per_shard, size_t shard_count)
+template<typename K, typename V, bool EnableCacheAlign>
+ShardedCache<K, V, EnableCacheAlign>::ShardedCache(size_t capacity_per_shard, size_t shard_count)
     : last_health_check_(std::chrono::steady_clock::now()) {
     
     // 创建增强的分片
@@ -265,15 +331,15 @@ ShardedCache<K, V>::ShardedCache(size_t capacity_per_shard, size_t shard_count)
     }
 }
 
-template<typename K, typename V>
-ShardedCache<K, V>::~ShardedCache() {
-    // 停止所有服务
-    stopExpirationService();
+template<typename K, typename V, bool EnableCacheAlign>
+ShardedCache<K, V, EnableCacheAlign>::~ShardedCache() {
+    // [RAII] expiration_manager_ 析构时自动 join 后台线程，无需手动调用 stopExpirationService()
+    expiration_manager_.reset();
     disable_persistence();
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::get_shard_index(const K& key) const {
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::get_shard_index(const K& key) const {
     std::hash<K> hasher;
     return hasher(key) % shards_.size();
 }
@@ -282,8 +348,8 @@ size_t ShardedCache<K, V>::get_shard_index(const K& key) const {
 // 基础缓存接口实现
 // ==========================================
 
-template<typename K, typename V>
-std::optional<V> ShardedCache<K, V>::get(const K& key) {
+template<typename K, typename V, bool EnableCacheAlign>
+std::optional<V> ShardedCache<K, V, EnableCacheAlign>::get(const K& key) {
     size_t shard_idx = get_shard_index(key);
     
     if (isShardDisabled(shard_idx)) {
@@ -300,8 +366,8 @@ std::optional<V> ShardedCache<K, V>::get(const K& key) {
     }
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::put(const K& key, const V& value, int64_t ttl_ms) {
     std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
     
     size_t shard_idx = get_shard_index(key);
@@ -322,6 +388,7 @@ void ShardedCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
             wal_entry.value = Serializer<V>::serialize(value);
             wal_entry.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+            wal_entry.lsn = next_lsn();
         } catch (const std::exception& e) {
             need_wal = false;
         }
@@ -344,8 +411,8 @@ void ShardedCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
     }
 }
 
-template<typename K, typename V>
-bool ShardedCache<K, V>::remove(const K& key) {
+template<typename K, typename V, bool EnableCacheAlign>
+bool ShardedCache<K, V, EnableCacheAlign>::remove(const K& key) {
     std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
     
     size_t shard_idx = get_shard_index(key);
@@ -365,6 +432,7 @@ bool ShardedCache<K, V>::remove(const K& key) {
             wal_entry.key = Serializer<K>::serialize(key);
             wal_entry.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+            wal_entry.lsn = next_lsn();
         } catch (const std::exception& e) {
             need_wal = false;
         }
@@ -389,8 +457,8 @@ bool ShardedCache<K, V>::remove(const K& key) {
     }
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::size() const {
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::size() const {
     size_t total = 0;
     for (size_t i = 0; i < shards_.size(); ++i) {
         if (!isShardDisabled(i)) {
@@ -404,13 +472,13 @@ size_t ShardedCache<K, V>::size() const {
     return total;
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::capacity() const {
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::capacity() const {
     return shards_.size() * (shards_.empty() ? 0 : shards_[0]->capacity());
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::clear() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::clear() {
     std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
     
     for (size_t i = 0; i < shards_.size(); ++i) {
@@ -425,8 +493,8 @@ void ShardedCache<K, V>::clear() {
     }
 }
 
-template<typename K, typename V>
-CacheStats ShardedCache<K, V>::getStats() const {
+template<typename K, typename V, bool EnableCacheAlign>
+CacheStats ShardedCache<K, V, EnableCacheAlign>::getStats() const {
     CacheStats total_stats;
     
     for (size_t i = 0; i < shards_.size(); ++i) {
@@ -450,8 +518,8 @@ CacheStats ShardedCache<K, V>::getStats() const {
     return total_stats;
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::resetStats() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::resetStats() {
     for (size_t i = 0; i < shards_.size(); ++i) {
         if (!isShardDisabled(i)) {
             try {
@@ -467,8 +535,8 @@ void ShardedCache<K, V>::resetStats() {
 // 持久化接口实现
 // ==========================================
 
-template<typename K, typename V>
-void ShardedCache<K, V>::enable_persistence(const std::string& data_dir, int64_t fsync_interval_ms) {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::enable_persistence(const std::string& data_dir, int64_t fsync_interval_ms) {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
     
     if (persistence_enabled_) {
@@ -487,8 +555,8 @@ void ShardedCache<K, V>::enable_persistence(const std::string& data_dir, int64_t
     }
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::disable_persistence() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::disable_persistence() {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
     
     if (!persistence_enabled_) {
@@ -506,8 +574,8 @@ void ShardedCache<K, V>::disable_persistence() {
     std::cout << "[Persistence] WAL disabled" << std::endl;
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::recover_from_disk() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::recover_from_disk() {
     if (!wal_) {
         return;
     }
@@ -542,12 +610,12 @@ void ShardedCache<K, V>::recover_from_disk() {
         }
     }
     
-    std::cout << "[Recovery] Completed: " << recovered_count 
+    std::cout << "[Recovery] Completed: " << recovered_count
               << " entries recovered, " << error_count << " errors" << std::endl;
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::create_snapshot() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::create_snapshot() {
     if (!wal_) {
         std::cout << "[Snapshot] WAL not enabled, skipping snapshot" << std::endl;
         return;
@@ -561,12 +629,12 @@ void ShardedCache<K, V>::create_snapshot() {
     // 创建快照
     int64_t snapshot_id = wal_->create_snapshot(all_data);
     
-    std::cout << "[Snapshot] Created snapshot " << snapshot_id 
+    std::cout << "[Snapshot] Created snapshot " << snapshot_id
               << " with " << all_data.size() << " entries" << std::endl;
 }
 
-template<typename K, typename V>
-std::map<K, V> ShardedCache<K, V>::export_all_data() const {
+template<typename K, typename V, bool EnableCacheAlign>
+std::map<K, V> ShardedCache<K, V, EnableCacheAlign>::export_all_data() const {
     std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
     
     std::map<K, V> all_data;
@@ -582,14 +650,14 @@ std::map<K, V> ShardedCache<K, V>::export_all_data() const {
         }
     }
     
-    std::cout << "[Export] Exported " << all_data.size() 
+    std::cout << "[Export] Exported " << all_data.size()
               << " entries under consistency lock" << std::endl;
     
     return all_data;
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::clear_wal() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::clear_wal() {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
     
     if (wal_) {
@@ -602,8 +670,8 @@ void ShardedCache<K, V>::clear_wal() {
 // 向量搜索接口实现
 // ==========================================
 
-template<typename K, typename V>
-void ShardedCache<K, V>::vectorPut(const K& key, const std::vector<float>& vec, int64_t ttl_ms) {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::vectorPut(const K& key, const std::vector<float>& vec, int64_t ttl_ms) {
     // 将向量序列化为字符串
     std::string serialized_vec = VectorOps::Serialize(vec);
     
@@ -611,8 +679,8 @@ void ShardedCache<K, V>::vectorPut(const K& key, const std::vector<float>& vec, 
     put(key, serialized_vec, ttl_ms);
 }
 
-template<typename K, typename V>
-std::vector<float> ShardedCache<K, V>::vectorGet(const K& key) {
+template<typename K, typename V, bool EnableCacheAlign>
+std::vector<float> ShardedCache<K, V, EnableCacheAlign>::vectorGet(const K& key) {
     auto result = get(key);
     if (!result.has_value()) {
         return {};
@@ -622,8 +690,8 @@ std::vector<float> ShardedCache<K, V>::vectorGet(const K& key) {
     return VectorOps::DeserializeCopy(*result);
 }
 
-template<typename K, typename V>
-std::vector<K> ShardedCache<K, V>::vectorSearch(const std::vector<float>& query, int k) {
+template<typename K, typename V, bool EnableCacheAlign>
+std::vector<K> ShardedCache<K, V, EnableCacheAlign>::vectorSearch(const std::vector<float>& query, int k) {
     struct SearchResult {
         K key;
         float distance;
@@ -655,7 +723,7 @@ std::vector<K> ShardedCache<K, V>::vectorSearch(const std::vector<float>& query,
                         continue;  // 维度不匹配
                     }
                     
-                    float distance = VectorOps::L2DistanceSquare_AVX2(
+                    float distance = VectorOps::L2DistanceSquare(
                         query.data(), vec_data.data(), vec_data.size());
                     
                     heap.push(SearchResult(key, distance));
@@ -671,7 +739,7 @@ std::vector<K> ShardedCache<K, V>::vectorSearch(const std::vector<float>& query,
                 
             } catch (const std::exception& e) {
                 // 单个分片错误不影响整体搜索
-                std::cerr << "[VectorSearch] Shard " << shard_idx 
+                std::cerr << "[VectorSearch] Shard " << shard_idx
                           << " error: " << e.what() << std::endl;
             }
             
@@ -711,32 +779,31 @@ std::vector<K> ShardedCache<K, V>::vectorSearch(const std::vector<float>& query,
 // 定期删除接口实现
 // ==========================================
 
-template<typename K, typename V>
-void ShardedCache<K, V>::startExpirationService(std::chrono::milliseconds check_interval, size_t sample_size) {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::startExpirationService(std::chrono::milliseconds check_interval, size_t sample_size) {
     if (expiration_manager_) {
         return;  // 已启动
     }
     
+    // [RAII简化] 构造函数自动启动线程，无需手动start()
     expiration_manager_ = std::make_unique<base::ExpirationManager>(
-        shards_.size(), check_interval, sample_size);
-    
-    auto callback = [this](size_t shard_id, size_t sample_size) -> size_t {
-        return this->expirationCallback(shard_id, sample_size);
-    };
-    
-    expiration_manager_->start(callback);
+        [this](size_t shard_id, size_t sample_size) {
+            return this->expirationCallback(shard_id, sample_size);
+        },
+        shards_.size(),
+        check_interval,
+        sample_size
+    );
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::stopExpirationService() {
-    if (expiration_manager_) {
-        expiration_manager_->stop();
-        expiration_manager_.reset();
-    }
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::stopExpirationService() {
+    // [RAII] 析构函数自动停止线程，只需重置指针
+    expiration_manager_.reset();
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::expirationCallback(size_t shard_id, size_t sample_size) {
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::expirationCallback(size_t shard_id, size_t sample_size) {
     if (shard_id >= shards_.size() || isShardDisabled(shard_id)) {
         return 0;
     }
@@ -746,7 +813,8 @@ size_t ShardedCache<K, V>::expirationCallback(size_t shard_id, size_t sample_siz
     // 🎯 非阻塞锁：避免与业务线程竞争
     if (!shard->try_lock()) {
         // 锁竞争不算错误，只是跳过本次检查
-        return 0;
+        // 返回 SIZE_MAX 作为"锁竞争跳过"的哨兵值，与"正常处理但无过期key（返回0）"区分
+        return SIZE_MAX;
     }
     
     // RAII锁管理
@@ -767,23 +835,23 @@ size_t ShardedCache<K, V>::expirationCallback(size_t shard_id, size_t sample_siz
         
     } catch (const std::exception& e) {
         // 真正的异常才记录错误
-        std::cout << "[ExpirationManager][ShardError] Shard " << shard_id 
+        std::cout << "[ExpirationManager][ShardError] Shard " << shard_id
                   << " error: " << e.what() << std::endl;
         recordShardError(shard_id);
         return 0;
     }
 }
 
-template<typename K, typename V>
-base::ExpirationManager::Stats ShardedCache<K, V>::getExpirationStats() const {
+template<typename K, typename V, bool EnableCacheAlign>
+base::ExpirationManager::Stats ShardedCache<K, V, EnableCacheAlign>::getExpirationStats() const {
     if (expiration_manager_) {
         return expiration_manager_->getStats();
     }
     return {};
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::manualExpiration(int shard_id) {
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::manualExpiration(int shard_id) {
     size_t total_expired = 0;
     
     if (shard_id == -1) {
@@ -803,35 +871,35 @@ size_t ShardedCache<K, V>::manualExpiration(int shard_id) {
 // 健康检查实现
 // ==========================================
 
-template<typename K, typename V>
-void ShardedCache<K, V>::recordShardError(size_t shard_id) {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::recordShardError(size_t shard_id) {
     std::lock_guard<std::mutex> lock(health_mutex_);
     
     shard_error_counts_[shard_id]++;
     
     if (shard_error_counts_[shard_id] >= MAX_CONSECUTIVE_ERRORS) {
         disabled_shards_.insert(shard_id);
-        std::cout << "[HealthCheck] Shard " << shard_id 
-                  << " disabled due to " << shard_error_counts_[shard_id] 
+        std::cout << "[HealthCheck] Shard " << shard_id
+                  << " disabled due to " << shard_error_counts_[shard_id]
                   << " consecutive errors" << std::endl;
     }
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::recordShardSuccess(size_t shard_id) {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::recordShardSuccess(size_t shard_id) {
     std::lock_guard<std::mutex> lock(health_mutex_);
     shard_error_counts_[shard_id] = 0;  // 重置错误计数
 }
 
-template<typename K, typename V>
-bool ShardedCache<K, V>::isShardDisabled(size_t shard_id) const {
+template<typename K, typename V, bool EnableCacheAlign>
+bool ShardedCache<K, V, EnableCacheAlign>::isShardDisabled(size_t shard_id) const {
     std::lock_guard<std::mutex> lock(health_mutex_);
     return disabled_shards_.count(shard_id) > 0;
 }
 
-template<typename K, typename V>
-typename ShardedCache<K, V>::HealthStatus 
-ShardedCache<K, V>::getHealthStatus() const {
+template<typename K, typename V, bool EnableCacheAlign>
+typename ShardedCache<K, V, EnableCacheAlign>::HealthStatus
+ShardedCache<K, V, EnableCacheAlign>::getHealthStatus() const {
     std::lock_guard<std::mutex> lock(health_mutex_);
     
     HealthStatus status;
@@ -852,8 +920,8 @@ ShardedCache<K, V>::getHealthStatus() const {
     return status;
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::performHealthCheck() {
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::performHealthCheck() {
     std::lock_guard<std::mutex> lock(health_mutex_);
     
     last_health_check_ = std::chrono::steady_clock::now();
@@ -884,76 +952,76 @@ void ShardedCache<K, V>::performHealthCheck() {
 // EnhancedLruShard 实现
 // ==========================================
 
-template<typename K, typename V>
-ShardedCache<K, V>::EnhancedLruShard::EnhancedLruShard(size_t capacity)
+template<typename K, typename V, bool EnableCacheAlign>
+ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::EnhancedLruShard(size_t capacity)
     : cache_(std::make_unique<LruCache<K, V>>(capacity)), rng_(std::random_device{}()) {
 }
 
-template<typename K, typename V>
-bool ShardedCache<K, V>::EnhancedLruShard::try_lock() {
-    return mutex_.try_lock();
+template<typename K, typename V, bool EnableCacheAlign>
+bool ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::try_lock() {
+    return mutex_wrapper_.mutex.try_lock();
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::EnhancedLruShard::unlock() {
-    mutex_.unlock();
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::unlock() {
+    mutex_wrapper_.mutex.unlock();
 }
 
-template<typename K, typename V>
-std::optional<V> ShardedCache<K, V>::EnhancedLruShard::get(const K& key) {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+std::optional<V> ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::get(const K& key) {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     return cache_->get(key);
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::EnhancedLruShard::put(const K& key, const V& value, int64_t ttl_ms) {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::put(const K& key, const V& value, int64_t ttl_ms) {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     cache_->put(key, value, ttl_ms);
 }
 
-template<typename K, typename V>
-bool ShardedCache<K, V>::EnhancedLruShard::remove(const K& key) {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+bool ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::remove(const K& key) {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     return cache_->remove(key);
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::EnhancedLruShard::size() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::size() const {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     return cache_->size();
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::EnhancedLruShard::capacity() const {
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::capacity() const {
     return cache_->capacity();
 }
 
-template<typename K, typename V>
-CacheStats ShardedCache<K, V>::EnhancedLruShard::getStats() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+CacheStats ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::getStats() const {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     return cache_->getStats();
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::EnhancedLruShard::resetStats() {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::resetStats() {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     cache_->resetStats();
 }
 
-template<typename K, typename V>
-void ShardedCache<K, V>::EnhancedLruShard::clear() {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::clear() {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     cache_->clear();
 }
 
-template<typename K, typename V>
-std::map<K, V> ShardedCache<K, V>::EnhancedLruShard::get_all() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+template<typename K, typename V, bool EnableCacheAlign>
+std::map<K, V> ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::get_all() const {
+    std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
     return cache_->get_all();
 }
 
-template<typename K, typename V>
-std::vector<K> ShardedCache<K, V>::EnhancedLruShard::randomSample(size_t sample_size) {
+template<typename K, typename V, bool EnableCacheAlign>
+std::vector<K> ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::randomSample(size_t sample_size) {
     // 注意：调用此方法前必须已经获取锁
     auto all_data = cache_->get_all();
     
@@ -976,24 +1044,14 @@ std::vector<K> ShardedCache<K, V>::EnhancedLruShard::randomSample(size_t sample_
     return keys;
 }
 
-template<typename K, typename V>
-size_t ShardedCache<K, V>::EnhancedLruShard::expireKeys(const std::vector<K>& keys) {
-    // 注意：调用此方法前必须已经获取锁
-    size_t expired_count = 0;
-    
-    for (const auto& key : keys) {
-        // 🎯 精确的过期检查：先获取当前值，再检查是否过期
-        auto old_size = cache_->size();
-        auto value = cache_->get(key);  // get()会自动删除过期的key
-        auto new_size = cache_->size();
-        
-        // 如果size减少了，说明key因为过期被删除了
-        if (new_size < old_size) {
-            expired_count++;
-        }
-    }
-    
-    return expired_count;
+template<typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::expireKeys(const std::vector<K>& keys) {
+    // 注意：调用此方法前必须已经获取 EnhancedLruShard 的锁
+    // 直接委托给 LruCache::cleanup_expired_keys()，它内部会加自己的锁
+    // 两把锁不同（EnhancedLruShard::mutex_wrapper_.mutex vs LruCache::mutex_），不会死锁
+    // 同时避免了通过 size() 变化来间接判断过期的不可靠逻辑
+    (void)keys;  // 采样列表由 ExpirationManager 传入，但实际清理交给 LruCache 全量扫描
+    return cache_->cleanup_expired_keys();
 }
 
 } // namespace db
