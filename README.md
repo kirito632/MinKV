@@ -1,97 +1,118 @@
 # MinKV (FlashCache)
 
-> A high-performance, concurrent, in-memory key-value store for C++ applications.  
-> 专为高并发设计的 C++ 本地缓存库。
+[![Language](https://img.shields.io/badge/Language-C++17-blue.svg)](https://en.cppreference.com/w/cpp/compiler_support)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)]()
 
-## 🚀 核心特性 (Key Features)
+*Read this in other languages: [English](README.md) | [简体中文](README_zh-CN.md)*
 
-*   **极致并发**: 采用 **Sharded Locking (分片锁)** 架构，将大锁拆分为 32 个独立分片，大幅减少锁竞争。
-*   **读多写少优化**: 引入 **`std::shared_mutex` (读写锁)** 配合 **Lazy LRU Promotion**，让 99% 的 `get` 操作变为无锁并发读。
-*   **工业级特性**: 支持 **TTL (自动过期)**、**最大容量限制**、**LRU 淘汰**、**WAL 持久化**。
-*   **零拷贝接口**: 精心设计的 API，减少不必要的内存拷贝。
+A high-performance, concurrent, in-memory key-value store optimized for C++ applications, with optional WAL persistence and SIMD-accelerated vector search.
 
 ---
 
-## 📊 性能压测 (Benchmark)
+## 🚀 Key Features
 
-> 腾讯云竞价实例，上海8区，4核8线程，Ubuntu 22.04，g++ 11  
-> 编译参数：`-O2 -march=native -mavx2 -mfma`（详见 `docs/tests/RELEASE_BENCHMARK.md`）
+- **Extreme Concurrency** — Sharded Locking architecture (32 independent shards by default) dramatically reduces lock contention in multi-threaded environments.
+- **Read-Heavy Optimization** — Combines `std::shared_mutex` (Reader-Writer Locks) with a **Lazy LRU Promotion** strategy, making 99% of `get` operations virtually lock-free.
+- **Industrial-Grade Reliability** — Supports TTL expiration, capacity limits, LRU eviction, and **Write-Ahead Logging (WAL)** with Group Commit for crash consistency.
+- **SIMD-Accelerated Vector Search** — AVX2-optimized L2 distance calculation for high-dimensional vector workloads (4.58x speedup over scalar).
+- **Zero-Copy API** — Interfaces designed with `std::string_view` and move semantics to eliminate unnecessary allocations.
 
-### 核心性能指标
+---
 
-*   **峰值吞吐量**: **508万 QPS** (2线程, 32分片, R90W10)
-*   **P99延迟**: **2.81 μs**
-*   **WAL持久化开销**: **10.6%** (8线程多核场景)
-*   **分片优化提升**: **+77%** (1分片171万 → 32分片304万 QPS)
-*   **SIMD算法加速**: **4.58倍** (向量L2距离计算，效率57.2%)
+## 📊 Benchmarks
 
-### 1. 并发吞吐量 (R90W10, 32分片)
+> Environment: Tencent Cloud (Shanghai), 4 Cores / 8 Threads, Ubuntu 22.04, g++ 11  
+> Compilation: `-O2 -march=native -mavx2 -mfma`  
+> (Note: `-O2` outperforms `-O3` on this workload — aggressive inlining inflates hot-path code size and increases L1 icache pressure.)
+
+### Core Metrics at a Glance
+
+| Metric | Value |
+| :--- | :--- |
+| Peak Throughput | **5.08M QPS** (2 threads, 32 shards, R90W10) |
+| P99 Latency | **2.81 μs** |
+| WAL Overhead (8 threads) | **10.6%** (Group Commit, 10ms interval) |
+| Sharding Gain | **+77%** (1 shard → 32 shards) |
+| SIMD Speedup | **4.58x** (512-dim L2 distance, AVX2) |
+
+---
+
+### 1. Concurrent Throughput (R90W10, 32 Shards)
 
 ![QPS vs Threads](docs/images/01_qps_vs_threads.png)
 
-Peak concurrent QPS reaches **5.08M at 2 threads** (-O2 compilation). Performance scales well up to 2 threads, then plateaus due to memory bandwidth contention (100K key range exceeds L3 cache).
+Peak QPS hits **5.08M at 2 threads**. Performance plateaus beyond 2 threads due to memory bandwidth saturation — the 100K key range exceeds L3 cache capacity, causing contention on the memory bus rather than on locks.
 
-| 线程数 | QPS | P50(μs) | P95(μs) | P99(μs) | 命中率 |
+| Threads | QPS | P50 (μs) | P95 (μs) | P99 (μs) | Hit Rate |
 | :---: | :---: | :---: | :---: | :---: | :---: |
-| 1 | 372万 | 0.20 | 0.50 | 0.66 | 10% |
-| **2** | **508万** | **0.29** | **0.59** | **2.81** | **10%** |
-| 4 | 393万 | 0.52 | 3.26 | 8.85 | 11% |
-| 8 | 310万 | 1.02 | 10.45 | 18.52 | 13% |
-| 16 | 286万 | 1.44 | 25.85 | 51.65 | 16% |
-
-### 2. P99 尾延迟
-
-![P99 Latency](docs/images/05_p99_latency.png)
-
-P99 latency rises sharply beyond 2 threads due to lock contention, peaking at **51.65μs at 16 threads**.
-
-### 3. 分片数消融测试 (8线程, W70R30)
-
-![Shard Ablation](docs/images/04_shard_ablation.png)
-
-Optimal performance at **32 shards**, achieving 3.04M QPS (+77% improvement over 1 shard). Performance saturates beyond 4 shards; 16~64 shards differ by less than 1%.
-
-| 分片数 | QPS | 相对性能 |
-| :---: | :---: | :---: |
-| 1 | 171万 | 0.57x |
-| 4 | 299万 | 0.99x |
-| 8 | 302万 | 0.99x |
-| **32** | **304万** | **1.00x** |
-| 64 | 299万 | 0.99x |
-
-### 4. WAL持久化性能 (Group Commit, 10ms间隔)
-
-![WAL Overhead](docs/images/02_wal_overhead.png)
-
-Persistence (fsync) overhead drops from **34.9% at 1 thread to 10.6% at 8 threads**, thanks to Group Commit batching. Group Commit is **199x faster** than sync-every-write (~1.6万 QPS).
-
-| 线程数 | 纯内存 QPS | Group Commit QPS | 损耗 |
-| :---: | :---: | :---: | :---: |
-| 1 | 342万 | 223万 | 34.9% |
-| 2 | 394万 | 302万 | 23.4% |
-| 4 | 376万 | 311万 | 17.4% |
-| 8 | 309万 | 276万 | **10.6%** |
-
-> 1线程损耗偏高（WAL后台线程与主线程竞争同一CPU核）；8线程多核场景10.6%更能代表生产实际。
-
-### 5. SIMD向量化优化 (512维L2距离, 10万次查询)
-
-![SIMD Speedup](docs/images/03_simd_speedup.png)
-
-AVX2 SIMD achieves **4.58x QPS speedup** (18.73M vs 4.09M) and reduces average latency from 0.24μs to 0.05μs (57% of theoretical 8x max efficiency). System-level KV impact is ±3% (Amdahl's Law).
-
-| 版本 | QPS | 平均延迟 | 加速比 |
-| :---: | :---: | :---: | :---: |
-| 标量版本 | 409万 | 0.24 μs | 1.00x |
-| **AVX2 SIMD** | **1873万** | **0.05 μs** | **4.58x** |
+| 1 | 3.72M | 0.20 | 0.50 | 0.66 | 10% |
+| **2** | **5.08M** | **0.29** | **0.59** | **2.81** | **10%** |
+| 4 | 3.93M | 0.52 | 3.26 | 8.85 | 11% |
+| 8 | 3.10M | 1.02 | 10.45 | 18.52 | 13% |
+| 16 | 2.86M | 1.44 | 25.85 | 51.65 | 16% |
 
 ---
 
-## 🛠️ 快速开始 (Quick Start)
+### 2. P99 Tail Latency
 
-### 集成
+![P99 Latency](docs/images/05_p99_latency.png)
 
-只需包含头文件即可使用：
+P99 rises sharply beyond 2 threads due to lock contention, peaking at **51.65 μs at 16 threads**.
+
+---
+
+### 3. Shard Count Ablation (8 Threads, W70R30)
+
+![Shard Ablation](docs/images/04_shard_ablation.png)
+
+Optimal at **32 shards** (+77% over 1 shard). Performance saturates beyond 4 shards; the difference between 16 and 64 shards is under 1%.
+
+| Shards | QPS | Relative |
+| :---: | :---: | :---: |
+| 1 | 1.71M | 0.57x |
+| 4 | 2.99M | 0.99x |
+| 8 | 3.02M | 0.99x |
+| **32** | **3.04M** | **1.00x** |
+| 64 | 2.99M | 0.99x |
+
+---
+
+### 4. WAL Persistence Overhead (Group Commit, 10ms interval)
+
+![WAL Overhead](docs/images/02_wal_overhead.png)
+
+`fsync` overhead drops from **34.9% at 1 thread to 10.6% at 8 threads** thanks to Group Commit batching writes. Group Commit is **199x faster** than sync-every-write (~16K QPS).
+
+The 1-thread overhead is elevated because the WAL background flush thread competes with the main thread for the same physical CPU core. The 8-thread figure (10.6%) is more representative of real production multi-core environments.
+
+| Threads | In-Memory QPS | Group Commit QPS | Overhead |
+| :---: | :---: | :---: | :---: |
+| 1 | 3.42M | 2.23M | 34.9% |
+| 2 | 3.94M | 3.02M | 23.4% |
+| 4 | 3.76M | 3.11M | 17.4% |
+| 8 | 3.09M | 2.76M | **10.6%** |
+
+---
+
+### 5. SIMD Vector Optimization (512-dim L2 Distance, 100K queries)
+
+![SIMD Speedup](docs/images/03_simd_speedup.png)
+
+AVX2 SIMD achieves a **4.58x QPS speedup** (18.73M vs 4.09M) and reduces average latency from 0.24 μs to 0.05 μs. This is 57.2% of the theoretical 8x maximum (AVX2 processes 8 floats per instruction), with the gap explained by memory bandwidth limits, horizontal reduction overhead, and cache misses.
+
+| Version | QPS | Avg Latency | Speedup |
+| :---: | :---: | :---: | :---: |
+| Scalar (loop) | 4.09M | 0.24 μs | 1.00x |
+| **AVX2 SIMD** | **18.73M** | **0.05 μs** | **4.58x** |
+
+> System-level KV impact is ±3% (Amdahl's Law: vector computation is only ~1–2% of total KV operation time; the bottleneck is hash lookup and lock management).
+
+---
+
+## 🛠 Quick Start
+
+Header-only integration — just include and go:
 
 ```cpp
 #include "db/sharded_cache.h"
@@ -99,14 +120,13 @@ AVX2 SIMD achieves **4.58x QPS speedup** (18.73M vs 4.09M) and reduces average l
 #include <iostream>
 
 int main() {
-    // 创建一个分片缓存
-    // 每个分片容量 10000，共 32 个分片 -> 总容量 320,000
+    // 10,000 capacity per shard × 32 shards = 320,000 total capacity
     minkv::db::ShardedCache<std::string, std::string> cache(10000, 32);
 
-    // 1. 写入数据 (支持 TTL)
-    cache.put("user:1001", "Robinson", 5000); // 5秒后过期
+    // Write with TTL (milliseconds)
+    cache.put("user:1001", "Robinson", 5000); // expires in 5 seconds
 
-    // 2. 读取数据
+    // Read
     auto value = cache.get("user:1001");
     if (value) {
         std::cout << "Found: " << *value << std::endl;
@@ -114,26 +134,51 @@ int main() {
         std::cout << "Not found or expired" << std::endl;
     }
 
-    // 3. 并发安全
-    // 你可以在多个线程中安全地调用 get/put，无需额外加锁
-    
+    // Thread-safe by default — no external locking needed
     return 0;
 }
 ```
 
+---
 
-## 🏗️ 架构设计 (Architecture)
+## 🏗 Architecture Design
 
-### 为什么标准库 (`std::map` + `mutex`) 慢？
-标准库方案使用一把全局互斥锁。当多个线程同时访问时，它们必须串行排队。这被称为 **Lock Contention (锁竞争)**，是高并发系统的杀手。
+### Why is `std::map` + `mutex` slow?
 
-### MinKV 是如何优化的？
-1.  **Sharding (分片)**: 将数据按 Hash 分散到 32 个独立的 Bucket，消融测试验证相比单锁提升 **77%**。
-2.  **Reader-Writer Lock (读写锁)**: 99% 的请求是读。我们使用 `shared_mutex`，允许多个读者同时进入，只有写者需要独占。
-3.  **Lazy LRU**: 传统的 LRU 每次读取都要修改链表（写操作）。我们引入 **Lazy Promotion**，1秒内重复访问不移动链表，将 99% 的 `get` 还原为纯读操作，彻底释放了读写锁的威力。
-4.  **Group Commit WAL**: 后台线程每10ms批量fsync，在保证持久化的前提下将性能损耗控制在10%左右。
+A single global mutex forces all threads to serialize. Under high concurrency, threads spend most of their time waiting — this is **Lock Contention**, the primary bottleneck in concurrent systems.
+
+### How MinKV solves it
+
+**1. Sharding**  
+Keys are hashed into 32 independent buckets. Each bucket has its own lock, so threads accessing different keys never block each other. Ablation tests confirm a **+77% throughput gain** over a single-shard baseline.
+
+**2. Reader-Writer Locks**  
+~99% of real-world cache traffic is reads. `std::shared_mutex` allows unlimited concurrent readers; only writers need exclusive access. This is the foundation that makes high read throughput possible.
+
+**3. Lazy LRU Promotion**  
+Traditional LRU updates the linked list on every read — a write operation under the hood. MinKV's Lazy Promotion skips list updates for accesses within a 1-second window, converting 99% of `get` calls into pure read-lock operations and fully unlocking the potential of the reader-writer lock.
+
+**4. Group Commit WAL**  
+A background thread batches writes and calls `fsync` every 10ms. This amortizes the cost of disk I/O across many operations, keeping persistence overhead at ~10% in multi-threaded workloads while guaranteeing crash consistency.
 
 ---
 
-**License**: MIT  
-**Author**: Robinson
+## 📁 Project Structure
+
+```
+MinKV/
+├── src/
+│   ├── core/           # ShardedCache, LRU, expiration
+│   ├── persistence/    # WAL, checkpoint, recovery
+│   ├── vector/         # SIMD-accelerated vector ops
+│   ├── base/           # Logging, utilities
+│   └── tests/          # Benchmarks and unit tests
+├── docs/
+│   ├── images/         # Benchmark charts
+│   └── tests/          # Detailed test reports
+└── scripts/            # Chart generation, build helpers
+```
+
+---
+
+**License**: MIT | **Author**: Robinson
