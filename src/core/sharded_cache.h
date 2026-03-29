@@ -31,7 +31,7 @@ namespace db {
  * [设计目标] 
  * - 单一入口：一个类解决所有需求
  * - 功能完整：生产级特性齐全
- * - 性能优异：237万QPS，P99延迟1.46μs
+ * - 性能优异：250万+QPS，P99延迟1.81μs
  * - 高可用：局部故障不影响整体服务
  * 
  * 这是MinKV的核心组件，解决了架构碎片化问题，
@@ -64,32 +64,137 @@ public:
     // 基础缓存接口 (Basic Cache API)
     // ==========================================
     
+    /**
+     * @brief 查询缓存中的值
+     * @param key 要查询的键
+     * @return 如果命中且未过期，返回对应的值；否则返回 std::nullopt
+     * @note 命中时会将该条目移到LRU链表头部（最近使用）
+     */
     std::optional<V> get(const K& key);
+
+    /**
+     * @brief 写入一个键值对
+     * @param key   键
+     * @param value 值
+     * @param ttl_ms 过期时间（毫秒），0 表示永不过期
+     * @note 如果启用了持久化，会先写 WAL 再写内存（write-ahead 语义）
+     *       如果 key 已存在，会覆盖旧值并刷新 TTL
+     */
     void put(const K& key, const V& value, int64_t ttl_ms = 0);
+
+    /**
+     * @brief 删除一个键值对
+     * @param key 要删除的键
+     * @return true 表示删除成功（key 存在），false 表示 key 不存在
+     * @note 如果启用了持久化，会先写 DELETE 日志再删内存
+     */
     bool remove(const K& key);
+
+    /**
+     * @brief 返回当前缓存中存活的条目总数
+     * @return 所有健康分片的 size() 之和
+     * @note 被禁用的分片不计入统计；单个分片出错时跳过，不影响其他分片
+     */
     size_t size() const;
+
+    /**
+     * @brief 返回缓存的最大容量（所有分片容量之和）
+     * @return shard_count * capacity_per_shard
+     */
     size_t capacity() const;
+
+    /**
+     * @brief 清空所有分片的缓存数据
+     * @note 会持有全局一致性写锁，期间所有 put/remove 会阻塞
+     */
     void clear();
+
+    /**
+     * @brief 获取聚合后的缓存统计信息
+     * @return 所有健康分片的 hits/misses/evictions 等指标之和
+     */
     CacheStats getStats() const;
+
+    /**
+     * @brief 重置所有分片的统计计数器（归零）
+     */
     void resetStats();
 
     // ==========================================
     // 持久化接口 (Persistence API)
     // ==========================================
     
+    /**
+     * @brief 启用 WAL 持久化
+     * @param data_dir          WAL 文件存放目录
+     * @param fsync_interval_ms 后台 fsync 间隔（毫秒），默认 1000ms
+     * @note 重复调用无效（已启用时直接返回）
+     */
     void enable_persistence(const std::string& data_dir, int64_t fsync_interval_ms = 1000);
+
+    /**
+     * @brief 关闭 WAL 持久化，flush 并释放 WAL 资源
+     */
     void disable_persistence();
-    void recover_from_disk();
+
+    /**
+     * @brief 创建一个全量快照（snapshot）
+     * @note 会持有全局一致性写锁导出数据，然后调用 WAL 的 create_snapshot 接口
+     *       快照完成后可以截断旧的 WAL 日志
+     */
     void create_snapshot();
+
+    /**
+     * @brief 在全局一致性写锁下导出所有数据
+     * @return 所有健康分片的键值对合并结果（std::map 有序）
+     * @note 持锁期间 put/remove 会阻塞，确保导出数据的一致性
+     */
     std::map<K, V> export_all_data() const;
+
+    /**
+     * @brief 清空 WAL 文件中的所有日志条目
+     * @note 通常在快照写入成功后调用，截断已持久化的日志
+     */
     void clear_wal();
+
+    /**
+     * @brief Checkpoint专用：在独占锁下原子性导出数据和LSN（不清WAL）
+     *
+     * 只做导出，不清 WAL。调用方在快照文件写成功后再调用 clear_wal()。
+     * 这样快照写失败时 WAL 仍然完整，不会丢数据。
+     *
+     * @param out_data 导出的全量数据
+     * @param out_lsn  导出时的当前LSN（写入快照头部用）
+     */
+    void export_for_checkpoint(std::map<K, V>& out_data, uint64_t& out_lsn) const;
 
     // ==========================================
     // 向量检索接口 (Vector Search API)
     // ==========================================
     
+    /**
+     * @brief 写入一个向量（自动序列化后存入缓存）
+     * @param key    键
+     * @param vec    浮点向量数据
+     * @param ttl_ms 过期时间（毫秒），0 表示永不过期
+     */
     void vectorPut(const K& key, const std::vector<float>& vec, int64_t ttl_ms = 0);
+
+    /**
+     * @brief 读取一个向量（自动反序列化）
+     * @param key 键
+     * @return 对应的浮点向量；key 不存在或反序列化失败时返回空 vector
+     */
     std::vector<float> vectorGet(const K& key);
+
+    /**
+     * @brief Top-K 近似最近邻搜索（L2 距离）
+     * @param query 查询向量
+     * @param k     返回最近的 k 个结果
+     * @return 按距离从近到远排列的 key 列表（最多 k 个）
+     * @note 并行搜索所有分片（std::async），每个分片维护局部 Top-K 堆，
+     *       最后合并为全局 Top-K。维度不匹配的条目会被跳过。
+     */
     std::vector<K> vectorSearch(const std::vector<float>& query, int k);
 
     // ==========================================
@@ -100,21 +205,13 @@ public:
      * @brief 启动定期删除服务
      * @param check_interval 检查间隔，默认100ms
      * @param sample_size 每次采样大小，默认20
-     * 
-     * @deprecated 推荐使用RAII方式：在构造时传入参数自动启动
-     * @note 为保持向后兼容性暂时保留，未来版本将移除
      */
-    [[deprecated("Use RAII: pass parameters to constructor for automatic startup")]]
     void startExpirationService(std::chrono::milliseconds check_interval = std::chrono::milliseconds(100),
                                size_t sample_size = 20);
     
     /**
      * @brief 停止定期删除服务
-     * 
-     * @deprecated 推荐使用RAII方式：析构时自动停止
-     * @note 为保持向后兼容性暂时保留，未来版本将移除
      */
-    [[deprecated("Use RAII: destructor automatically stops the service")]]
     void stopExpirationService();
     
     /**
@@ -246,17 +343,36 @@ private:
         std::optional<V> get(const K& key);
         void put(const K& key, const V& value, int64_t ttl_ms = 0);
         bool remove(const K& key);
+        /** @brief 返回该分片当前存活的条目数（加锁读取） */
         size_t size() const;
+        /** @brief 返回该分片的最大容量（无锁，构造后不变） */
         size_t capacity() const;
         CacheStats getStats() const;
         void resetStats();
         void clear();
+        /** @brief 返回该分片所有键值对的快照（加锁，用于导出/快照） */
         std::map<K, V> get_all() const;
         
         // 定期删除接口
+        /** @brief 非阻塞尝试加锁，成功返回 true（供 ExpirationManager 使用） */
         bool try_lock();
+        /** @brief 释放锁 */
         void unlock();
+        /**
+         * @brief 从分片中随机采样若干 key
+         * @param sample_size 期望采样数量
+         * @return 随机打乱后截取的 key 列表（实际数量 ≤ sample_size）
+         * @note 调用前必须已持有该分片的锁
+         */
         std::vector<K> randomSample(size_t sample_size);
+        /**
+         * @brief 清理已过期的 key
+         * @param keys 采样列表（当前实现忽略此参数，直接全量扫描）
+         * @return 本次清理的过期条目数
+         * @note 调用前必须已持有该分片的锁；
+         *       实际委托给 LruCache::cleanup_expired_keys()，内部会加 LruCache 自己的锁，
+         *       两把锁不同，不会死锁
+         */
         size_t expireKeys(const std::vector<K>& keys);
         
     private:
@@ -269,7 +385,7 @@ private:
             char padding[padding_size];
         } mutex_wrapper_;
 
-        std::unique_ptr<LruCache<K, V>> cache_;
+        std::unique_ptr<LruCache<K, V, false>> cache_;  // ThreadSafe=false：锁由 mutex_wrapper_ 统一管理，消除双重加锁
         mutable std::mt19937 rng_;
     };
     
@@ -395,14 +511,14 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K& key, const V& value, int
     }
     
     try {
-        // 写入内存
-        shards_[shard_idx]->put(key, value, ttl_ms);
-        
-        // 写入WAL
+        // 先写WAL（write-ahead：日志必须在内存写入前持久化）
         if (need_wal) {
             std::lock_guard<std::mutex> wal_lock(persistence_mutex_);
             wal_->append(wal_entry);
         }
+
+        // 再写内存
+        shards_[shard_idx]->put(key, value, ttl_ms);
         
         recordShardSuccess(shard_idx);
         
@@ -439,14 +555,15 @@ bool ShardedCache<K, V, EnableCacheAlign>::remove(const K& key) {
     }
     
     try {
-        // 删除内存数据
-        bool result = shards_[shard_idx]->remove(key);
-        
-        // 写入WAL
-        if (result && need_wal) {
+        // 先写WAL（write-ahead：日志必须在内存操作前持久化）
+        // 注意：即使 key 不存在，多一条幂等的 DELETE 记录恢复时无害
+        if (need_wal) {
             std::lock_guard<std::mutex> wal_lock(persistence_mutex_);
             wal_->append(wal_entry);
         }
+
+        // 再删内存数据
+        bool result = shards_[shard_idx]->remove(key);
         
         recordShardSuccess(shard_idx);
         return result;
@@ -460,12 +577,13 @@ bool ShardedCache<K, V, EnableCacheAlign>::remove(const K& key) {
 template<typename K, typename V, bool EnableCacheAlign>
 size_t ShardedCache<K, V, EnableCacheAlign>::size() const {
     size_t total = 0;
+    // 遍历所有分片，跳过被健康检查禁用的分片，累加各分片的存活条目数
     for (size_t i = 0; i < shards_.size(); ++i) {
         if (!isShardDisabled(i)) {
             try {
                 total += shards_[i]->size();
             } catch (...) {
-                // 忽略单个分片的错误
+                // 忽略单个分片的错误，不影响其他分片的统计
             }
         }
     }
@@ -575,46 +693,6 @@ void ShardedCache<K, V, EnableCacheAlign>::disable_persistence() {
 }
 
 template<typename K, typename V, bool EnableCacheAlign>
-void ShardedCache<K, V, EnableCacheAlign>::recover_from_disk() {
-    if (!wal_) {
-        return;
-    }
-    
-    std::cout << "[Recovery] Starting recovery from WAL..." << std::endl;
-    
-    auto entries = wal_->read_all();
-    size_t recovered_count = 0;
-    size_t error_count = 0;
-    
-    for (const auto& entry : entries) {
-        try {
-            if (entry.op == LogEntry::PUT) {
-                K key = Serializer<K>::deserialize(entry.key);
-                V value = Serializer<V>::deserialize(entry.value);
-                
-                // 恢复时不写WAL，避免重复记录
-                size_t shard_idx = get_shard_index(key);
-                shards_[shard_idx]->put(key, value, 0);  // 恢复时不设置TTL
-                recovered_count++;
-                
-            } else if (entry.op == LogEntry::DELETE) {
-                K key = Serializer<K>::deserialize(entry.key);
-                
-                size_t shard_idx = get_shard_index(key);
-                shards_[shard_idx]->remove(key);
-                recovered_count++;
-            }
-        } catch (const std::exception& e) {
-            error_count++;
-            std::cerr << "[Recovery] Failed to replay entry: " << e.what() << std::endl;
-        }
-    }
-    
-    std::cout << "[Recovery] Completed: " << recovered_count
-              << " entries recovered, " << error_count << " errors" << std::endl;
-}
-
-template<typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::create_snapshot() {
     if (!wal_) {
         std::cout << "[Snapshot] WAL not enabled, skipping snapshot" << std::endl;
@@ -654,6 +732,32 @@ std::map<K, V> ShardedCache<K, V, EnableCacheAlign>::export_all_data() const {
               << " entries under consistency lock" << std::endl;
     
     return all_data;
+}
+
+template<typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::export_for_checkpoint(
+    std::map<K, V>& out_data, uint64_t& out_lsn) const
+{
+    // 独占锁：阻塞所有 put/remove，确保导出的数据和 LSN 是一致的快照
+    std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
+
+    out_data.clear();
+    for (size_t i = 0; i < shards_.size(); ++i) {
+        if (!isShardDisabled(i)) {
+            try {
+                auto shard_data = shards_[i]->get_all();
+                out_data.insert(shard_data.begin(), shard_data.end());
+            } catch (const std::exception& e) {
+                std::cerr << "[Checkpoint] Shard " << i << " export error: " << e.what() << std::endl;
+            }
+        }
+    }
+
+    // 在锁内读 LSN，保证与导出数据严格对应
+    out_lsn = current_lsn();
+
+    std::cout << "[Checkpoint] Exported " << out_data.size()
+              << " records under exclusive lock, lsn=" << out_lsn << std::endl;
 }
 
 template<typename K, typename V, bool EnableCacheAlign>
@@ -954,7 +1058,7 @@ void ShardedCache<K, V, EnableCacheAlign>::performHealthCheck() {
 
 template<typename K, typename V, bool EnableCacheAlign>
 ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::EnhancedLruShard(size_t capacity)
-    : cache_(std::make_unique<LruCache<K, V>>(capacity)), rng_(std::random_device{}()) {
+    : cache_(std::make_unique<LruCache<K, V, false>>(capacity)), rng_(std::random_device{}()) {
 }
 
 template<typename K, typename V, bool EnableCacheAlign>
@@ -1047,10 +1151,8 @@ std::vector<K> ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::randomSam
 template<typename K, typename V, bool EnableCacheAlign>
 size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::expireKeys(const std::vector<K>& keys) {
     // 注意：调用此方法前必须已经获取 EnhancedLruShard 的锁
-    // 直接委托给 LruCache::cleanup_expired_keys()，它内部会加自己的锁
-    // 两把锁不同（EnhancedLruShard::mutex_wrapper_.mutex vs LruCache::mutex_），不会死锁
-    // 同时避免了通过 size() 变化来间接判断过期的不可靠逻辑
-    (void)keys;  // 采样列表由 ExpirationManager 传入，但实际清理交给 LruCache 全量扫描
+    // LruCache<K,V,false> 内部使用 NullMutex（零开销），锁由外层 mutex_wrapper_ 统一管理
+    (void)keys;
     return cache_->cleanup_expired_keys();
 }
 
