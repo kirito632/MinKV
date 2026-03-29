@@ -76,3 +76,4 @@ build_debug/
 
 # Assets (local only, not for GitHub)
 assets/
+mcp_server_go/minkv-mcp-server

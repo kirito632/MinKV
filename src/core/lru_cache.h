@@ -94,18 +94,20 @@ struct CacheStats {
 };
 
 /**
- * @brief 模板化的线程安全 LRU 缓存实现 (支持 TTL)
+ * @brief 模板化的 LRU 缓存实现 (支持 TTL)
  * 
  * 核心逻辑：
  * 1. 使用 std::list 维护数据的访问顺序，头部是最新的，尾部是最旧的。
  * 2. 使用 std::unordered_map 维护 Key 到 List Iterator 的映射，实现 O(1) 查找。
- * 3. 使用 std::mutex 保护内部状态。
+ * 3. ThreadSafe=true 时内部加锁（独立使用场景）；
+ *    ThreadSafe=false 时不加锁，由外层（EnhancedLruShard）统一管理锁，消除双重加锁开销。
  * 4. 支持 TTL (Time To Live)：每个 Key 可以设置过期时间，过期自动删除。
  * 
  * @tparam K 键类型（必须支持 std::hash 和 operator==）
  * @tparam V 值类型
+ * @tparam ThreadSafe 是否启用内部锁，默认 true；被 ShardedCache 包装时设为 false
  */
-template<typename K, typename V>
+template<typename K, typename V, bool ThreadSafe = true>
 class LruCache {
 public:
     // 构造函数，指定缓存容量
@@ -218,8 +220,14 @@ private:
     using ListIterator = typename std::list<Node>::iterator;
     std::unordered_map<K, ListIterator> map_;  // 导航 (索引)
 
-    // 互斥锁
-    mutable std::shared_mutex mutex_;
+    // 互斥锁（ThreadSafe=false 时为空结构体，零开销）
+    struct NullMutex {
+        void lock() {}
+        void unlock() {}
+        bool try_lock() { return true; }
+    };
+    using MutexType = std::conditional_t<ThreadSafe, std::shared_mutex, NullMutex>;
+    mutable MutexType mutex_;
     
     // ==================== 基础统计计数器 ====================
     mutable std::atomic<uint64_t> stats_hits_{0};
@@ -261,103 +269,105 @@ private:
 
 // ============ 模板实现 ============
 
-template<typename K, typename V>
-int64_t LruCache<K, V>::current_time_ms() {
+template<typename K, typename V, bool ThreadSafe>
+int64_t LruCache<K, V, ThreadSafe>::current_time_ms() {
     auto now = std::chrono::high_resolution_clock::now();
     auto duration = now.time_since_epoch();
     return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 }
 
-template<typename K, typename V>
-bool LruCache<K, V>::is_expired(const Node& node) const {
+template<typename K, typename V, bool ThreadSafe>
+bool LruCache<K, V, ThreadSafe>::is_expired(const Node& node) const {
     if (node.expiry_time_ms == 0) {
         return false;
     }
     return current_time_ms() > node.expiry_time_ms;
 }
 
-template<typename K, typename V>
-LruCache<K, V>::LruCache(size_t capacity) 
+template<typename K, typename V, bool ThreadSafe>
+LruCache<K, V, ThreadSafe>::LruCache(size_t capacity) 
     : capacity_(capacity)
     , start_time_ms_(static_cast<uint64_t>(current_time_ms())) {}
 
-template<typename K, typename V>
-std::optional<V> LruCache<K, V>::get(const K& key) {
+template<typename K, typename V, bool ThreadSafe>
+std::optional<V> LruCache<K, V, ThreadSafe>::get(const K& key) {
     uint64_t now = static_cast<uint64_t>(current_time_ms());
     last_access_time_ms_.store(now, std::memory_order_relaxed);
 
-    // 1. 快速路径 (Fast Path)：只加读锁
-    {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
+    // ThreadSafe=true 时走双路径（读锁快路径 + 写锁慢路径）
+    // ThreadSafe=false 时外层 Shard 已持锁，直接走单路径
+    if constexpr (ThreadSafe) {
+        // 1. 快速路径 (Fast Path)：只加读锁
+        {
+            std::shared_lock<std::shared_mutex> lock(mutex_);
+            auto it = map_.find(key);
+            if (it == map_.end()) {
+                ++stats_misses_;
+                last_miss_time_ms_.store(now, std::memory_order_relaxed);
+                return std::nullopt;
+            }
+            if (!is_expired(*it->second)) {
+                uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
+                if (now >= last && (now - last) <= 1000) {
+                    ++stats_hits_;
+                    last_hit_time_ms_.store(now, std::memory_order_relaxed);
+                    return it->second->value;
+                }
+            }
+        }
+        // 2. 慢速路径 (Slow Path)：加写锁
+        std::lock_guard<std::shared_mutex> lock(mutex_);
+        auto it = map_.find(key);
+        if (it == map_.end()) {
+            ++stats_misses_;
+            return std::nullopt;
+        }
+        if (is_expired(*it->second)) {
+            auto list_it = it->second;
+            map_.erase(it);
+            cache_list_.erase(list_it);
+            ++stats_expired_;
+            ++stats_misses_;
+            return std::nullopt;
+        }
+        uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
+        if (now >= last && (now - last) > 1000) {
+            cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
+            last_promote_time_ms_.store(now, std::memory_order_relaxed);
+        }
+        ++stats_hits_;
+        last_hit_time_ms_.store(now, std::memory_order_relaxed);
+        return it->second->value;
+    } else {
+        // ThreadSafe=false：无锁单路径，外层 Shard 已持锁
         auto it = map_.find(key);
         if (it == map_.end()) {
             ++stats_misses_;
             last_miss_time_ms_.store(now, std::memory_order_relaxed);
             return std::nullopt;
         }
-
-        // 检查过期
         if (is_expired(*it->second)) {
-            // 过期了需要删除，必须升级锁，放到后面慢路径处理
-            // 这里为了简单，直接返回 nullopt，或者跳出读锁去删除
-            // 为了代码简洁，我们在读锁里发现过期先不管（或者直接当 miss），
-            // 但标准做法是升级锁删除。这里我们暂时返回 miss，下次 put 时会清理。
-            // 或者，我们可以释放读锁，去获取写锁删除。
-        } else {
-            // 没过期，检查是否需要 Promote
-            uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
-            if (now >= last && (now - last) <= 1000) {
-                // 不需要 Promote，直接返回！无锁（互斥锁）！
-                ++stats_hits_;
-                last_hit_time_ms_.store(now, std::memory_order_relaxed);
-                return it->second->value;
-            }
+            auto list_it = it->second;
+            map_.erase(it);
+            cache_list_.erase(list_it);
+            ++stats_expired_;
+            ++stats_misses_;
+            return std::nullopt;
         }
+        uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
+        if (now >= last && (now - last) > 1000) {
+            cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
+            last_promote_time_ms_.store(now, std::memory_order_relaxed);
+        }
+        ++stats_hits_;
+        last_hit_time_ms_.store(now, std::memory_order_relaxed);
+        return it->second->value;
     }
-
-    // 2. 慢速路径 (Slow Path)：加写锁
-    // 走到这里说明：要么没找到（但在读锁里已经判断了），
-    // 要么过期了（需要删），要么需要 Promote。
-    std::lock_guard<std::shared_mutex> lock(mutex_);
-    
-    // 双重检查
-    auto it = map_.find(key);
-    if (it == map_.end()) {
-         // 可能在换锁间隙被删了
-         ++stats_misses_;
-         return std::nullopt;
-    }
-
-    if (is_expired(*it->second)) {
-        // 异常安全：先保存迭代器，确保删除顺序正确
-        auto list_it = it->second;
-        auto map_it = it;
-        
-        // 先从 map 删除（通常不会抛异常）
-        map_.erase(map_it);
-        // 再从 list 删除
-        cache_list_.erase(list_it);
-        
-        ++stats_expired_;
-        ++stats_misses_;
-        return std::nullopt;
-    }
-
-    // 执行 Promote - 安全的时间比较，防止时钟回退导致的下溢
-    uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
-    if (now >= last && (now - last) > 1000) {
-        cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-        last_promote_time_ms_.store(now, std::memory_order_relaxed);
-    }
-    
-    ++stats_hits_;
-    last_hit_time_ms_.store(now, std::memory_order_relaxed);
-    return it->second->value;
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
-    std::lock_guard<std::shared_mutex> lock(mutex_);
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::put(const K& key, const V& value, int64_t ttl_ms) {
+    std::lock_guard<MutexType> lock(mutex_);
 
     int64_t expiry_time = 0;
     if (ttl_ms > 0) {
@@ -366,41 +376,29 @@ void LruCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
 
     auto it = map_.find(key);
     if (it != map_.end()) {
-        // 更新现有元素 - 异常安全
         it->second->value = value;
         it->second->expiry_time_ms = expiry_time;
-        // 【LRU 核心】既然刚修改过，那就是最新的，移到队头
         cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-        ++stats_puts_;  // 只在成功后递增
+        ++stats_puts_;
         update_peak_size();
         return;
     }
 
-    // 新增元素 - 需要异常安全处理
     if (map_.size() >= capacity_) {
-        // 先准备要删除的元素，但不立即删除
         auto last = cache_list_.end();
         --last;
         K key_to_remove = last->key;
-        
-        // 尝试插入新元素（可能抛异常）
         cache_list_.push_front({key, value, expiry_time});
-        
         try {
-            // 尝试更新 map（可能抛异常）
             map_[key] = cache_list_.begin();
-            
-            // 成功后才删除旧元素
             map_.erase(key_to_remove);
             cache_list_.pop_back();
             ++stats_evictions_;
         } catch (...) {
-            // 如果 map 更新失败，回滚 list 操作
             cache_list_.pop_front();
             throw;
         }
     } else {
-        // 容量未满的情况
         cache_list_.push_front({key, value, expiry_time});
         try {
             map_[key] = cache_list_.begin();
@@ -410,13 +408,13 @@ void LruCache<K, V>::put(const K& key, const V& value, int64_t ttl_ms) {
         }
     }
     
-    ++stats_puts_;  // 只在完全成功后递增
+    ++stats_puts_;
     update_peak_size();
 }
 
-template<typename K, typename V>
-bool LruCache<K, V>::remove(const K& key) {
-    std::lock_guard<std::shared_mutex> lock(mutex_);
+template<typename K, typename V, bool ThreadSafe>
+bool LruCache<K, V, ThreadSafe>::remove(const K& key) {
+    std::lock_guard<MutexType> lock(mutex_);
 
     auto it = map_.find(key);
     if (it == map_.end()) {
@@ -429,18 +427,16 @@ bool LruCache<K, V>::remove(const K& key) {
     return true;
 }
 
-template<typename K, typename V>
-size_t LruCache<K, V>::size() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+template<typename K, typename V, bool ThreadSafe>
+size_t LruCache<K, V, ThreadSafe>::size() const {
+    std::lock_guard<MutexType> lock(mutex_);
     return map_.size();
 }
 
-template<typename K, typename V>
-CacheStats LruCache<K, V>::getStats() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+template<typename K, typename V, bool ThreadSafe>
+CacheStats LruCache<K, V, ThreadSafe>::getStats() const {
+    std::lock_guard<MutexType> lock(mutex_);
     CacheStats stats;
-    
-    // 基础统计
     stats.hits = stats_hits_.load(std::memory_order_relaxed);
     stats.misses = stats_misses_.load(std::memory_order_relaxed);
     stats.expired = stats_expired_.load(std::memory_order_relaxed);
@@ -449,42 +445,32 @@ CacheStats LruCache<K, V>::getStats() const {
     stats.removes = stats_removes_.load(std::memory_order_relaxed);
     stats.current_size = map_.size();
     stats.capacity = capacity_;
-    
-    // 时间戳统计
     stats.start_time_ms = start_time_ms_;
     stats.last_access_time_ms = last_access_time_ms_.load(std::memory_order_relaxed);
     stats.last_hit_time_ms = last_hit_time_ms_.load(std::memory_order_relaxed);
     stats.last_miss_time_ms = last_miss_time_ms_.load(std::memory_order_relaxed);
-    
-    // 峰值统计
     stats.peak_size = peak_size_.load(std::memory_order_relaxed);
-    
     return stats;
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::resetStats() {
-    std::lock_guard<std::shared_mutex> lock(mutex_);
-    // 重置基础统计
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::resetStats() {
+    std::lock_guard<MutexType> lock(mutex_);
     stats_hits_.store(0, std::memory_order_relaxed);
     stats_misses_.store(0, std::memory_order_relaxed);
     stats_expired_.store(0, std::memory_order_relaxed);
     stats_evictions_.store(0, std::memory_order_relaxed);
     stats_puts_.store(0, std::memory_order_relaxed);
     stats_removes_.store(0, std::memory_order_relaxed);
-    
-    // 重置时间戳统计（重新开始计时）
     start_time_ms_ = static_cast<uint64_t>(current_time_ms());
     last_access_time_ms_.store(0, std::memory_order_relaxed);
     last_hit_time_ms_.store(0, std::memory_order_relaxed);
     last_miss_time_ms_.store(0, std::memory_order_relaxed);
-    
-    // 重置峰值统计
     peak_size_.store(0, std::memory_order_relaxed);
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::update_peak_size() const {
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::update_peak_size() const {
     size_t current = map_.size();
     size_t peak = peak_size_.load(std::memory_order_relaxed);
     while (current > peak) {
@@ -494,20 +480,17 @@ void LruCache<K, V>::update_peak_size() const {
     }
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::clear() {
-    std::lock_guard<std::shared_mutex> lock(mutex_);
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::clear() {
+    std::lock_guard<MutexType> lock(mutex_);
     cache_list_.clear();
     map_.clear();
 }
 
-template<typename K, typename V>
-size_t LruCache<K, V>::cleanup_expired_keys() {
-    std::lock_guard<std::shared_mutex> lock(mutex_);
+template<typename K, typename V, bool ThreadSafe>
+size_t LruCache<K, V, ThreadSafe>::cleanup_expired_keys() {
+    std::lock_guard<MutexType> lock(mutex_);
     size_t removed_count = 0;
-    int64_t now = current_time_ms();
-    
-    // 遍历链表，删除所有过期的键
     auto it = cache_list_.begin();
     while (it != cache_list_.end()) {
         if (is_expired(*it)) {
@@ -519,67 +502,49 @@ size_t LruCache<K, V>::cleanup_expired_keys() {
             ++it;
         }
     }
-    
     return removed_count;
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::cleanup_thread_main() {
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::cleanup_thread_main() {
     while (cleanup_running_.load(std::memory_order_relaxed)) {
-        // 睡眠指定的间隔时间
         std::this_thread::sleep_for(std::chrono::milliseconds(cleanup_interval_ms_));
-        
-        // 检查是否应该继续运行
         if (!cleanup_running_.load(std::memory_order_relaxed)) {
             break;
         }
-        
-        // 执行清理
         cleanup_expired_keys();
     }
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::start_cleanup_thread(int64_t cleanup_interval_ms) {
-    // 如果线程已经在运行，直接返回
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::start_cleanup_thread(int64_t cleanup_interval_ms) {
     if (cleanup_running_.load(std::memory_order_relaxed)) {
         return;
     }
-    
     cleanup_interval_ms_ = cleanup_interval_ms;
     cleanup_running_.store(true, std::memory_order_relaxed);
-    
-    // 启动后台清理线程
     cleanup_thread_ = std::thread([this]() {
         this->cleanup_thread_main();
     });
 }
 
-template<typename K, typename V>
-void LruCache<K, V>::stop_cleanup_thread() {
-    // 停止清理线程
+template<typename K, typename V, bool ThreadSafe>
+void LruCache<K, V, ThreadSafe>::stop_cleanup_thread() {
     cleanup_running_.store(false, std::memory_order_relaxed);
-    
-    // 等待线程退出
     if (cleanup_thread_.joinable()) {
         cleanup_thread_.join();
     }
 }
 
-template<typename K, typename V>
-std::map<K, V> LruCache<K, V>::get_all() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
-    
+template<typename K, typename V, bool ThreadSafe>
+std::map<K, V> LruCache<K, V, ThreadSafe>::get_all() const {
+    std::lock_guard<MutexType> lock(mutex_);
     std::map<K, V> result;
-    
-    // 遍历链表，收集所有未过期的键值对
-    // const版本不进行清理操作，只返回当前有效数据
     for (const auto& node : cache_list_) {
         if (!is_expired(node)) {
             result[node.key] = node.value;
         }
     }
-    
     return result;
 }
 

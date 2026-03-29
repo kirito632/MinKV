@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sharded_cache.h"
+#include "../persistence/checkpoint_manager.h"
 #include <string>
 #include <memory>
 
@@ -13,7 +14,7 @@ namespace minkv {
  * 封装了所有复杂性，提供简洁易用的API。
  * 
  * [核心特性]
- * - 高性能：237万QPS，P99延迟1.46μs
+ * - 高性能：250万+QPS，P99延迟2.81μs
  * - 功能完整：缓存+持久化+向量搜索+定期删除
  * - 高可用：分片级故障隔离和自动恢复
  * - 易使用：一个类解决所有KV存储需求
@@ -22,7 +23,7 @@ namespace minkv {
  * ```cpp
  * auto engine = MinKV::create(1000, 16);  // 每分片1000容量，16个分片
  * engine->enablePersistence("/data/minkv");
- * engine->startExpirationService();
+ * // 定期删除服务通过 startExpirationService() 手动启动，或直接使用 ShardedCache 的 RAII 方式
  * 
  * engine->put("key1", "value1", 5000);    // 5秒TTL
  * auto value = engine->get("key1");
@@ -53,7 +54,6 @@ public:
     MinKV(size_t capacity_per_shard, size_t shard_count)
         : cache_(std::make_unique<db::ShardedCache<K, V>>(capacity_per_shard, shard_count)) {
     }
-    
     // ==========================================
     // 基础KV接口 - 简洁易用
     // ==========================================
@@ -104,7 +104,14 @@ public:
      * @param fsync_interval_ms 同步间隔
      */
     void enablePersistence(const std::string& data_dir, int64_t fsync_interval_ms = 1000) {
+        data_dir_ = data_dir;
         cache_->enable_persistence(data_dir, fsync_interval_ms);
+        // 创建 CheckpointManager（如果还没有）
+        if (!checkpoint_mgr_) {
+            typename db::SimpleCheckpointManager<K, V>::CheckpointConfig cfg;
+            cfg.data_dir = data_dir;
+            checkpoint_mgr_ = std::make_unique<db::SimpleCheckpointManager<K, V>>(cache_.get(), cfg);
+        }
     }
     
     /**
@@ -115,10 +122,14 @@ public:
     }
     
     /**
-     * @brief 从磁盘恢复数据
+     * @brief 从磁盘恢复数据（使用 CheckpointManager 路径：快照 + WAL 增量重放）
      */
     void recoverFromDisk() {
-        cache_->recover_from_disk();
+        if (!checkpoint_mgr_) {
+            std::cerr << "[MinKV] recoverFromDisk: persistence not enabled, call enablePersistence first" << std::endl;
+            return;
+        }
+        checkpoint_mgr_->recover_from_disk();
     }
     
     /**
@@ -201,6 +212,8 @@ public:
 
 private:
     std::unique_ptr<db::ShardedCache<K, V>> cache_;
+    std::unique_ptr<db::SimpleCheckpointManager<K, V>> checkpoint_mgr_;
+    std::string data_dir_;
 };
 
 // 类型别名，方便使用
