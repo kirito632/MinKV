@@ -6,7 +6,7 @@
 
 *其他语言版本: [English](README.md) | [简体中文](README_zh-CN.md)*
 
-专为 C++ 应用设计的高性能并发内存 KV 存储，支持 WAL 持久化与 SIMD 加速向量检索。
+专为 C++ 应用设计的高性能并发内存 KV 存储，支持 WAL 持久化、SIMD 加速向量检索，以及面向 **GraphRAG** 场景的图数据库层。
 
 ---
 
@@ -15,7 +15,8 @@
 - **极致并发** — Sharded Locking 架构（默认 32 个独立分片），大幅减少多线程锁竞争。
 - **读多写少优化** — `std::shared_mutex` 读写锁配合 **Lazy LRU Promotion**，99% 的 `get` 操作近乎无锁。
 - **工业级可靠性** — 支持 TTL 自动过期、容量上限、LRU 淘汰，以及带 Group Commit 的 **WAL 持久化**，保证崩溃一致性。
-- **SIMD 加速向量检索** — AVX2 优化的 L2 距离计算，高维向量场景 4.58 倍加速。
+- **SIMD 加速向量检索** — AVX2 优化的余弦相似度计算，高维 Embedding 场景 4.58 倍加速。
+- **Graph-on-KV + GraphRAG** — 基于 ShardedCache 构建的图数据库层：Node/Edge CRUD、K-hop BFS 遍历、两阶段 GraphRAG 查询引擎（向量检索 → 并发 BFS 扩展）。
 - **零拷贝接口** — 基于 `std::string_view` 和移动语义设计，消除不必要的内存拷贝。
 
 ---
@@ -141,6 +142,81 @@ int main() {
 
 ---
 
+## 🕸 Graph-on-KV 与 GraphRAG
+
+MinKV 在 `ShardedCache<string, string>` 之上构建了完整的图数据库层。所有图数据（节点、边、邻接表、Embedding）共用同一个 KV 实例，无需额外存储引擎。
+
+### Key 前缀空间设计
+
+```
+n:{node_id}           → 节点二进制序列化
+e:{src}:{dst}:{label} → 边二进制序列化
+adj:out:{node_id}     → 出边邻接表（二进制长度前缀数组）
+adj:in:{node_id}      → 入边邻接表
+vec:{node_id}         → Embedding raw bytes（float[]）
+```
+
+### 使用示例
+
+```cpp
+#include "graph/graph_store.h"
+#include "core/sharded_cache.h"
+
+using namespace minkv::graph;
+using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
+
+auto kv = std::make_shared<GraphKVStore>(65536, 16);
+GraphStore gs(kv);
+
+// 构建知识图谱
+gs.AddNode({"Elon_Musk", R"({"role":"CEO"})"});
+gs.AddNode({"SpaceX",    R"({"type":"company"})"});
+gs.AddNode({"Starship",  R"({"type":"rocket"})"});  // 无需 Embedding
+
+gs.SetNodeEmbedding("Elon_Musk", embed("Elon Musk founder entrepreneur"));
+gs.SetNodeEmbedding("SpaceX",    embed("aerospace rocket launch"));
+
+gs.AddEdge({"Elon_Musk", "SpaceX",  "founded"});
+gs.AddEdge({"SpaceX",    "Starship", "product"});
+
+// GraphRAG 查询：向量检索 → 并发 K-hop BFS 扩展
+auto results = gs.GraphRAGQuery(query_vec, /*top_k=*/3, /*hop_depth=*/2);
+// 返回：Elon_Musk + SpaceX（向量检索）+ Starship（图遍历）
+// Starship 没有 Embedding，纯向量检索永远找不到它
+```
+
+### GraphRAG 准确性（对照实验）
+
+| 方法 | 无 Embedding 节点的召回率 |
+|------|--------------------------|
+| 纯向量检索 | **0%** |
+| GraphRAG（2-hop） | **42.6%** |
+
+`Starship`、`GPT4`、`AWS` 等节点没有 Embedding，向量检索无法找到它们。GraphRAG 通过图遍历沿关系链将其召回。
+
+### 性能优化
+
+- **二进制邻接表** — 用长度前缀二进制编码替换 JSON，消除 Hub Node（高出度节点）的序列化/反序列化开销。
+- **线程池并发 BFS** — 多个入口节点的 BFS 并行执行，固定大小线程池消除 `std::async` 的线程创建开销，P99 延迟从 **467ms 降至 10ms**。
+- **崩溃可恢复** — 写入顺序保证边数据先于邻接表，`RebuildAdjacencyList()` 扫描所有 `e:` Key 重建邻接表，支持崩溃后一致性修复。
+
+### 编译与运行测试
+
+```bash
+cmake -S MinKV -B MinKV/build -DCMAKE_BUILD_TYPE=Release
+cmake --build MinKV/build --target demo_graphrag test_graphrag_accuracy -j$(nproc)
+
+# GraphRAG 演示（Elon Musk → SpaceX → Starship 关系链）
+./MinKV/build/bin/demo_graphrag 2>/dev/null
+
+# 准确性测试：GraphRAG vs 纯向量检索
+./MinKV/build/bin/test_graphrag_accuracy 2>/dev/null
+```
+
+---
+
+---
+
 ## 🏗 架构设计
 
 ### 为什么 `std::map` + `mutex` 慢？
@@ -171,8 +247,12 @@ MinKV/
 │   ├── core/           # ShardedCache、LRU、过期管理
 │   ├── persistence/    # WAL、Checkpoint、Recovery
 │   ├── vector/         # SIMD 加速向量运算
-│   ├── base/           # 日志、工具类
+│   ├── graph/          # Graph-on-KV 层（GraphStore、序列化、类型定义）
+│   ├── base/           # 线程池、日志、工具类
 │   └── tests/          # 基准测试与单元测试
+├── tests/
+│   └── graph/          # 图单元测试、PBT、GraphRAG 准确性测试
+├── mcp_server_go/      # Go MCP Server（Cursor/Claude 接入）
 ├── docs/
 │   ├── images/         # 压测图表
 │   └── tests/          # 详细测试报告
