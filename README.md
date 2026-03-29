@@ -6,7 +6,7 @@
 
 *Read this in other languages: [English](README.md) | [简体中文](README_zh-CN.md)*
 
-A high-performance, concurrent, in-memory key-value store optimized for C++ applications, with optional WAL persistence and SIMD-accelerated vector search.
+A high-performance, concurrent, in-memory key-value store optimized for C++ applications, with optional WAL persistence, SIMD-accelerated vector search, and a **Graph-on-KV layer** supporting GraphRAG workloads.
 
 ---
 
@@ -15,7 +15,8 @@ A high-performance, concurrent, in-memory key-value store optimized for C++ appl
 - **Extreme Concurrency** — Sharded Locking architecture (32 independent shards by default) dramatically reduces lock contention in multi-threaded environments.
 - **Read-Heavy Optimization** — Combines `std::shared_mutex` (Reader-Writer Locks) with a **Lazy LRU Promotion** strategy, making 99% of `get` operations virtually lock-free.
 - **Industrial-Grade Reliability** — Supports TTL expiration, capacity limits, LRU eviction, and **Write-Ahead Logging (WAL)** with Group Commit for crash consistency.
-- **SIMD-Accelerated Vector Search** — AVX2-optimized L2 distance calculation for high-dimensional vector workloads (4.58x speedup over scalar).
+- **SIMD-Accelerated Vector Search** — AVX2-optimized cosine similarity for high-dimensional embedding workloads (4.58x speedup over scalar).
+- **Graph-on-KV + GraphRAG** — Graph database layer built on top of ShardedCache: Node/Edge CRUD, K-hop BFS traversal, and a two-phase GraphRAG query engine (vector search → concurrent BFS expansion).
 - **Zero-Copy API** — Interfaces designed with `std::string_view` and move semantics to eliminate unnecessary allocations.
 
 ---
@@ -141,6 +142,108 @@ int main() {
 
 ---
 
+## 🕸 Graph-on-KV & GraphRAG
+
+MinKV includes a graph database layer built entirely on top of `ShardedCache<string, string>`. All graph data (nodes, edges, adjacency lists, embeddings) lives in the same KV instance — no separate storage engine needed.
+
+### Key Space Design
+
+```
+n:{node_id}           → Node binary serialization
+e:{src}:{dst}:{label} → Edge binary serialization
+adj:out:{node_id}     → Outgoing adjacency list (binary length-prefix array)
+adj:in:{node_id}      → Incoming adjacency list
+vec:{node_id}         → Embedding raw bytes (float[])
+```
+
+### Usage
+
+```cpp
+#include "graph/graph_store.h"
+#include "core/sharded_cache.h"
+
+using namespace minkv::graph;
+using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
+
+auto kv = std::make_shared<GraphKVStore>(65536, 16);
+GraphStore gs(kv);
+
+// Build a knowledge graph
+gs.AddNode({"Elon_Musk", R"({"role":"CEO"})"});
+gs.AddNode({"SpaceX",    R"({"type":"company"})"});
+gs.AddNode({"Starship",  R"({"type":"rocket"})"});   // no embedding needed
+
+gs.SetNodeEmbedding("Elon_Musk", embed("Elon Musk founder entrepreneur"));
+gs.SetNodeEmbedding("SpaceX",    embed("aerospace rocket launch"));
+
+gs.AddEdge({"Elon_Musk", "SpaceX",  "founded"});
+gs.AddEdge({"SpaceX",    "Starship", "product"});
+
+// GraphRAG query: vector search → concurrent K-hop BFS expansion
+auto results = gs.GraphRAGQuery(query_vec, /*top_k=*/3, /*hop_depth=*/2);
+// Returns Elon_Musk + SpaceX (via vector search) + Starship (via graph traversal)
+// Starship has no embedding — pure vector search would miss it entirely
+```
+
+### GraphRAG Accuracy (controlled experiment)
+
+| Method | Recall on no-embedding nodes |
+|--------|------------------------------|
+| Pure vector search | **0%** |
+| GraphRAG (2-hop) | **42.6%** |
+
+Nodes like `Starship`, `GPT4`, `AWS` have no embeddings. Vector search cannot find them. GraphRAG traverses the graph and retrieves them via relationship chains.
+
+### Performance Optimizations
+
+- **Binary adjacency list** — Replaced JSON with length-prefix binary encoding. Eliminates JSON escape/parse overhead for hub nodes (high-degree nodes with thousands of edges).
+- **Thread pool concurrent BFS** — Multiple entry nodes' BFS runs in parallel. Fixed-size thread pool eliminates `std::async` thread creation overhead. P99 latency: **467ms → 10ms**.
+- **Crash recovery** — Write order guarantees edge data precedes adjacency list updates. `RebuildAdjacencyList()` rescans all `e:` keys to restore consistency after a crash.
+
+### Build & Run Tests
+
+```bash
+cmake -S MinKV -B MinKV/build -DCMAKE_BUILD_TYPE=Release
+cmake --build MinKV/build --target demo_graphrag test_graphrag_accuracy -j$(nproc)
+
+# GraphRAG demo (Elon Musk → SpaceX → Starship chain)
+./MinKV/build/bin/demo_graphrag 2>/dev/null
+
+# Accuracy test: GraphRAG vs pure vector search
+./MinKV/build/bin/test_graphrag_accuracy 2>/dev/null
+```
+
+---
+
+Header-only integration — just include and go:
+
+```cpp
+#include "db/sharded_cache.h"
+#include <string>
+#include <iostream>
+
+int main() {
+    // 10,000 capacity per shard × 32 shards = 320,000 total capacity
+    minkv::db::ShardedCache<std::string, std::string> cache(10000, 32);
+
+    // Write with TTL (milliseconds)
+    cache.put("user:1001", "Robinson", 5000); // expires in 5 seconds
+
+    // Read
+    auto value = cache.get("user:1001");
+    if (value) {
+        std::cout << "Found: " << *value << std::endl;
+    } else {
+        std::cout << "Not found or expired" << std::endl;
+    }
+
+    // Thread-safe by default — no external locking needed
+    return 0;
+}
+```
+
+---
+
 ## 🏗 Architecture Design
 
 ### Why is `std::map` + `mutex` slow?
@@ -171,8 +274,12 @@ MinKV/
 │   ├── core/           # ShardedCache, LRU, expiration
 │   ├── persistence/    # WAL, checkpoint, recovery
 │   ├── vector/         # SIMD-accelerated vector ops
-│   ├── base/           # Logging, utilities
+│   ├── graph/          # Graph-on-KV layer (GraphStore, serializer, types)
+│   ├── base/           # Thread pool, logging, utilities
 │   └── tests/          # Benchmarks and unit tests
+├── tests/
+│   └── graph/          # Graph unit tests, PBT, GraphRAG accuracy test
+├── mcp_server_go/      # Go MCP server (Cursor/Claude integration)
 ├── docs/
 │   ├── images/         # Benchmark charts
 │   └── tests/          # Detailed test reports
