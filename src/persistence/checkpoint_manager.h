@@ -196,15 +196,14 @@ private:
     };
     
     // 辅助函数
-    std::string get_snapshot_path(int64_t timestamp) const;
+    std::string get_snapshot_path(uint64_t lsn) const;
     std::string get_snapshots_dir() const;
     bool write_snapshot_file(const std::string& filepath, const std::map<K, V>& data, uint64_t wal_lsn);
     bool read_snapshot_file(const std::string& filepath, std::map<K, V>& data, uint64_t& wal_lsn);
     std::vector<std::string> list_snapshot_files() const;
     std::string find_latest_snapshot() const;
     int64_t extract_timestamp_from_filename(const std::string& filename) const;
-    uint32_t calculate_checksum(const SnapshotHeader& header) const;
-    void background_checker_loop();
+    uint32_t calculate_checksum(const SnapshotHeader& header) const;    void background_checker_loop();
     static int64_t current_time_ms();
 };
 
@@ -241,41 +240,39 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
     std::cout << "[Checkpoint] Starting ATOMIC checkpoint (Stop-The-World mode)..." << std::endl;
     
     try {
-        // 🎯 关键改进：利用ShardedCache的全局读写锁机制
-        // export_all_data()会获取独占锁，阻塞所有Put/Remove操作
-        // 这确保了"导出数据 + 清空WAL"的原子性，彻底解决数据丢失窗口问题
+        // 三步走，每步失败都安全：
+        // 1. 独占锁下导出数据+LSN（WAL不动）
+        // 2. 写快照文件到磁盘（失败时WAL仍完整，可重试）
+        // 3. 快照持久化成功后才清WAL
         
         std::cout << "[Checkpoint] Acquiring exclusive lock for atomic export..." << std::endl;
         
-        // 1. 原子性导出内存数据 (内部获取独占锁，Stop-The-World)
-        auto all_data = cache_->export_all_data();
-        std::cout << "[Checkpoint] Atomically exported " << all_data.size() << " records" << std::endl;
+        // 1. 在独占锁下原子性导出数据和LSN（不清WAL，保证快照写失败时WAL仍完整）
+        std::map<K, V> all_data;
+        uint64_t current_wal_lsn = 0;
+        cache_->export_for_checkpoint(all_data, current_wal_lsn);
         
-        // 2. 获取当前WAL的LSN (原子计数器，严格单调递增)
-        uint64_t current_wal_lsn = cache_->current_lsn();  // ✅ 使用原子计数器LSN
-        
-        // 3. 写入快照文件 (带LSN标记)
-        int64_t timestamp = current_time_ms();
-        std::string snapshot_file = get_snapshot_path(timestamp);
+        // 2. 写入快照文件（此时WAL仍然完整，写失败可安全重试）
+        // 用 LSN 而非时间戳命名，避免时钟回拨导致新快照文件名小于旧快照
+        std::string snapshot_file = get_snapshot_path(current_wal_lsn);
         
         if (!write_snapshot_file(snapshot_file, all_data, current_wal_lsn)) {
             std::cerr << "[Checkpoint] Failed to write snapshot file: " << snapshot_file << std::endl;
+            // WAL未清，数据安全，下次checkpoint可重试
             return false;
         }
         
-        std::cout << "[Checkpoint] Snapshot written to: " << snapshot_file << std::endl;
-        std::cout << "[Checkpoint] WAL LSN recorded: " << current_wal_lsn << std::endl;
+        std::cout << "[Checkpoint] Snapshot written to: " << snapshot_file
+                  << ", lsn=" << current_wal_lsn << std::endl;
         
-        // 4. 原子性WAL截断 (在同一个独占锁保护下)
-        // 注意：clear_wal()必须在export_all_data()的锁保护下调用
-        // 这样确保了整个checkpoint过程的原子性
-        std::cout << "[Checkpoint] Atomically clearing WAL (no data loss window)..." << std::endl;
+        // 3. 快照写成功后才清WAL（此时快照已持久化，清WAL是安全的）
         cache_->clear_wal();
+        std::cout << "[Checkpoint] WAL cleared after successful snapshot" << std::endl;
         
-        // 5. 更新统计信息
+        // 4. 更新统计信息
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
-            stats_.last_checkpoint_time = timestamp;
+            stats_.last_checkpoint_time = current_time_ms();  // 监控用，仍记录时间戳
             stats_.last_checkpoint_records = all_data.size();
             stats_.total_checkpoints++;
             stats_.last_snapshot_file = snapshot_file;
@@ -292,7 +289,7 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
             }
         }
         
-        // 6. 清理旧快照 (可选)
+        // 5. 清理旧快照 (可选)
         if (config_.auto_cleanup) {
             cleanup_old_snapshots();
         }
@@ -537,8 +534,9 @@ void SimpleCheckpointManager<K, V>::cleanup_old_snapshots() {
 // ============ 私有辅助函数实现 ============
 
 template<typename K, typename V>
-std::string SimpleCheckpointManager<K, V>::get_snapshot_path(int64_t timestamp) const {
-    return get_snapshots_dir() + "/snapshot_" + std::to_string(timestamp) + ".bin";
+std::string SimpleCheckpointManager<K, V>::get_snapshot_path(uint64_t lsn) const {
+    // 用 LSN 命名，单调递增，不受时钟回拨影响
+    return get_snapshots_dir() + "/snapshot_" + std::to_string(lsn) + ".bin";
 }
 
 template<typename K, typename V>
@@ -808,31 +806,13 @@ std::string SimpleCheckpointManager<K, V>::find_latest_snapshot() const {
         return "";
     }
     
-    // 按文件名排序 (文件名包含时间戳，字典序即时间序)
+    // 按文件名排序（文件名包含 LSN，字典序即 LSN 序，LSN 单调递增不受时钟影响）
     std::sort(files.begin(), files.end(), std::greater<std::string>());
     
     std::string latest_file = get_snapshots_dir() + "/" + files[0];
     std::cout << "[Recovery] Found latest snapshot: " << files[0] << std::endl;
     
     return latest_file;
-}
-
-template<typename K, typename V>
-int64_t SimpleCheckpointManager<K, V>::extract_timestamp_from_filename(const std::string& filename) const {
-    // 从 "snapshot_1234567890.bin" 提取时间戳
-    size_t start = filename.find('_');
-    size_t end = filename.find('.');
-    
-    if (start != std::string::npos && end != std::string::npos && start < end) {
-        std::string timestamp_str = filename.substr(start + 1, end - start - 1);
-        try {
-            return std::stoll(timestamp_str);
-        } catch (const std::exception& e) {
-            std::cerr << "[Snapshot] Failed to parse timestamp from filename: " << filename << std::endl;
-        }
-    }
-    
-    return 0;
 }
 
 template<typename K, typename V>

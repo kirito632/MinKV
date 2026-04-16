@@ -151,15 +151,16 @@ void GraphStore::UpdateNode(const Node& node) {
  * 删除节点（级联删除）
  *
  * 删除顺序：
- *   1. 删除节点数据 n:{node_id}
- *   2. 删除 embedding vec:{node_id}
- *   3. 遍历出边邻居，从它们的 adj:in 中移除本节点
- *   4. 遍历入边前驱，从它们的 adj:out 中移除本节点
- *   5. 删除本节点的 adj:out 和 adj:in
+ *   1. 删除节点数据 n:{node_id} 和 embedding vec:{node_id}
+ *   2. 遍历出边邻居，从它们的 adj:in 中移除本节点
+ *   3. 遍历入边前驱，从它们的 adj:out 中移除本节点
+ *   4. 删除本节点的 adj:out 和 adj:in
+ *   5. 扫描所有 e: Key，删除以本节点为 src 或 dst 的边数据
  *
- * 注意：这里不删除以本节点为端点的边数据（e: Key），
- * 因为边的 Key 包含 src/dst/label，需要知道所有边才能删干净。
- * Phase 2 补全后会处理这个问题。
+ * 顺序说明：
+ *   - 步骤 1 先行：逻辑上宣告节点不存在，并发读取立即返回 nullopt
+ *   - 步骤 2、3 必须在步骤 4 之前：需要先读取邻接表才能知道去哪些邻居处清理
+ *   - 步骤 5 代价 O(total_keys)，仅在删除节点时触发
  */
 void GraphStore::DeleteNode(const std::string& node_id) {
     kv_->remove(NodeKey(node_id));
@@ -180,6 +181,34 @@ void GraphStore::DeleteNode(const std::string& node_id) {
     // 删除本节点自己的邻接表
     kv_->remove(AdjOutKey(node_id));
     kv_->remove(AdjInKey(node_id));
+
+    // 删除以本节点为端点的所有边数据（e: Key）
+    // 扫描所有 KV 数据，过滤出 src 或 dst 等于 node_id 的边并删除
+    // 代价：O(total_keys)，仅在删除节点时触发，可接受
+    const std::string escaped = EscapeId(node_id);
+    const std::string src_prefix = "e:" + escaped + ":";   // e:{node_id}:...
+    const std::string dst_marker = ":" + escaped + ":";    // e:{src}:{node_id}:...
+    auto all_data = kv_->export_all_data();
+    for (const auto& [k, v] : all_data) {
+        if (k.size() < 2 || k.substr(0, 2) != "e:") continue;
+        // 以 node_id 为 src：Key 以 "e:{escaped_id}:" 开头
+        if (k.substr(0, src_prefix.size()) == src_prefix) {
+            kv_->remove(k);
+            continue;
+        }
+        // 以 node_id 为 dst：Key 中包含 ":{escaped_id}:" 且位于第二段
+        // 格式 e:{src}:{dst}:{label}，找第一个 ':' 后的位置
+        auto first_colon = k.find(':', 2);  // 跳过 "e:" 前缀
+        if (first_colon != std::string::npos) {
+            auto second_colon = k.find(':', first_colon + 1);
+            if (second_colon != std::string::npos) {
+                std::string dst_part = k.substr(first_colon + 1, second_colon - first_colon - 1);
+                if (dst_part == escaped) {
+                    kv_->remove(k);
+                }
+            }
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

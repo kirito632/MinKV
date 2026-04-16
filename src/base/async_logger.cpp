@@ -79,7 +79,15 @@ void AsyncLogger::append(const char* logline, size_t len) {
 }
 
 void AsyncLogger::flush() {
-    // [强制刷新] 获取锁并通知后台线程立即处理当前缓冲区
+    // 通知后台线程立即处理当前缓冲区
+    std::lock_guard<std::mutex> lock(mutex_);
+    cond_.notify_one();
+}
+
+void AsyncLogger::sync() {
+    // 设置 sync 请求标志，后台线程在下次写入后会执行 fsync
+    syncRequested_.store(true, std::memory_order_release);
+    // 同时唤醒后台线程，让它尽快处理
     std::lock_guard<std::mutex> lock(mutex_);
     cond_.notify_one();
 }
@@ -102,6 +110,10 @@ void AsyncLogger::threadFunc() {
         return;
     }
     
+    // 定期 fsync 的计时器，每隔一段时间强制落盘
+    auto lastSync = std::chrono::steady_clock::now();
+    constexpr auto kSyncInterval = std::chrono::seconds(3);
+
     // [生产者-消费者] 后台线程主循环
     while (running_) {
         {
@@ -140,9 +152,18 @@ void AsyncLogger::threadFunc() {
                 }
             }
         }
-        
-        // [系统调用] 刷新到磁盘，AppendFile内部使用fsync确保数据持久化
-        output->flush();
+
+        // 定期 fsync 或响应 ERROR/FATAL 的立即 fsync 请求
+        auto now = std::chrono::steady_clock::now();
+        bool needSync = syncRequested_.exchange(false, std::memory_order_acquire);
+        if (needSync || now - lastSync >= kSyncInterval) {
+            try {
+                output->sync();
+            } catch (const std::exception& e) {
+                std::cerr << "Sync failed: " << e.what() << std::endl;
+            }
+            lastSync = now;
+        }
         
         // [内存管理] 重用缓冲区，避免频繁分配/释放
         if (buffersToWrite.size() > 2) {
@@ -212,6 +233,11 @@ LogStream::~LogStream() {
     // [RAII] 析构时自动提交日志内容到AsyncLogger
     buffer_ += '\n';  // 添加换行符
     AsyncLogger::instance().append(buffer_.c_str(), buffer_.size());
+
+    // ERROR/FATAL 级别立即 fsync，确保关键日志不因断电丢失
+    if (level_ >= LogLevel::ERROR) {
+        AsyncLogger::instance().sync();
+    }
 }
 
 void LogStream::formatHeader(LogLevel level, const char* file, int line) {

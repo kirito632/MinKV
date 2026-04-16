@@ -31,7 +31,7 @@ enum class LogLevel {
  * @brief 固定大小的日志缓冲区
  * 
  * [核心优化] 使用固定大小缓冲区避免动态内存分配，提升性能。
- * 4MB的缓冲区大小是经过测试优化的，既能减少I/O次数，又不会占用过多内存。
+ * 4MB的缓冲区大小是业界常见的经验值（muduo日志库也用这个）。
  * 
  * @note 线程不安全，需要外部同步机制保护
  */
@@ -156,6 +156,14 @@ public:
      * [异常安全] 等待后台线程完成所有日志写入后再退出
      */
     void stop();
+
+    /**
+     * @brief 强制将已写入数据 fsync 到磁盘
+     * 
+     * 用于 ERROR/FATAL 级别日志，确保关键日志在断电时不丢失。
+     * 注意：fsync 开销较大（1~10ms），不应在普通日志路径上调用。
+     */
+    void sync();
     
     // 静态接口，实现全局日志管理
     /**
@@ -198,6 +206,7 @@ private:
     const size_t rollSize_;       ///< 日志文件滚动大小
     
     std::atomic<bool> running_;   ///< 运行状态标志，原子操作保证线程安全
+    std::atomic<bool> syncRequested_{false};  ///< ERROR/FATAL 触发的 fsync 请求
     std::thread thread_;          ///< 后台I/O线程
     
     // [分片锁] 使用mutex保护共享数据，condition_variable实现高效等待

@@ -25,7 +25,8 @@ namespace db {
  * @brief WAL (Write-Ahead Log) 日志条目
  * 
  * 每个日志条目记录一次数据库操作（PUT、DELETE、SNAPSHOT）。
- * 格式：[OpType(1B)][KeyLen(4B)][Key][ValueLen(4B)][Value][Timestamp(8B)][Checksum(4B)]
+ * 格式：[EntrySize(4B)][OpType(1B)][KeyLen(4B)][Key][ValueLen(4B)][Value][Timestamp(8B)][LSN(8B)][Checksum(4B)]
+ * 其中 EntrySize 不包含自身的 4 字节，Checksum 覆盖 key+value（LSN 不参与校验）。
  */
 struct LogEntry {
     enum OpType : uint8_t {
@@ -79,7 +80,10 @@ public:
      * @brief 追加日志条目
      * 
      * 将日志条目追加到内存缓冲区。
-     * 缓冲区满或定时器触发时，自动 fsync 到磁盘。
+     * 有三种触发 fsync 的时机：
+     *   1. 缓冲区满时，自动 fsync 后继续写入
+     *   2. 后台线程按 fsync_interval_ms_ 定期 fsync
+     *   3. fsync_interval_ms_ == 0 时为同步模式，每次 append 立即 fsync
      * 
      * @param entry 日志条目
      * @return 是否成功
@@ -89,8 +93,8 @@ public:
     /**
      * @brief 读取所有日志条目
      * 
-     * 从快照之后的所有日志条目。
-     * 用于宕机恢复时重放日志。
+     * 从 WAL 文件读取全部条目，遇到校验和不匹配的损坏条目时截断。
+     * 用于宕机恢复时重放日志，通常配合 read_after_snapshot() 使用。
      * 
      * @return 日志条目列表
      */
@@ -180,7 +184,7 @@ private:
     std::vector<uint8_t> buffer_;             // 内存缓冲区
     mutable std::mutex buffer_mutex_;         // 缓冲区互斥锁
     
-    std::ofstream wal_stream_;                // WAL 文件输出流（用于读取）
+    std::ofstream wal_stream_;                // WAL 文件输出流（仅构造时打开，实际读取由 read_all() 内部独立 ifstream 完成）
     int wal_fd_{-1};                          // WAL 文件描述符（用于 write + fsync）
     
     // 后台 fsync 线程
