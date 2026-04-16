@@ -249,16 +249,22 @@ void WriteAheadLog::fsync_thread_main() {
 }
 
 size_t WriteAheadLog::get_log_size() const {
+    // 磁盘文件大小
+    size_t disk_size = 0;
     std::ifstream file(wal_file_, std::ios::binary);
-    if (!file.is_open()) {
-        return 0;
+    if (file.is_open()) {
+        file.seekg(0, std::ios::end);
+        disk_size = static_cast<size_t>(file.tellg());
     }
-    
-    file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
-    file.close();
-    
-    return size;
+
+    // 加上内存缓冲区中还未 fsync 的部分
+    size_t buf_size = 0;
+    {
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        buf_size = buffer_.size();
+    }
+
+    return disk_size + buf_size;
 }
 
 size_t WriteAheadLog::get_buffer_size() const {

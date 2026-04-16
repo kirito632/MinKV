@@ -1,6 +1,6 @@
 # MinKV MCP Server (Go)
 
-Go MCP server that exposes MinKV's vector search and **GraphRAG** capabilities to AI tools like Cursor and Claude Desktop. Uses only the Go standard library — zero external dependencies.
+Go MCP server that exposes MinKV's vector search, **GraphRAG**, and **Agent Memory** capabilities to AI tools like Cursor and Claude Desktop. Uses only the Go standard library — zero external dependencies.
 
 ## Architecture
 
@@ -45,12 +45,37 @@ Add to your MCP config (`~/.cursor/mcp.json` or Claude Desktop settings):
 
 ## Environment Variables
 
-| Variable          | Default                  | Description                        |
-|-------------------|--------------------------|------------------------------------|
-| `OPENAI_API_KEY`  | (required for RAG tools) | Used to generate text embeddings   |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model             |
-| `MINKV_HOST`      | `localhost`              | MinKV HTTP server host             |
-| `MINKV_PORT`      | `8080`                   | MinKV HTTP server port             |
+### Basic Config
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBEDDING_PROVIDER` | `openai` | Provider: `openai` / `azure` / `cohere` / `openrouter` |
+| `MINKV_HOST` | `localhost` | MinKV HTTP server host |
+| `MINKV_PORT` | `8080` | MinKV HTTP server port |
+
+### OpenAI (default)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | (required) | OpenAI API key |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI API endpoint |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+
+### Azure OpenAI
+
+| Variable | Description |
+|----------|-------------|
+| `AZURE_OPENAI_API_KEY` | Azure API key |
+| `AZURE_OPENAI_ENDPOINT` | Azure endpoint (e.g., `https://xxx.openai.azure.com`) |
+| `AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT` | Deployment name |
+| `AZURE_OPENAI_API_VERSION` | `2024-02-15-preview` |
+
+### Cohere
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COHERE_API_KEY` | (required) | Cohere API key |
+| `COHERE_BASE_URL` | `https://api.cohere.ai/v1` | Cohere API endpoint |
 
 ## Tools
 
@@ -66,6 +91,16 @@ Add to your MCP config (`~/.cursor/mcp.json` or Claude Desktop settings):
 | `graph_add_node(node_id, properties_json?, text?)` | Add a node; optionally generate embedding from `text` |
 | `graph_add_edge(src_id, dst_id, label, weight=1.0, properties_json?)` | Add a directed edge |
 | `graph_rag_query(query, vector_top_k=3, hop_depth=2)` | **Full GraphRAG**: text → embedding → vector search → K-hop BFS expansion → returns all related nodes |
+
+### Agent Memory Tools
+| Tool | Description |
+|------|-------------|
+| `kv_set(key, value, ttl_ms=0)` | Store a value in working memory (fast KV); supports TTL expiration |
+| `kv_get(key)` | Retrieve a value from working memory by exact key |
+| `kv_delete(key)` | Delete a key from working memory |
+| `memory_recall(key?, semantic_query?, top_k=3)` | **Hybrid recall**: KV exact lookup (working memory) + vector search (episodic memory) in one call |
+
+**9 Tools in total**: vector_search, vector_insert, graph_add_node, graph_add_edge, graph_rag_query, kv_set, kv_get, kv_delete, memory_recall
 
 ## GraphRAG Example
 
