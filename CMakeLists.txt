@@ -163,13 +163,39 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/graph/test_graphrag_accuracy.cpp")
     target_link_libraries(test_graphrag_accuracy pthread)
 endif()
 
+# GraphRAG 批量并发性能对比测试
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/graph/test_graphrag_batch_performance.cpp")
+    add_executable(test_graphrag_batch_performance
+        tests/graph/test_graphrag_batch_performance.cpp
+        ${GRAPH_SOURCES}
+        ${SOURCES}
+    )
+    target_link_libraries(test_graphrag_batch_performance pthread)
+endif()
+
+# ==========================================
+# Graph HTTP Server（独立，只暴露 graph 接口）
+# 不依赖向量相关的未实现方法，可直接编译
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/server/graph_http_server.cpp")
+    add_executable(graph_http_server
+        src/server/graph_http_server.cpp
+        ${GRAPH_SOURCES}
+        ${SOURCES}
+    )
+    target_link_libraries(graph_http_server pthread)
+endif()
+
 # ==========================================
 # HTTP Server Example (Graph + Vector API)
 # ==========================================
-# 注意：http_server.cpp 依赖 httplib.h 和完整的向量接口，
-# 向量接口对接尚未完成，暂不加入默认构建。
-# 如需构建，参考 build_http_server.sh 脚本。
-# find_package(nlohmann_json QUIET)
-# if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/http_server_example.cpp")
-#     add_executable(http_server_example ...)
-# endif()
+# 完整的 HTTP 服务器，包含 KV、向量、图三大类接口
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/http_server_example.cpp")
+    add_executable(http_server_example
+        examples/http_server_example.cpp
+        src/server/http_server.cpp
+        ${GRAPH_SOURCES}
+        ${SOURCES}
+    )
+    target_link_libraries(http_server_example pthread)
+endif()

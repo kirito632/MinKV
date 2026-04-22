@@ -599,4 +599,107 @@ GraphStore::GraphRAGQuery(const std::vector<float>& query_embedding,
 }
 
 } // namespace graph
+
+namespace graph {
+
+/**
+ * GraphRAG 两阶段查询 (批量并发版)
+ *
+ * 核心流程:
+ *  1. 并发向量检索: 对每个 query_embedding 并发调用 SearchSimilarNodes
+ *  2. 结果合并: 使用 std::unordered_set 去重所有入口节点
+ *  3. 并发图遍历: 对所有入口节点并发执行 KHopNeighbors
+ */
+std::vector<Node>
+GraphStore::GraphRAGQuery(const std::vector<std::vector<float>>& query_embeddings,
+                           int vector_top_k,
+                           int hop_depth) const {
+    if (query_embeddings.empty()) {
+        return {};
+    }
+
+    // Phase 1: 并发向量检索入口节点
+    std::unordered_set<std::string> all_entry_node_ids;
+    const bool use_parallel_search = thread_pool_ && (query_embeddings.size() > 1);
+
+    if (use_parallel_search) {
+        std::vector<std::future<std::vector<std::pair<std::string, float>>>> search_futures;
+        search_futures.reserve(query_embeddings.size());
+
+        for (const auto& embedding : query_embeddings) {
+            search_futures.push_back(
+                thread_pool_->submit(
+                    [this, embedding, vector_top_k]() {
+                        return SearchSimilarNodes(embedding, vector_top_k);
+                    }
+                )
+            );
+        }
+
+        for (auto& fut : search_futures) {
+            for (const auto& [node_id, score] : fut.get()) {
+                all_entry_node_ids.insert(node_id);
+            }
+        }
+    } else {
+        // 串行路径
+        for (const auto& embedding : query_embeddings) {
+            auto entries = SearchSimilarNodes(embedding, vector_top_k);
+            for (const auto& [node_id, score] : entries) {
+                all_entry_node_ids.insert(node_id);
+            }
+        }
+    }
+
+    if (all_entry_node_ids.empty()) {
+        return {};
+    }
+
+    // Phase 2: 并发 K-hop 扩展
+    std::unordered_set<std::string> all_node_ids = all_entry_node_ids; // 包含所有入口节点
+    const bool use_parallel_bfs = thread_pool_
+                              && (all_entry_node_ids.size() > 1)
+                              && (hop_depth >= 1);
+
+    if (use_parallel_bfs) {
+        std::vector<std::future<std::unordered_map<std::string, int>>> bfs_futures;
+        bfs_futures.reserve(all_entry_node_ids.size());
+        for (const auto& entry_id : all_entry_node_ids) {
+            bfs_futures.push_back(
+                thread_pool_->submit(
+                    [this, entry_id, hop_depth]() {
+                        return KHopNeighbors(entry_id, hop_depth);
+                    }
+                )
+            );
+        }
+
+        for (auto& fut : bfs_futures) {
+            for (const auto& [nb_id, dist] : fut.get()) {
+                all_node_ids.insert(nb_id);
+            }
+        }
+    } else {
+        // 串行路径
+        if (hop_depth >= 1) {
+            for (const auto& entry_id : all_entry_node_ids) {
+                for (const auto& [nb_id, dist] : KHopNeighbors(entry_id, hop_depth)) {
+                    all_node_ids.insert(nb_id);
+                }
+            }
+        }
+    }
+
+    // Phase 3: 加载完整节点属性
+    std::vector<Node> result;
+    result.reserve(all_node_ids.size());
+    for (const auto& node_id : all_node_ids) {
+        auto node = GetNode(node_id);
+        if (node) {
+            result.push_back(std::move(*node));
+        }
+    }
+    return result;
+}
+} // namespace graph
 } // namespace minkv

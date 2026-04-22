@@ -170,6 +170,24 @@ public:
                       int vector_top_k,
                       int hop_depth) const;
 
+   /**
+    * GraphRAG 两阶段查询 (批量并发版)
+    *
+    * @param query_embeddings  批量查询向量，每个向量代表一个待检索的实体
+    * @param vector_top_k      每个向量检索的入口节点数
+    * @param hop_depth         图遍历深度
+    * @return                  合并去重后的节点列表
+    *
+    * 核心流程:
+    *  1. 并发向量检索: 对每个 query_embedding 并发调用 SearchSimilarNodes
+    *  2. 结果合并: 使用 std::unordered_set 去重所有入口节点
+    *  3. 并发图遍历: 对所有入口节点并发执行 KHopNeighbors
+    */
+   std::vector<Node>
+       GraphRAGQuery(const std::vector<std::vector<float>>& query_embeddings,
+                     int vector_top_k,
+                     int hop_depth) const;
+
     // ── 一致性修复 ────────────────────────────────────────────────────────────
 
     /**

@@ -90,15 +90,24 @@ static void handle_add_edge(const httplib::Request& req, httplib::Response& res)
 static void handle_rag_query(const httplib::Request& req, httplib::Response& res) {
     try {
         auto body = json::parse(req.body);
-        if (!body.contains("query_embedding")) {
-            send_err(res, 400, "missing query_embedding"); return;
-        }
-
-        std::vector<float> query_emb = body["query_embedding"].get<std::vector<float>>();
         int vector_top_k = body.value("vector_top_k", 3);
         int hop_depth    = body.value("hop_depth", 2);
 
-        auto nodes = g_gs->GraphRAGQuery(query_emb, vector_top_k, hop_depth);
+        std::vector<Node> nodes;
+
+        // 支持批量向量检索 (query_embeddings) 或 单向量检索 (query_embedding)
+        if (body.contains("query_embeddings")) {
+            // 批量模式
+            auto query_embs = body["query_embeddings"].get<std::vector<std::vector<float>>>();
+            nodes = g_gs->GraphRAGQuery(query_embs, vector_top_k, hop_depth);
+        } else if (body.contains("query_embedding")) {
+            // 单向量模式 (兼容旧版)
+            std::vector<float> query_emb = body["query_embedding"].get<std::vector<float>>();
+            nodes = g_gs->GraphRAGQuery(query_emb, vector_top_k, hop_depth);
+        } else {
+            send_err(res, 400, "missing query_embedding or query_embeddings");
+            return;
+        }
 
         json nodes_json = json::array();
         for (const auto& n : nodes) {
