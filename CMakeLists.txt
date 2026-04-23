@@ -41,7 +41,7 @@ file(GLOB_RECURSE SOURCES
 # 向量化功能测试 (Vector Search Tests)
 # ==========================================
 add_executable(benchmark_vector tests/benchmark_vector.cpp ${SOURCES})
-add_executable(demo_vector_db tests/demo_vector_db.cpp ${SOURCES})
+# add_executable(demo_vector_db tests/demo_vector_db.cpp ${SOURCES})
 add_executable(test_vector_integration tests/test_vector_integration.cpp ${SOURCES})
 # add_executable(test_integration tests/test_integration.cpp ${SOURCES})
 
