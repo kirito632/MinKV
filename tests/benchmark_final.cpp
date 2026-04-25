@@ -32,10 +32,18 @@ struct LatencyStats {
 
     double avg = std::accumulate(latencies.begin(), latencies.end(), 0.0) /
                  latencies.size();
-    double p50 = latencies[latencies.size() * 0.50];
-    double p95 = latencies[latencies.size() * 0.95];
-    double p99 = latencies[latencies.size() * 0.99];
-    double p999 = latencies[latencies.size() * 0.999];
+
+    // Safe index calculation: clamp to [0, size-1] to prevent out-of-bounds
+    // when fraction * size truncates to size (e.g., 0.999 * 1000 = 999.0 -> 999,
+    // but for small vectors, floating rounding may push it to size).
+    auto safe_idx = [](double fraction, size_t size) -> size_t {
+      size_t idx = static_cast<size_t>(fraction * size);
+      return (idx >= size) ? size - 1 : idx;
+    };
+    double p50 = latencies[safe_idx(0.50, latencies.size())];
+    double p95 = latencies[safe_idx(0.95, latencies.size())];
+    double p99 = latencies[safe_idx(0.99, latencies.size())];
+    double p999 = latencies[safe_idx(0.999, latencies.size())];
 
     std::cout << prefix << "Avg: " << std::fixed << std::setprecision(2) << avg
               << "μs" << std::endl;
