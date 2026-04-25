@@ -33,9 +33,8 @@ struct LatencyStats {
     double avg = std::accumulate(latencies.begin(), latencies.end(), 0.0) /
                  latencies.size();
 
-    // Safe index calculation: clamp to [0, size-1] to prevent out-of-bounds
-    // when fraction * size truncates to size (e.g., 0.999 * 1000 = 999.0 -> 999,
-    // but for small vectors, floating rounding may push it to size).
+    // Safe index: clamp to [0, size-1] to prevent out-of-bounds when
+    // fraction * size rounds up to size (e.g., 0.999 * 1000 -> 999.0).
     auto safe_idx = [](double fraction, size_t size) -> size_t {
       size_t idx = static_cast<size_t>(fraction * size);
       return (idx >= size) ? size - 1 : idx;
