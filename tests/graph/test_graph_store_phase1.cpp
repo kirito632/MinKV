@@ -126,7 +126,9 @@ bool test_adjlist_serializer_roundtrip() {
 bool test_adjlist_serializer_empty() {
   std::vector<std::string> ids;
   auto json = GraphSerializer::SerializeAdjList(ids);
-  CHECK(json == "[]", "AdjList empty serializes to []");
+  // [二进制格式] SerializeAdjList 使用紧凑二进制格式而非 JSON，
+  // 空列表序列化为 [4B count=0] 共 4 字节，而非 JSON 的 "[]"
+  CHECK(json.size() == 4, "AdjList empty serializes to 4 bytes (count=0)");
   auto ids2 = GraphSerializer::DeserializeAdjList(json);
   CHECK(ids2.empty(), "AdjList empty roundtrip");
   PASS("AdjList serializer roundtrip (empty)");
