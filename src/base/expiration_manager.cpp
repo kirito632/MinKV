@@ -90,8 +90,17 @@ void ExpirationManager::cronThreadFunc() {
         break; // 检查停止标志
 
       size_t expired_count = processShard(shard_id);
+
+      // [防御性编程] 对 processShard 返回值做三层分类：
+      //   1. SIZE_MAX → 锁竞争或异常，计入 skipped
+      //   2. 正常值 (0 或正数) → 正常处理，计入 expired
+      //   3. 其他非法值 → 按 skipped 处理，防止统计污染
       if (expired_count == SIZE_MAX) {
-        // [性能统计] SIZE_MAX 是锁竞争哨兵值，表示本次被跳过
+        // [性能统计] SIZE_MAX 是锁竞争/异常哨兵值，表示本次被跳过
+        total_skipped_this_round++;
+      } else if (expired_count > sample_size_) {
+        // [安全防护] 返回值超过 sample_size_ 属于非法值
+        // （单次最多删除 sample_size_ 个 key），按 skipped 处理
         total_skipped_this_round++;
       } else {
         // expired_count 为 0 表示正常处理但无过期 key，不计入 skipped
@@ -158,13 +167,17 @@ size_t ExpirationManager::processShard(size_t shard_id) {
     return callback_(shard_id, sample_size_);
   } catch (const std::exception &e) {
     // [异常处理] 捕获回调函数中的异常，避免影响整个定时任务
+    // [BUG FIX] 异常分片应返回 SIZE_MAX 以计入 total_skipped，
+    //           而不是返回 0（0 表示"正常处理但无过期 key"）。
+    //           测试 test_stats_with_exceptions 验证此行为。
     LOG_ERROR << "[ExpirationManager] Exception in shard " << shard_id
               << " processing: " << e.what();
-    return 0;
+    return SIZE_MAX;
   } catch (...) {
     // [异常安全] 捕获所有未知异常，确保线程继续运行
+    // [BUG FIX] 同 std::exception 处理，返回 SIZE_MAX 计入 skipped
     LOG_ERROR << "[ExpirationManager] Unknown exception in shard " << shard_id;
-    return 0;
+    return SIZE_MAX;
   }
 }
 

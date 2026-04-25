@@ -211,10 +211,10 @@ jobs:
       - name: Install Linting Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-format cppcheck
+          sudo apt-get install -y --no-install-recommends clang-format-18 cppcheck
       - name: Run clang-format check
         run: |
-          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format --dry-run --Werror
+          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
       - name: Run cppcheck
         run: |
           cppcheck --enable=warning,performance \

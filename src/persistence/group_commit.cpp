@@ -108,6 +108,19 @@ bool GroupCommitManager::commitSync(const std::string &data) {
   // [Lambda捕获] 使用引用捕获promise，在回调中设置结果
   commitAsync(data, [&promise](bool success) { promise.set_value(success); });
 
+  // [BUG FIX] 同步提交需要立即触发批量处理，否则如果 shouldSync()
+  // 返回 false（数据量未达阈值且时间未到），syncThreadFunc 不会调用
+  // processBatch()，导致 future.get() 永久阻塞（死锁）。
+  // 这里直接触发一次批量处理，确保当前请求能被及时处理。
+  // 注意：processBatch() 会处理队列中所有 pending 请求，而不仅仅是
+  // 当前这一个，所以不会破坏批量效果。
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!pendingRequests_.empty()) {
+      processBatch();
+    }
+  }
+
   // [阻塞等待] 等待异步操作完成并返回结果
   return future.get();
 }
@@ -132,11 +145,17 @@ void GroupCommitManager::syncThreadFunc() {
       // 1. 有数据要写 (pendingRequests_不为空)
       // 2. 达到同步条件 (shouldSync()返回true)
       // 3. 程序退出 (!running_)
+      //
+      // [BUG FIX] 使用 wait_for 而非 wait，因为 shouldSync() 可能因
+      // 数据量不足返回 false，导致 wait 的谓词永远不满足。
+      // syncInterval_ 超时确保即使数据量不足也能定期处理。
       cond_.wait_for(lock, syncInterval_, [this] {
         return !pendingRequests_.empty() || !running_ || shouldSync();
       });
 
-      // [批量处理] 如果有数据且满足同步条件，或程序正在退出，则处理批次
+      // [批量处理] 当满足同步条件或程序退出时，处理当前批次
+      // commitSync() 已通过直接调用 processBatch() 解决死锁问题，
+      // 因此这里可以安全地保留 shouldSync() 检查，维持批量效果。
       if (!pendingRequests_.empty() && (shouldSync() || !running_)) {
         processBatch();
       }
