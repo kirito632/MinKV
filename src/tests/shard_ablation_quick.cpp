@@ -9,6 +9,8 @@
 
 using namespace minkv::db;
 
+namespace {
+
 // 快速测试单个分片配置
 struct TestResult {
   size_t shard_count;
@@ -208,3 +210,5 @@ int main() {
 
   return 0;
 }
+
+} // anonymous namespace

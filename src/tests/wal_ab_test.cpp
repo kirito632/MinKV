@@ -32,6 +32,8 @@ const char *wal_mode_name(WALMode mode) {
   }
 }
 
+namespace {
+
 struct TestResult {
   WALMode mode;
   int thread_count;
@@ -371,3 +373,5 @@ int main() {
 
   return 0;
 }
+
+} // anonymous namespace

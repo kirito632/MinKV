@@ -220,6 +220,7 @@ jobs:
           cppcheck --enable=warning,performance \
             --suppress=missingIncludeSystem \
             --error-exitcode=1 \
+            --force \
             --std=c++17 -I src -I include src/ tests/
 
   package:

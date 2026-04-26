@@ -43,6 +43,8 @@ std::string format_duration(double seconds) {
   return oss.str();
 }
 
+namespace {
+
 // 测试结果结构
 struct BenchmarkResult {
   std::string test_name;
@@ -433,3 +435,5 @@ int main() {
 
   return 0;
 }
+
+} // anonymous namespace
