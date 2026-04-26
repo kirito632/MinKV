@@ -7,6 +7,7 @@ on:
     tags: [ '*' ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -217,8 +218,7 @@ jobs:
           find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
       - name: Run cppcheck
         run: |
-          cppcheck src/ --suppressions=.cppcheckignore --enable=all --error-exitcode=0
-        continue-on-error: true
+          cppcheck src/ --suppressions=.cppcheckignore --warning,performance --error-exitcode=1
 
   package:
     needs: build-and-test
