@@ -339,6 +339,8 @@ void print_results(const std::vector<BenchmarkResult> &results) {
   std::cout << "\n";
 }
 
+} // anonymous namespace
+
 int main() {
   // 记录测试开始时间
   auto test_start_time = std::chrono::system_clock::now();
