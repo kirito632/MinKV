@@ -435,5 +435,3 @@ int main() {
 
   return 0;
 }
-
-} // anonymous namespace

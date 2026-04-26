@@ -1,0 +1,3 @@
+accessMoved:src/base/async_logger.cpp
+uninitMemberVar:src/base/async_logger.h:46
+useInitializationList:src/server/http_server.cpp:13
