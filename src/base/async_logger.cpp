@@ -1,7 +1,6 @@
 #include "async_logger.h"
 #include "append_file.h"
 #include <cstring>
-#include <utility>
 #include <iomanip>
 #include <iostream>
 #include <mutex> // for std::once_flag
@@ -9,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utility>
 
 namespace minkv {
 namespace base {
