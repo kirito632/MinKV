@@ -218,7 +218,7 @@ jobs:
           find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
       - name: Run cppcheck
         run: |
-          cppcheck src/ --suppressions=.cppcheckignore --warning,performance --error-exitcode=1
+          cppcheck src/ --suppressions-list=.cppcheckignore --enable=warning,performance --error-exitcode=1
 
   # 5. Required Job: A single, unified check for branch protection.
   required:
