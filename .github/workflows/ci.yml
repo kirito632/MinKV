@@ -220,17 +220,6 @@ jobs:
         run: |
           cppcheck src/ --suppressions=.cppcheckignore --warning,performance --error-exitcode=1
 
-  package:
-    needs: build-and-test
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Create package
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target package
-
   # 5. Required Job: A single, unified check for branch protection.
   required:
     if: always()
