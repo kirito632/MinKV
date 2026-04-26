@@ -43,7 +43,7 @@ public:
   /**
    * @brief 构造函数，初始化缓冲区指针
    */
-  FixedBuffer() : cur_(data_) {}
+  FixedBuffer() : data_(), cur_(data_) {}
 
   /**
    * @brief 向缓冲区追加数据

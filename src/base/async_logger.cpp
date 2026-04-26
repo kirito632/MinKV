@@ -1,6 +1,7 @@
 #include "async_logger.h"
 #include "append_file.h"
 #include <cstring>
+#include <utility>
 #include <iomanip>
 #include <iostream>
 #include <mutex> // for std::once_flag
@@ -126,14 +127,18 @@ void AsyncLogger::threadFunc() {
       // [双缓冲机制] 将当前缓冲区也移到待写入队列
       // 即使当前缓冲区没满，也要定期写入，避免日志延迟过大
       buffers_.push_back(std::move(currentBuffer_));
-      currentBuffer_ = std::move(newBuffer1);
+
+      // 将备用缓冲区提升为当前缓冲区
+      // 使用 std::exchange 避免 cppcheck accessMoved 假阳性
+      currentBuffer_ = std::exchange(newBuffer1, nullptr);
 
       // [零拷贝] 使用swap避免数据拷贝，提升性能
       buffersToWrite.swap(buffers_);
 
       // 如果备用缓冲区被用掉了，补充一个新的
       if (!nextBuffer_) {
-        nextBuffer_ = std::move(newBuffer2);
+        // 使用 std::exchange 避免 cppcheck accessMoved 假阳性
+        nextBuffer_ = std::exchange(newBuffer2, nullptr);
       }
     }
     // [关键设计] 锁的作用域结束，释放锁，在锁外进行I/O操作
@@ -170,13 +175,19 @@ void AsyncLogger::threadFunc() {
     }
 
     // [对象池] 回收缓冲区供下次使用
-    if (!newBuffer1) {
+    // newBuffer1 和 newBuffer2 在锁内被 std::move 后为 null，
+    // 这里从已写入的缓冲区中回收复用
+    if (buffersToWrite.empty()) {
+      // 没有可回收的缓冲区，跳过回收
+    } else if (!newBuffer1) {
       newBuffer1 = std::move(buffersToWrite.back());
       buffersToWrite.pop_back();
       newBuffer1->reset(); // 重置缓冲区状态
     }
 
-    if (!newBuffer2) {
+    if (buffersToWrite.empty()) {
+      // 没有可回收的缓冲区，跳过回收
+    } else if (!newBuffer2) {
       newBuffer2 = std::move(buffersToWrite.back());
       buffersToWrite.pop_back();
       newBuffer2->reset();

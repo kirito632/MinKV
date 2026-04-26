@@ -54,7 +54,7 @@ std::string GraphSerializer::ReadString(const std::string &buf,
     throw std::runtime_error(
         "GraphSerializer: buffer too short reading string");
   }
-  std::string s(buf.data() + offset, len);
+  std::string s(&buf[offset], len);
   offset += len; // 跳过字符串内容
   return s;
 }

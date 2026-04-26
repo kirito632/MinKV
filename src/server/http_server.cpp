@@ -9,8 +9,8 @@ HttpServer::HttpServer(std::shared_ptr<MinKV<std::string, std::string>> kv,
                        std::shared_ptr<graph::GraphStore> graph_store,
                        const std::string &host, int port)
     : kv_(kv), graph_store_(graph_store), host_(host), port_(port),
-      running_(false) {
-  server_ = std::make_unique<httplib::Server>();
+      running_(false),
+      server_(std::make_unique<httplib::Server>()) {
   setup_routes(); // 构造时完成路由注册，start() 前不发起监听
 }
 
