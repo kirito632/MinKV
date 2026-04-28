@@ -1,0 +1,7 @@
+all:
+  - '**'
+docs:
+  - '*.md'
+  - '**/*.md'
+  - '.github/ISSUE_TEMPLATE/**'
+  - '.gitignore'

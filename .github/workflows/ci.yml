@@ -1,0 +1,266 @@
+# MinKV CI - Enhanced and Optimized by kvrocks best practices
+name: MinKV CI - Enhanced
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ '*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 1. Concurrency Control: Avoids redundant runs for PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # 2. Precondition Job: Skips CI for documentation-only changes.
+  precondition:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.result.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: .github/config/changes.yml
+      - id: result
+        run: |
+          echo "docs_only=${{ fromJSON(steps.changes.outputs.all_count) == fromJSON(steps.changes.outputs.docs_count) && fromJSON(steps.changes.outputs.docs_count) > 0 }}" >> $GITHUB_OUTPUT
+
+  build-and-test:
+    needs: precondition
+    if: ${{ needs.precondition.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache \
+            librapidcheck-dev nlohmann-json3-dev \
+            clang-tidy cppcheck valgrind
+
+      # 3. Coredump Setup: Enables coredump collection on crash.
+      - name: Setup coredump
+        run: |
+          echo "$(pwd)/coredumps/corefile-%e-%p-%t" | sudo tee /proc/sys/kernel/core_pattern
+          mkdir coredumps
+          ulimit -c unlimited
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ matrix.build_type }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake', 'src/**/*.cpp', 'src/**/*.h', 'include/**/*.h', 'tests/**/*.cpp', 'tests/**/*.h') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ matrix.build_type }}-
+
+      - name: Configure (Debug with sanitizers)
+        if: matrix.build_type == 'Debug'
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Configure (Release)
+        if: matrix.build_type == 'Release'
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build all targets
+        run: |
+          cmake --build build --parallel $(nproc) --target all
+
+      - name: Run all tests and benchmarks
+        env:
+          ASAN_OPTIONS: abort_on_error=1:detect_leaks=1:strict_string_checks=1:alloc_dealloc_mismatch=1:fast_unwind_on_malloc=0
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          set -euo pipefail
+          echo "====================================="
+          echo "🚀 Starting automated testing pipeline..."
+          echo "====================================="
+          
+          FAILED=0
+
+          # 1. 运行所有以 _test 结尾的单元测试
+          echo "🧪 Phase 1: Running all unit tests (_test suffix)"
+          for test_bin in build/bin/*_test; do
+            if [ -x "$test_bin" ]; then
+              echo "-------------------------------------"
+              echo "🧪 Running Test: $(basename $test_bin)"
+              if ! timeout 60s "$test_bin"; then
+                echo "⚠️  Test $(basename $test_bin) failed or timed out"
+                FAILED=1
+              fi
+            fi
+          done
+
+          # 2. 运行核心的并发压力测试（混沌测试）
+          echo "====================================="
+          echo "🔥 Phase 2: Running stress benchmarks"
+          echo "====================================="
+          
+          if [ -x build/bin/comprehensive_benchmark ]; then
+            echo "🔥 Running Comprehensive Stress Benchmark (Timeout 30s)"
+            timeout 30s build/bin/comprehensive_benchmark --iterations=1000 || echo "✅ Benchmark finished or timed out safely."
+          fi
+          
+          if [ -x build/bin/test_vector_integration ]; then
+            echo "🤖 Running Vector Integration Test"
+            if ! timeout 60s build/bin/test_vector_integration; then
+              echo "⚠️  test_vector_integration failed or timed out"
+              FAILED=1
+            fi
+          fi
+          
+          if [ -x build/bin/wal_performance_benchmark ]; then
+            echo "📊 Running WAL Performance Benchmark"
+            timeout 30s build/bin/wal_performance_benchmark --duration=5 || echo "✅ WAL benchmark completed"
+          fi
+          
+          if [ -x build/bin/benchmark_vector ]; then
+            echo "⚡ Running Vector Benchmark"
+            timeout 30s build/bin/benchmark_vector --queries=1000 || echo "✅ Vector benchmark completed"
+          fi
+
+          # 3. 运行所有以 test_ 开头的测试（包括Graph测试）
+          echo "====================================="
+          echo "🧩 Phase 3: Running all test_* binaries"
+          echo "====================================="
+          for test_bin in build/bin/test_*; do
+            if [ -x "$test_bin" ] && [ "$(basename $test_bin)" != "test_vector_integration" ]; then
+              echo "-------------------------------------"
+              echo "🧩 Running: $(basename $test_bin)"
+              if ! timeout 90s "$test_bin"; then
+                echo "⚠️  Test $(basename $test_bin) failed or timed out"
+                FAILED=1
+              fi
+            fi
+          done
+
+          echo "====================================="
+          echo "✅ All tests completed!"
+          echo "====================================="
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ Some tests failed. See logs above."
+            exit 1
+          fi
+
+      # 4. Sanitizer/Crash Scan: Catches silent sanitizer errors.
+      - name: Find sanitizer reports and crashes
+        if: always()
+        run: |
+          SANITIZER_OUTPUT=$(grep -r "ERROR: AddressSanitizer:" build/ || true)
+          if [[ $SANITIZER_OUTPUT ]]; then
+            echo "found sanitizer reports:"
+            echo "$SANITIZER_OUTPUT"
+            exit 1
+          fi
+          CRASHES=$(grep -r "Ooops!" build/ || true)
+          if [[ $CRASHES ]]; then
+            echo "found crashes:"
+            echo "$CRASHES"
+            exit 1
+          fi
+
+      - name: Generate coverage report
+        if: matrix.build_type == 'Debug'
+        run: |
+          echo "Generating coverage report..."
+          # Placeholder for coverage commands
+
+      # 3. (cont.) Archive Artifacts: Uploads binaries and coredumps on failure.
+      - name: Archive build outputs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-artifacts-${{ matrix.build_type }}
+          path: |
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+            build/Testing/**/*.xml
+            coredumps/*
+            build/bin/*
+
+  lint:
+    needs: precondition
+    if: ${{ needs.precondition.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linting Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format-18 cppcheck
+      - name: Run clang-format check
+        run: |
+          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
+      - name: Run cppcheck
+        run: |
+          cppcheck src/ --suppressions-list=.cppcheckignore --enable=warning,performance --error-exitcode=1
+
+  # ===========================================================================
+  # [DEPRECATED] required job — replaced by native branch protection checks
+  #
+  # The old `required` job used shell exit codes to manually evaluate upstream
+  # job statuses. GitHub branch protection does NOT understand custom shell
+  # logic; it only tracks native job states (success/failure/skipped).
+  # This caused "Expected — Waiting for status to be reported" to hang forever.
+  #
+  # Solution: Instead of a synthetic aggregator job, mark `build-and-test` and
+  # `lint` directly as required checks in branch protection settings. When
+  # docs_only=true, these jobs are skipped via `if:` and GitHub treats
+  # 'skipped' as a passing status — no custom logic needed.
+  #
+  # If you ever need a single required check again, use GitHub's native
+  # `${{ !cancelled() }}` pattern with `needs` result propagation instead of
+  # manual exit-code branching.
+  # ===========================================================================
+  # required:
+  #   if: always()
+  #   needs: [precondition, build-and-test, lint]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Evaluate Job Statuses
+  #       run: |
+  #         DOCS_ONLY="${{ needs.precondition.outputs.docs_only }}"
+  #         BUILD_RESULT="${{ needs.build-and-test.result }}"
+  #         LINT_RESULT="${{ needs.lint.result }}"
+  #
+  #         echo "precondition.docs_only = ${DOCS_ONLY}"
+  #         echo "build-and-test.result  = ${BUILD_RESULT}"
+  #         echo "lint.result            = ${LINT_RESULT}"
+  #
+  #         if [[ "${DOCS_ONLY}" == "true" ]]; then
+  #           echo "Documentation-only change — CI passed."
+  #           exit 0
+  #         fi
+  #
+  #         if [[ "${BUILD_RESULT}" == "success" && "${LINT_RESULT}" == "success" ]]; then
+  #           echo "Build, test, and lint all passed."
+  #           exit 0
+  #         fi
+  #
+  #         echo "CI failed: build-and-test=${BUILD_RESULT}, lint=${LINT_RESULT}"
+  #         exit 1

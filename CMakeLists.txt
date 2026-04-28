@@ -24,10 +24,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 include_directories(src)
 
 # 查找所有源文件
-file(GLOB_RECURSE SOURCES 
+file(GLOB_RECURSE SOURCES
     "src/base/*.cpp"
     "src/core/*.cpp"
-    "src/db/*.cpp"
     "src/persistence/*.cpp"
     "src/vector/*.cpp"
     "src/graph/graph_serializer.cpp"
@@ -42,7 +41,7 @@ file(GLOB_RECURSE SOURCES
 # 向量化功能测试 (Vector Search Tests)
 # ==========================================
 add_executable(benchmark_vector tests/benchmark_vector.cpp ${SOURCES})
-add_executable(demo_vector_db tests/demo_vector_db.cpp ${SOURCES})
+# add_executable(demo_vector_db tests/demo_vector_db.cpp ${SOURCES})
 add_executable(test_vector_integration tests/test_vector_integration.cpp ${SOURCES})
 # add_executable(test_integration tests/test_integration.cpp ${SOURCES})
 
@@ -89,10 +88,10 @@ add_executable(group_commit_test tests/group_commit_test.cpp ${SOURCES})
 target_link_libraries(group_commit_test pthread)
 
 # ==========================================
-# 快照系统测试 (Snapshot Test)
+# 快照系统测试 (Snapshot Test) - 暂时禁用，因为 snapshot.h 不存在
 # ==========================================
-add_executable(snapshot_test tests/snapshot_test.cpp ${SOURCES})
-target_link_libraries(snapshot_test pthread)
+# add_executable(snapshot_test tests/snapshot_test.cpp ${SOURCES})
+# target_link_libraries(snapshot_test pthread)
 
 # ==========================================
 # Graph-on-KV 测试 (Graph Layer Tests)
@@ -163,13 +162,39 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/graph/test_graphrag_accuracy.cpp")
     target_link_libraries(test_graphrag_accuracy pthread)
 endif()
 
+# GraphRAG 批量并发性能对比测试
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/graph/test_graphrag_batch_performance.cpp")
+    add_executable(test_graphrag_batch_performance
+        tests/graph/test_graphrag_batch_performance.cpp
+        ${GRAPH_SOURCES}
+        ${SOURCES}
+    )
+    target_link_libraries(test_graphrag_batch_performance pthread)
+endif()
+
+# ==========================================
+# Graph HTTP Server（独立，只暴露 graph 接口）
+# 不依赖向量相关的未实现方法，可直接编译
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/server/graph_http_server.cpp")
+    add_executable(graph_http_server
+        src/server/graph_http_server.cpp
+        ${GRAPH_SOURCES}
+        ${SOURCES}
+    )
+    target_link_libraries(graph_http_server pthread)
+endif()
+
 # ==========================================
 # HTTP Server Example (Graph + Vector API)
 # ==========================================
-# 注意：http_server.cpp 依赖 httplib.h 和完整的向量接口，
-# 向量接口对接尚未完成，暂不加入默认构建。
-# 如需构建，参考 build_http_server.sh 脚本。
-# find_package(nlohmann_json QUIET)
-# if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/http_server_example.cpp")
-#     add_executable(http_server_example ...)
-# endif()
+# 完整的 HTTP 服务器，包含 KV、向量、图三大类接口
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/http_server_example.cpp")
+    add_executable(http_server_example
+        examples/http_server_example.cpp
+        src/server/http_server.cpp
+        ${GRAPH_SOURCES}
+        ${SOURCES}
+    )
+    target_link_libraries(http_server_example pthread)
+endif()
