@@ -220,28 +220,47 @@ jobs:
         run: |
           cppcheck src/ --suppressions-list=.cppcheckignore --enable=warning,performance --error-exitcode=1
 
-  # 5. Required Job: A single, unified check for branch protection.
-  required:
-    if: always()
-    needs: [precondition, build-and-test, lint]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Evaluate Job Statuses
-        run: |
-          # If docs_only is true, the dependent jobs are skipped, which is a success for our purposes.
-          if [[ "${{ needs.precondition.outputs.docs_only }}" == "true" ]]; then
-            echo "Documentation-only changes. CI check passed."
-            exit 0
-          fi
-
-          # If not docs_only, check the results of the build and lint jobs.
-          # They must be 'success'. 'skipped' is a failure in this path.
-          if [[ "${{ needs.build-and-test.result }}" == "success" && "${{ needs.lint.result }}" == "success" ]]; then
-            echo "Build, test, and lint jobs succeeded."
-            exit 0
-          else
-            echo "Build, test, or lint job failed or was skipped."
-            echo "Build & Test Result: ${{ needs.build-and-test.result }}"
-            echo "Lint Result: ${{ needs.lint.result }}"
-            exit 1
-          fi
+  # ===========================================================================
+  # [DEPRECATED] required job — replaced by native branch protection checks
+  #
+  # The old `required` job used shell exit codes to manually evaluate upstream
+  # job statuses. GitHub branch protection does NOT understand custom shell
+  # logic; it only tracks native job states (success/failure/skipped).
+  # This caused "Expected — Waiting for status to be reported" to hang forever.
+  #
+  # Solution: Instead of a synthetic aggregator job, mark `build-and-test` and
+  # `lint` directly as required checks in branch protection settings. When
+  # docs_only=true, these jobs are skipped via `if:` and GitHub treats
+  # 'skipped' as a passing status — no custom logic needed.
+  #
+  # If you ever need a single required check again, use GitHub's native
+  # `${{ !cancelled() }}` pattern with `needs` result propagation instead of
+  # manual exit-code branching.
+  # ===========================================================================
+  # required:
+  #   if: always()
+  #   needs: [precondition, build-and-test, lint]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Evaluate Job Statuses
+  #       run: |
+  #         DOCS_ONLY="${{ needs.precondition.outputs.docs_only }}"
+  #         BUILD_RESULT="${{ needs.build-and-test.result }}"
+  #         LINT_RESULT="${{ needs.lint.result }}"
+  #
+  #         echo "precondition.docs_only = ${DOCS_ONLY}"
+  #         echo "build-and-test.result  = ${BUILD_RESULT}"
+  #         echo "lint.result            = ${LINT_RESULT}"
+  #
+  #         if [[ "${DOCS_ONLY}" == "true" ]]; then
+  #           echo "Documentation-only change — CI passed."
+  #           exit 0
+  #         fi
+  #
+  #         if [[ "${BUILD_RESULT}" == "success" && "${LINT_RESULT}" == "success" ]]; then
+  #           echo "Build, test, and lint all passed."
+  #           exit 0
+  #         fi
+  #
+  #         echo "CI failed: build-and-test=${BUILD_RESULT}, lint=${LINT_RESULT}"
+  #         exit 1
