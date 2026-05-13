@@ -1,7 +1,9 @@
 #pragma once
 
-#include "../core/sharded_cache.h"
-#include "wal.h"
+#include <fcntl.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -11,6 +13,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+
+#include "../core/sharded_cache.h"
+#include "wal.h"
 
 namespace minkv {
 namespace db {
@@ -39,7 +44,8 @@ namespace db {
  * - "采用Facade设计模式封装底层存储细节，提供原子性接口"
  * - "通过LSN机制解决WAL截断失败的一致性问题"
  */
-template <typename K, typename V> class SimpleCheckpointManager {
+template <typename K, typename V>
+class SimpleCheckpointManager {
 public:
   /**
    * @brief Checkpoint配置结构体
@@ -51,12 +57,12 @@ public:
 
     // 双重触发策略配置
     size_t wal_size_threshold = 64 * 1024 * 1024; // WAL大小阈值 (64MB)
-    std::chrono::minutes time_threshold{60}; // 时间阈值 (1小时兜底)
+    std::chrono::minutes time_threshold {60};     // 时间阈值 (1小时兜底)
 
     // 检查和清理配置
-    std::chrono::minutes check_interval{10}; // 检查间隔 (10分钟)
-    bool auto_cleanup = true;                // 自动清理旧文件
-    int keep_snapshot_count = 3;             // 保留快照数量
+    std::chrono::minutes check_interval {10}; // 检查间隔 (10分钟)
+    bool auto_cleanup = true;                 // 自动清理旧文件
+    int keep_snapshot_count = 3;              // 保留快照数量
 
     // 性能调优配置
     bool enable_compression = false;            // 快照压缩 (暂未实现)
@@ -69,9 +75,8 @@ public:
    * @param cache 分片缓存实例
    * @param config checkpoint配置
    */
-  explicit SimpleCheckpointManager(
-      ShardedCache<K, V> *cache,
-      const CheckpointConfig &config = CheckpointConfig{});
+  explicit SimpleCheckpointManager(ShardedCache<K, V> *cache,
+                                   const CheckpointConfig &config = CheckpointConfig {});
 
   /**
    * @brief 析构函数，确保资源正确释放
@@ -150,9 +155,9 @@ public:
     std::string last_snapshot_file;     // 最新快照文件路径
 
     // 性能统计
-    std::chrono::milliseconds avg_checkpoint_duration{0}; // 平均耗时
-    double compression_ratio = 1.0; // 压缩比例 (未来扩展)
-    size_t total_disk_saved = 0;    // 累计节省磁盘空间
+    std::chrono::milliseconds avg_checkpoint_duration {0}; // 平均耗时
+    double compression_ratio = 1.0;                        // 压缩比例 (未来扩展)
+    size_t total_disk_saved = 0;                           // 累计节省磁盘空间
   };
 
   /**
@@ -173,7 +178,7 @@ private:
   CheckpointConfig config_;
 
   // 后台检查线程
-  std::atomic<bool> background_running_{false};
+  std::atomic<bool> background_running_ {false};
   std::thread background_thread_;
   std::condition_variable bg_cv_;
   std::mutex bg_cv_mutex_;
@@ -197,8 +202,10 @@ private:
   std::string get_snapshot_path(uint64_t lsn) const;
   std::string get_snapshots_dir() const;
   bool write_snapshot_file(const std::string &filepath,
-                           const std::map<K, V> &data, uint64_t wal_lsn);
-  bool read_snapshot_file(const std::string &filepath, std::map<K, V> &data,
+                           const std::map<K, V> &data,
+                           uint64_t wal_lsn);
+  bool read_snapshot_file(const std::string &filepath,
+                          std::map<K, V> &data,
                           uint64_t &wal_lsn);
   std::vector<std::string> list_snapshot_files() const;
   std::string find_latest_snapshot() const;
@@ -211,8 +218,8 @@ private:
 // ============ 模板实现 ============
 
 template <typename K, typename V>
-SimpleCheckpointManager<K, V>::SimpleCheckpointManager(
-    ShardedCache<K, V> *cache, const CheckpointConfig &config)
+SimpleCheckpointManager<K, V>::SimpleCheckpointManager(ShardedCache<K, V> *cache,
+                                                       const CheckpointConfig &config)
     : cache_(cache), config_(config) {
   // 创建数据目录结构
   std::filesystem::create_directories(config_.data_dir);
@@ -223,12 +230,11 @@ SimpleCheckpointManager<K, V>::SimpleCheckpointManager(
 
   std::cout << "[CheckpointManager] Initialized with config:" << std::endl;
   std::cout << "  - Data dir: " << config_.data_dir << std::endl;
-  std::cout << "  - WAL threshold: "
-            << config_.wal_size_threshold / (1024 * 1024) << "MB" << std::endl;
-  std::cout << "  - Time threshold: " << config_.time_threshold.count()
-            << " minutes" << std::endl;
-  std::cout << "  - Keep snapshots: " << config_.keep_snapshot_count
+  std::cout << "  - WAL threshold: " << config_.wal_size_threshold / (1024 * 1024) << "MB"
             << std::endl;
+  std::cout << "  - Time threshold: " << config_.time_threshold.count() << " minutes"
+            << std::endl;
+  std::cout << "  - Keep snapshots: " << config_.keep_snapshot_count << std::endl;
 }
 
 template <typename K, typename V>
@@ -240,9 +246,8 @@ template <typename K, typename V>
 bool SimpleCheckpointManager<K, V>::checkpoint_now() {
   auto start_time = std::chrono::high_resolution_clock::now();
 
-  std::cout
-      << "[Checkpoint] Starting ATOMIC checkpoint (Stop-The-World mode)..."
-      << std::endl;
+  std::cout << "[Checkpoint] Starting ATOMIC checkpoint (Stop-The-World mode)..."
+            << std::endl;
 
   try {
     // 三步走，每步失败都安全：
@@ -263,8 +268,8 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
     std::string snapshot_file = get_snapshot_path(current_wal_lsn);
 
     if (!write_snapshot_file(snapshot_file, all_data, current_wal_lsn)) {
-      std::cerr << "[Checkpoint] Failed to write snapshot file: "
-                << snapshot_file << std::endl;
+      std::cerr << "[Checkpoint] Failed to write snapshot file: " << snapshot_file
+                << std::endl;
       // WAL未清，数据安全，下次checkpoint可重试
       return false;
     }
@@ -274,8 +279,7 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
 
     // 3. 快照写成功后才清WAL（此时快照已持久化，清WAL是安全的）
     cache_->clear_wal();
-    std::cout << "[Checkpoint] WAL cleared after successful snapshot"
-              << std::endl;
+    std::cout << "[Checkpoint] WAL cleared after successful snapshot" << std::endl;
 
     // 4. 更新统计信息
     {
@@ -287,15 +291,15 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
 
       // 计算平均耗时
       auto end_time = std::chrono::high_resolution_clock::now();
-      auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-          end_time - start_time);
+      auto duration =
+          std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
       if (stats_.total_checkpoints > 0) {
-        auto total_duration = stats_.avg_checkpoint_duration.count() *
-                                  (stats_.total_checkpoints - 1) +
-                              duration.count();
-        stats_.avg_checkpoint_duration = std::chrono::milliseconds(
-            total_duration / stats_.total_checkpoints);
+        auto total_duration =
+            stats_.avg_checkpoint_duration.count() * (stats_.total_checkpoints - 1) +
+            duration.count();
+        stats_.avg_checkpoint_duration =
+            std::chrono::milliseconds(total_duration / stats_.total_checkpoints);
       } else {
         stats_.avg_checkpoint_duration = duration;
       }
@@ -307,16 +311,15 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
+    auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
     std::cout << "[Checkpoint] ✅ ATOMIC checkpoint completed successfully in "
               << duration.count() << "ms" << std::endl;
     std::cout << "[Checkpoint] 🎯 Data consistency GUARANTEED - no loss window!"
               << std::endl;
     std::cout << "[Checkpoint] Records: " << all_data.size()
-              << ", Total checkpoints: " << stats_.total_checkpoints
-              << std::endl;
+              << ", Total checkpoints: " << stats_.total_checkpoints << std::endl;
 
     return true;
 
@@ -345,10 +348,8 @@ bool SimpleCheckpointManager<K, V>::should_checkpoint() const {
 
   // 规则A：时间阈值触发 (兜底策略)
   if (elapsed_minutes >= config_.time_threshold) {
-    std::cout << "[CheckpointTrigger] Time threshold reached: "
-              << elapsed_minutes.count()
-              << " >= " << config_.time_threshold.count() << " minutes"
-              << std::endl;
+    std::cout << "[CheckpointTrigger] Time threshold reached: " << elapsed_minutes.count()
+              << " >= " << config_.time_threshold.count() << " minutes" << std::endl;
     return true;
   }
 
@@ -403,8 +404,8 @@ template <typename K, typename V>
 void SimpleCheckpointManager<K, V>::background_checker_loop() {
   while (true) {
     std::unique_lock<std::mutex> lock(bg_cv_mutex_);
-    bg_cv_.wait_for(lock, config_.check_interval,
-                    [this] { return !background_running_.load(); });
+    bg_cv_.wait_for(
+        lock, config_.check_interval, [this] { return !background_running_.load(); });
 
     if (!background_running_.load()) {
       break;
@@ -412,16 +413,13 @@ void SimpleCheckpointManager<K, V>::background_checker_loop() {
     lock.unlock();
 
     if (should_checkpoint()) {
-      std::cout << "[BackgroundChecker] Triggering automatic checkpoint..."
-                << std::endl;
+      std::cout << "[BackgroundChecker] Triggering automatic checkpoint..." << std::endl;
 
       if (checkpoint_now()) {
-        std::cout
-            << "[BackgroundChecker] Automatic checkpoint completed successfully"
-            << std::endl;
-      } else {
-        std::cerr << "[BackgroundChecker] Automatic checkpoint failed"
+        std::cout << "[BackgroundChecker] Automatic checkpoint completed successfully"
                   << std::endl;
+      } else {
+        std::cerr << "[BackgroundChecker] Automatic checkpoint failed" << std::endl;
       }
     }
   }
@@ -479,16 +477,16 @@ bool SimpleCheckpointManager<K, V>::recover_from_disk() {
           max_lsn = entry.lsn;
       } catch (const std::exception &e) {
         errors++;
-        std::cerr << "[Recovery] Failed to replay entry lsn=" << entry.lsn
-                  << ": " << e.what() << std::endl;
+        std::cerr << "[Recovery] Failed to replay entry lsn=" << entry.lsn << ": "
+                  << e.what() << std::endl;
       }
     }
 
     // 4. 恢复 global_lsn_，避免新写入与已恢复的 LSN 冲突
     cache_->reset_lsn(max_lsn + 1);
 
-    std::cout << "[Recovery] Completed: " << recovered << " entries replayed, "
-              << errors << " errors, next_lsn=" << (max_lsn + 1) << std::endl;
+    std::cout << "[Recovery] Completed: " << recovered << " entries replayed, " << errors
+              << " errors, next_lsn=" << (max_lsn + 1) << std::endl;
     std::cout << "[Recovery] Final cache size: " << cache_->size() << " records"
               << std::endl;
 
@@ -517,21 +515,18 @@ void SimpleCheckpointManager<K, V>::cleanup_old_snapshots() {
   try {
     auto snapshot_files = list_snapshot_files();
 
-    if (snapshot_files.size() <=
-        static_cast<size_t>(config_.keep_snapshot_count)) {
+    if (snapshot_files.size() <= static_cast<size_t>(config_.keep_snapshot_count)) {
       return; // 不需要清理
     }
 
     // 按时间戳排序 (文件名包含时间戳)
-    std::sort(snapshot_files.begin(), snapshot_files.end(),
-              std::greater<std::string>());
+    std::sort(snapshot_files.begin(), snapshot_files.end(), std::greater<std::string>());
 
     size_t deleted_count = 0;
     size_t total_saved_bytes = 0;
 
     // 删除多余的快照文件
-    for (size_t i = config_.keep_snapshot_count; i < snapshot_files.size();
-         ++i) {
+    for (size_t i = config_.keep_snapshot_count; i < snapshot_files.size(); ++i) {
       std::string file_path = get_snapshots_dir() + "/" + snapshot_files[i];
 
       // 获取文件大小
@@ -543,16 +538,14 @@ void SimpleCheckpointManager<K, V>::cleanup_old_snapshots() {
       }
 
       if (std::filesystem::remove(file_path)) {
-        std::cout << "[Cleanup] Removed old snapshot: " << snapshot_files[i]
-                  << std::endl;
+        std::cout << "[Cleanup] Removed old snapshot: " << snapshot_files[i] << std::endl;
         deleted_count++;
       }
     }
 
     if (deleted_count > 0) {
-      std::cout << "[Cleanup] Cleaned up " << deleted_count
-                << " old snapshots, " << "saved "
-                << total_saved_bytes / (1024 * 1024) << "MB disk space"
+      std::cout << "[Cleanup] Cleaned up " << deleted_count << " old snapshots, "
+                << "saved " << total_saved_bytes / (1024 * 1024) << "MB disk space"
                 << std::endl;
 
       // 更新统计信息
@@ -561,16 +554,14 @@ void SimpleCheckpointManager<K, V>::cleanup_old_snapshots() {
     }
 
   } catch (const std::exception &e) {
-    std::cerr << "[Cleanup] Exception during cleanup: " << e.what()
-              << std::endl;
+    std::cerr << "[Cleanup] Exception during cleanup: " << e.what() << std::endl;
   }
 }
 
 // ============ 私有辅助函数实现 ============
 
 template <typename K, typename V>
-std::string
-SimpleCheckpointManager<K, V>::get_snapshot_path(uint64_t lsn) const {
+std::string SimpleCheckpointManager<K, V>::get_snapshot_path(uint64_t lsn) const {
   // 用 LSN 命名，单调递增，不受时钟回拨影响
   return get_snapshots_dir() + "/snapshot_" + std::to_string(lsn) + ".bin";
 }
@@ -581,8 +572,9 @@ std::string SimpleCheckpointManager<K, V>::get_snapshots_dir() const {
 }
 
 template <typename K, typename V>
-bool SimpleCheckpointManager<K, V>::write_snapshot_file(
-    const std::string &filepath, const std::map<K, V> &data, uint64_t wal_lsn) {
+bool SimpleCheckpointManager<K, V>::write_snapshot_file(const std::string &filepath,
+                                                        const std::map<K, V> &data,
+                                                        uint64_t wal_lsn) {
   // [原子重命名] 先写临时文件，写完后 rename() 到正式路径。
   // rename() 在 Linux 上是原子操作（POSIX 保证），确保即使写入过程中宕机，
   // 也不会产生损坏的快照文件：要么旧快照完整保留，要么新快照完整替换。
@@ -591,77 +583,89 @@ bool SimpleCheckpointManager<K, V>::write_snapshot_file(
   // 清理可能残留的上次失败的临时文件
   std::filesystem::remove(tmp_filepath);
 
-  std::ofstream file(tmp_filepath, std::ios::binary);
-  if (!file.is_open()) {
+  // [writev优化] 使用 raw fd + writev 替代 ofstream，减少系统调用次数
+  int fd = ::open(tmp_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
     std::cerr << "[Snapshot] Failed to create tmp file: " << tmp_filepath
-              << std::endl;
+              << ", error: " << std::strerror(errno) << std::endl;
     return false;
   }
+
+  auto close_fd = [&]() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+  };
 
   try {
     // 准备快照头部
     SnapshotHeader header;
     header.record_count = static_cast<uint32_t>(data.size());
-    header.wal_lsn = wal_lsn; // [关键] 记录WAL位置
+    header.wal_lsn = wal_lsn;
     header.timestamp = static_cast<uint64_t>(current_time_ms());
     header.checksum = calculate_checksum(header);
 
-    // 写入头部
-    file.write(reinterpret_cast<const char *>(&header), sizeof(header));
-    if (!file.good()) {
+    // [writev] 写入头部（单次系统调用）
+    struct iovec header_iov;
+    header_iov.iov_base = &header;
+    header_iov.iov_len = sizeof(header);
+    if (::writev(fd, &header_iov, 1) != static_cast<ssize_t>(sizeof(header))) {
       std::cerr << "[Snapshot] Failed to write header" << std::endl;
-      return false;
-    }
-
-    std::cout << "[Snapshot] Writing " << data.size() << " records with LSN "
-              << wal_lsn << std::endl;
-
-    // 写入每个键值对
-    size_t written_count = 0;
-    for (const auto &[key, value] : data) {
-      std::string key_str;
-      std::string value_str;
-
-      if constexpr (std::is_same_v<K, std::string>) {
-        key_str = key;
-      } else {
-        key_str = std::to_string(key);
-      }
-
-      if constexpr (std::is_same_v<V, std::string>) {
-        value_str = value;
-      } else {
-        value_str = std::to_string(value);
-      }
-
-      uint32_t key_len = static_cast<uint32_t>(key_str.size());
-      file.write(reinterpret_cast<const char *>(&key_len), sizeof(key_len));
-      file.write(key_str.c_str(), key_len);
-
-      uint32_t value_len = static_cast<uint32_t>(value_str.size());
-      file.write(reinterpret_cast<const char *>(&value_len), sizeof(value_len));
-      file.write(value_str.c_str(), value_len);
-
-      written_count++;
-
-      if (written_count % 10000 == 0) {
-        std::cout << "[Snapshot] Progress: " << written_count << "/"
-                  << data.size() << " records" << std::endl;
-      }
-    }
-
-    // 确保数据落盘后再 rename，防止 rename 成功但数据未持久化
-    file.flush();
-    if (!file.good()) {
-      std::cerr << "[Snapshot] Flush failed, aborting atomic rename"
-                << std::endl;
+      close_fd();
       std::filesystem::remove(tmp_filepath);
       return false;
     }
-    file.close();
 
-    // [原子替换] rename()
-    // 是原子操作，此刻之后快照文件要么是旧的完整版，要么是新的完整版
+    std::cout << "[Snapshot] Writing " << data.size() << " records with LSN " << wal_lsn
+              << std::endl;
+
+    // [writev优化] 每个KV对用4个iovec片段一次写入，减少75%系统调用
+    // iov[0]: key_len(4B), iov[1]: key, iov[2]: value_len(4B), iov[3]: value
+    struct iovec iov[4];
+    size_t written_count = 0;
+    for (const auto &[key, value] : data) {
+      std::string key_str = minkv::serialize(key);
+      std::string value_str = minkv::serialize(value);
+
+      uint32_t key_len = static_cast<uint32_t>(key_str.size());
+      uint32_t value_len = static_cast<uint32_t>(value_str.size());
+
+      iov[0].iov_base = &key_len;
+      iov[0].iov_len = sizeof(key_len);
+      iov[1].iov_base = const_cast<char *>(key_str.data());
+      iov[1].iov_len = key_len;
+      iov[2].iov_base = &value_len;
+      iov[2].iov_len = sizeof(value_len);
+      iov[3].iov_base = const_cast<char *>(value_str.data());
+      iov[3].iov_len = value_len;
+
+      // 一次 writev 写入4个片段
+      ssize_t total = key_len + value_len + sizeof(key_len) + sizeof(value_len);
+      if (::writev(fd, iov, 4) != total) {
+        std::cerr << "[Snapshot] writev failed at record " << written_count << std::endl;
+        close_fd();
+        std::filesystem::remove(tmp_filepath);
+        return false;
+      }
+
+      written_count++;
+      if (written_count % 10000 == 0) {
+        std::cout << "[Snapshot] Progress: " << written_count << "/" << data.size()
+                  << " records" << std::endl;
+      }
+    }
+
+    // [持久化保证] fsync 确保数据落盘后再 rename
+    if (::fsync(fd) != 0) {
+      std::cerr << "[Snapshot] fsync failed, aborting atomic rename" << std::endl;
+      close_fd();
+      std::filesystem::remove(tmp_filepath);
+      return false;
+    }
+    close_fd();
+
+    // [原子替换] rename() 是原子操作
     std::filesystem::rename(tmp_filepath, filepath);
 
     std::cout << "[Snapshot] Atomically renamed tmp -> " << filepath << " ("
@@ -670,51 +674,65 @@ bool SimpleCheckpointManager<K, V>::write_snapshot_file(
 
   } catch (const std::exception &e) {
     std::cerr << "[Snapshot] Write error: " << e.what() << std::endl;
-    // 清理临时文件，避免残留
+    close_fd();
     std::filesystem::remove(tmp_filepath);
     return false;
   }
 }
 
 template <typename K, typename V>
-bool SimpleCheckpointManager<K, V>::read_snapshot_file(
-    const std::string &filepath, std::map<K, V> &data, uint64_t &wal_lsn) {
-  std::ifstream file(filepath, std::ios::binary);
-  if (!file.is_open()) {
-    std::cerr << "[Snapshot] Failed to open file: " << filepath << std::endl;
+bool SimpleCheckpointManager<K, V>::read_snapshot_file(const std::string &filepath,
+                                                       std::map<K, V> &data,
+                                                       uint64_t &wal_lsn) {
+  // [preadv优化] 使用 raw fd + preadv 替代 ifstream，减少系统调用
+  int fd = ::open(filepath.c_str(), O_RDONLY);
+  if (fd < 0) {
+    std::cerr << "[Snapshot] Failed to open file: " << filepath
+              << ", error: " << std::strerror(errno) << std::endl;
     return false;
   }
+
+  auto close_fd = [&]() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+  };
 
   try {
     // 读取并验证头部
     SnapshotHeader header;
-    file.read(reinterpret_cast<char *>(&header), sizeof(header));
-    if (!file.good()) {
+    struct iovec header_iov;
+    header_iov.iov_base = &header;
+    header_iov.iov_len = sizeof(header);
+    if (::preadv(fd, &header_iov, 1, 0) != static_cast<ssize_t>(sizeof(header))) {
       std::cerr << "[Snapshot] Failed to read header" << std::endl;
+      close_fd();
       return false;
     }
 
     // 验证魔数
     if (std::string(header.magic, 4) != "MKVS") {
       std::cerr << "[Snapshot] Invalid magic number" << std::endl;
+      close_fd();
       return false;
     }
 
     // 验证版本
     if (header.version != 1) {
-      std::cerr << "[Snapshot] Unsupported version: " << header.version
-                << std::endl;
+      std::cerr << "[Snapshot] Unsupported version: " << header.version << std::endl;
+      close_fd();
       return false;
     }
 
     // 验证校验和
     uint32_t expected_checksum = header.checksum;
-    header.checksum = 0; // 清零后计算
+    header.checksum = 0;
     uint32_t actual_checksum = calculate_checksum(header);
     if (expected_checksum != actual_checksum) {
-      std::cerr << "[Snapshot] Header checksum mismatch: expected "
-                << expected_checksum << ", got " << actual_checksum
-                << std::endl;
+      std::cerr << "[Snapshot] Header checksum mismatch: expected " << expected_checksum
+                << ", got " << actual_checksum << std::endl;
+      close_fd();
       return false;
     }
 
@@ -726,73 +744,80 @@ bool SimpleCheckpointManager<K, V>::read_snapshot_file(
 
     data.clear();
 
-    // 读取每个键值对
+    // [preadv优化] 每个KV对用preadv一次读取 key_len + key + value_len + value
+    // 但变长字段需要先读key_len才能知道key大小，所以分两步：
+    // 第一步：preadv读取 key_len(4B) + value_len(4B)
+    // 第二步：preadv读取 key + value
+    //
+    // 更优方案：先读key_len，分配key_str，再读value_len，分配value_str，
+    // 然后用preadv一次读 key + value（两个iovec片段）
+    off_t file_offset = sizeof(SnapshotHeader);
+    struct iovec iov[2];
+
     for (uint32_t i = 0; i < header.record_count; ++i) {
-      // 读取key
+      // 先读 key_len (4B)
       uint32_t key_len;
-      file.read(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-      if (!file.good()) {
-        std::cerr << "[Snapshot] Failed to read key length at record " << i
-                  << std::endl;
+      struct iovec keylen_iov;
+      keylen_iov.iov_base = &key_len;
+      keylen_iov.iov_len = sizeof(key_len);
+      if (::preadv(fd, &keylen_iov, 1, file_offset) !=
+          static_cast<ssize_t>(sizeof(key_len))) {
+        std::cerr << "[Snapshot] Failed to read key length at record " << i << std::endl;
+        close_fd();
         return false;
       }
+      file_offset += sizeof(key_len);
 
-      std::string key_str(key_len, '\0');
-      file.read(&key_str[0], key_len);
-      if (!file.good()) {
-        std::cerr << "[Snapshot] Failed to read key data at record " << i
-                  << std::endl;
-        return false;
-      }
-
-      // 读取value
+      // 再读 value_len (4B)
       uint32_t value_len;
-      file.read(reinterpret_cast<char *>(&value_len), sizeof(value_len));
-      if (!file.good()) {
+      struct iovec valuelen_iov;
+      valuelen_iov.iov_base = &value_len;
+      valuelen_iov.iov_len = sizeof(value_len);
+      if (::preadv(fd, &valuelen_iov, 1, file_offset) !=
+          static_cast<ssize_t>(sizeof(value_len))) {
         std::cerr << "[Snapshot] Failed to read value length at record " << i
                   << std::endl;
+        close_fd();
         return false;
       }
+      file_offset += sizeof(value_len);
 
+      // [preadv] 一次读取 key + value 到两个缓冲区
+      std::string key_str(key_len, '\0');
       std::string value_str(value_len, '\0');
-      file.read(&value_str[0], value_len);
-      if (!file.good()) {
-        std::cerr << "[Snapshot] Failed to read value data at record " << i
-                  << std::endl;
+
+      iov[0].iov_base = &key_str[0];
+      iov[0].iov_len = key_len;
+      iov[1].iov_base = &value_str[0];
+      iov[1].iov_len = value_len;
+
+      ssize_t expected = static_cast<ssize_t>(key_len + value_len);
+      if (::preadv(fd, iov, 2, file_offset) != expected) {
+        std::cerr << "[Snapshot] Failed to read key+value at record " << i << std::endl;
+        close_fd();
         return false;
       }
+      file_offset += key_len + value_len;
 
       // 转换为实际类型
-      K key;
-      V value;
+      K key = minkv::deserialize<K>(key_str);
+      V val = minkv::deserialize<V>(value_str);
+      data[key] = val;
 
-      if constexpr (std::is_same_v<K, std::string>) {
-        key = key_str;
-      } else {
-        key = static_cast<K>(std::stoi(key_str)); // 简化处理
-      }
-
-      if constexpr (std::is_same_v<V, std::string>) {
-        value = value_str;
-      } else {
-        value = static_cast<V>(std::stoi(value_str)); // 简化处理
-      }
-
-      data[key] = value;
-
-      // 进度输出
       if ((i + 1) % 10000 == 0) {
-        std::cout << "[Snapshot] Progress: " << (i + 1) << "/"
-                  << header.record_count << " records" << std::endl;
+        std::cout << "[Snapshot] Progress: " << (i + 1) << "/" << header.record_count
+                  << " records" << std::endl;
       }
     }
 
-    std::cout << "[Snapshot] Successfully read " << data.size()
-              << " records from " << filepath << std::endl;
+    close_fd();
+    std::cout << "[Snapshot] Successfully read " << data.size() << " records from "
+              << filepath << std::endl;
     return true;
 
   } catch (const std::exception &e) {
     std::cerr << "[Snapshot] Read error: " << e.what() << std::endl;
+    close_fd();
     return false;
   }
 }
@@ -818,8 +843,7 @@ uint32_t SimpleCheckpointManager<K, V>::calculate_checksum(
 }
 
 template <typename K, typename V>
-std::vector<std::string>
-SimpleCheckpointManager<K, V>::list_snapshot_files() const {
+std::vector<std::string> SimpleCheckpointManager<K, V>::list_snapshot_files() const {
   std::vector<std::string> files;
 
   try {
@@ -829,8 +853,7 @@ SimpleCheckpointManager<K, V>::list_snapshot_files() const {
       return files;
     }
 
-    for (const auto &entry :
-         std::filesystem::directory_iterator(snapshots_dir)) {
+    for (const auto &entry : std::filesystem::directory_iterator(snapshots_dir)) {
       if (entry.is_regular_file()) {
         std::string filename = entry.path().filename().string();
         if (filename.substr(0, 9) == "snapshot_" && filename.size() >= 4 &&
@@ -866,8 +889,7 @@ template <typename K, typename V>
 int64_t SimpleCheckpointManager<K, V>::current_time_ms() {
   auto now = std::chrono::high_resolution_clock::now();
   auto duration = now.time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(duration)
-      .count();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 }
 
 } // namespace db

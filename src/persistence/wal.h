@@ -1,11 +1,14 @@
 #pragma once
 
+#include <fcntl.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -15,8 +18,9 @@
 #include <string>
 #include <thread>
 #include <type_traits>
-#include <unistd.h>
 #include <vector>
+
+#include "../base/serializer.h"
 
 namespace minkv {
 namespace db {
@@ -36,8 +40,7 @@ struct LogEntry {
   std::string key;      // 键
   std::string value;    // 值（DELETE 时为空）
   int64_t timestamp_ms; // 时间戳（毫秒，保留用于调试/审计）
-  uint64_t lsn{
-      0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
+  uint64_t lsn {0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
 
   // 计算校验和（key + value，lsn 不参与）
   uint32_t compute_checksum() const;
@@ -182,11 +185,11 @@ private:
 
   std::ofstream wal_stream_; // WAL 文件输出流（仅构造时打开，实际读取由
                              // read_all() 内部独立 ifstream 完成）
-  int wal_fd_{-1}; // WAL 文件描述符（用于 write + fsync）
+  int wal_fd_ {-1};          // WAL 文件描述符（用于 write + fsync）
 
   // 后台 fsync 线程
   std::thread fsync_thread_;
-  mutable std::atomic<bool> fsync_running_{false};
+  mutable std::atomic<bool> fsync_running_ {false};
   std::condition_variable fsync_cv_;
   std::mutex fsync_cv_mutex_;
 
@@ -199,8 +202,7 @@ private:
   // 序列化/反序列化
   static std::vector<uint8_t> serialize_entry(const LogEntry &entry);
   // 返回 nullopt 表示校验和不匹配（条目损坏）
-  static std::optional<LogEntry> deserialize_entry(const uint8_t *data,
-                                                   size_t size);
+  static std::optional<LogEntry> deserialize_entry(const uint8_t *data, size_t size);
 };
 
 // ============ 模板实现 ============
@@ -222,42 +224,60 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
   std::string snapshot_file =
       snapshot_dir_ + "/snapshot_" + std::to_string(snapshot_id) + ".bin";
 
-  std::ofstream file(snapshot_file, std::ios::binary);
-  if (!file.is_open()) {
+  // [writev优化] 使用 raw fd + writev 替代 ofstream，减少系统调用
+  int fd = ::open(snapshot_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
     return 0;
   }
 
-  // 写入快照 ID
-  file.write(reinterpret_cast<const char *>(&snapshot_id), sizeof(snapshot_id));
+  auto close_fd = [&]() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+  };
 
-  // 写入数据个数
+  // [writev] 写入快照 ID + 数据个数（一次系统调用）
+  struct iovec header_iov[2];
+  header_iov[0].iov_base = &snapshot_id;
+  header_iov[0].iov_len = sizeof(snapshot_id);
   uint32_t count = data.size();
-  file.write(reinterpret_cast<const char *>(&count), sizeof(count));
-
-  // 写入每个 key-value 对
-  for (const auto &[key, value] : data) {
-    std::string key_str;
-    if constexpr (std::is_same_v<K, std::string>) {
-      key_str = key;
-    } else {
-      key_str = std::to_string(key);
-    }
-    uint32_t key_len = key_str.size();
-    file.write(reinterpret_cast<const char *>(&key_len), sizeof(key_len));
-    file.write(key_str.c_str(), key_len);
-
-    std::string value_str;
-    if constexpr (std::is_same_v<V, std::string>) {
-      value_str = value;
-    } else {
-      value_str = std::to_string(value);
-    }
-    uint32_t value_len = value_str.size();
-    file.write(reinterpret_cast<const char *>(&value_len), sizeof(value_len));
-    file.write(value_str.c_str(), value_len);
+  header_iov[1].iov_base = &count;
+  header_iov[1].iov_len = sizeof(count);
+  if (::writev(fd, header_iov, 2) !=
+      static_cast<ssize_t>(sizeof(snapshot_id) + sizeof(count))) {
+    close_fd();
+    std::filesystem::remove(snapshot_file);
+    return 0;
   }
 
-  file.close();
+  // [writev优化] 每个KV对用4个iovec片段一次写入
+  struct iovec iov[4];
+  for (const auto &[key, value] : data) {
+    std::string key_str = minkv::serialize(key);
+    uint32_t key_len = key_str.size();
+
+    std::string value_str = minkv::serialize(value);
+    uint32_t value_len = value_str.size();
+
+    iov[0].iov_base = &key_len;
+    iov[0].iov_len = sizeof(key_len);
+    iov[1].iov_base = const_cast<char *>(key_str.data());
+    iov[1].iov_len = key_len;
+    iov[2].iov_base = &value_len;
+    iov[2].iov_len = sizeof(value_len);
+    iov[3].iov_base = const_cast<char *>(value_str.data());
+    iov[3].iov_len = value_len;
+
+    ssize_t expected = key_len + value_len + sizeof(key_len) + sizeof(value_len);
+    if (::writev(fd, iov, 4) != expected) {
+      close_fd();
+      std::filesystem::remove(snapshot_file);
+      return 0;
+    }
+  }
+
+  close_fd();
   return snapshot_id;
 }
 
@@ -274,8 +294,8 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
       if (!entry.is_regular_file())
         continue;
       std::string name = entry.path().filename().string();
-      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" &&
-          name.size() > 4 && name.substr(name.size() - 4) == ".bin") {
+      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" && name.size() > 4 &&
+          name.substr(name.size() - 4) == ".bin") {
         files.push_back(name);
       }
     }
@@ -288,22 +308,38 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   std::string latest = *std::max_element(files.begin(), files.end());
   std::string full_path = snapshot_dir_ + "/" + latest;
 
-  std::ifstream file(full_path, std::ios::binary);
-  if (!file.is_open())
+  // [preadv优化] 使用 raw fd + preadv 替代 ifstream
+  int fd = ::open(full_path.c_str(), O_RDONLY);
+  if (fd < 0)
     return 0;
+
+  auto close_fd = [&]() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
+    }
+  };
 
   // 2. 读取并校验 SnapshotHeader
-  WalSnapshotHeader header{};
-  file.read(reinterpret_cast<char *>(&header), sizeof(header));
-  if (!file.good())
+  WalSnapshotHeader header {};
+  struct iovec header_iov;
+  header_iov.iov_base = &header;
+  header_iov.iov_len = sizeof(header);
+  if (::preadv(fd, &header_iov, 1, 0) != static_cast<ssize_t>(sizeof(header))) {
+    close_fd();
     return 0;
+  }
 
-  if (std::string(header.magic, 4) != "MKVS")
+  if (std::string(header.magic, 4) != "MKVS") {
+    close_fd();
     return 0;
-  if (header.version != 1)
+  }
+  if (header.version != 1) {
+    close_fd();
     return 0;
+  }
 
-  // 校验 checksum（与 SimpleCheckpointManager::calculate_checksum 保持一致）
+  // 校验 checksum
   uint32_t stored = header.checksum;
   uint32_t calc = 0;
   calc ^= header.version;
@@ -313,50 +349,68 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   calc ^= static_cast<uint32_t>(header.timestamp);
   calc ^= static_cast<uint32_t>(header.timestamp >> 32);
   for (int i = 0; i < 4; ++i)
-    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i]))
-            << (i * 8);
-  if (stored != calc)
+    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i])) << (i * 8);
+  if (stored != calc) {
+    close_fd();
     return 0;
+  }
 
   uint64_t snapshot_lsn = header.wal_lsn;
 
-  // 3. 读取 record_count 条 length-prefixed key/value，填充临时 map
+  // 3. [preadv优化] 读取 record_count 条 length-prefixed key/value
   std::map<K, V> tmp;
+  off_t file_offset = sizeof(WalSnapshotHeader);
+  struct iovec iov[2];
+
   for (uint32_t i = 0; i < header.record_count; ++i) {
+    // 先读 key_len (4B)
     uint32_t key_len = 0;
-    file.read(reinterpret_cast<char *>(&key_len), 4);
-    if (!file.good())
+    struct iovec keylen_iov;
+    keylen_iov.iov_base = &key_len;
+    keylen_iov.iov_len = sizeof(key_len);
+    if (::preadv(fd, &keylen_iov, 1, file_offset) !=
+        static_cast<ssize_t>(sizeof(key_len))) {
+      close_fd();
       return 0;
-    std::string key_str(key_len, '\0');
-    file.read(&key_str[0], key_len);
-    if (!file.good())
-      return 0;
+    }
+    file_offset += sizeof(key_len);
 
+    // 再读 val_len (4B)
     uint32_t val_len = 0;
-    file.read(reinterpret_cast<char *>(&val_len), 4);
-    if (!file.good())
+    struct iovec vallen_iov;
+    vallen_iov.iov_base = &val_len;
+    vallen_iov.iov_len = sizeof(val_len);
+    if (::preadv(fd, &vallen_iov, 1, file_offset) !=
+        static_cast<ssize_t>(sizeof(val_len))) {
+      close_fd();
       return 0;
-    std::string val_str(val_len, '\0');
-    file.read(&val_str[0], val_len);
-    if (!file.good())
-      return 0;
+    }
+    file_offset += sizeof(val_len);
 
-    K key;
-    V val;
-    if constexpr (std::is_same_v<K, std::string>) {
-      key = key_str;
-    } else {
-      key = static_cast<K>(std::stoi(key_str));
+    // [preadv] 一次读取 key + value 到两个缓冲区
+    std::string key_str(key_len, '\0');
+    std::string val_str(val_len, '\0');
+
+    iov[0].iov_base = &key_str[0];
+    iov[0].iov_len = key_len;
+    iov[1].iov_base = &val_str[0];
+    iov[1].iov_len = val_len;
+
+    ssize_t expected = static_cast<ssize_t>(key_len + val_len);
+    if (::preadv(fd, iov, 2, file_offset) != expected) {
+      close_fd();
+      return 0;
     }
-    if constexpr (std::is_same_v<V, std::string>) {
-      val = val_str;
-    } else {
-      val = static_cast<V>(std::stoi(val_str));
-    }
+    file_offset += key_len + val_len;
+
+    K key = minkv::deserialize<K>(key_str);
+    V val = minkv::deserialize<V>(val_str);
     tmp[key] = val;
   }
 
-  // 4. 全部读取成功后才写入 data（失败时 data 不被修改）
+  close_fd();
+
+  // 4. 全部读取成功后才写入 data
   data = std::move(tmp);
   return snapshot_lsn;
 }
