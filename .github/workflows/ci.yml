@@ -221,11 +221,12 @@ jobs:
       - name: Commit clang-format fixes (if any)
         run: |
           if ! git diff --quiet; then
+            BRANCH=$(git rev-parse --abbrev-ref HEAD)
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add -A
             git commit -m "style: auto-apply clang-format fixes"
-            git push
+            git push origin HEAD:"$BRANCH"
           fi
       - name: Verify clang-format (idempotent check)
         run: |
