@@ -1,10 +1,12 @@
 #pragma once
 
-#include "graph_types.h"
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "graph_types.h"
 
 namespace minkv {
 namespace graph {
@@ -55,6 +57,22 @@ public:
    * 格式不合法时抛出 std::runtime_error
    */
   static std::vector<std::string> DeserializeAdjList(const std::string &json);
+
+  /**
+   * @brief 从 std::optional 反序列化邻接表
+   *
+   * 专为 update_in_place 回调设计，直接接受 kv_->get() 的返回值。
+   * old_val == std::nullopt 时返回空列表（Key 不存在）。
+   *
+   * @param old_val  KV 读取结果，nullopt 表示 Key 不存在
+   * @return 反序列化后的邻居 ID 列表
+   */
+  static std::vector<std::string>
+  DeserializeAdjList(const std::optional<std::string> &old_val) {
+    if (!old_val.has_value() || old_val->empty())
+      return {};
+    return DeserializeAdjList(*old_val);
+  }
 
 private:
   // ── 内部工具函数 ──────────────────────────────────────────────────────────

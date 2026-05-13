@@ -1,9 +1,10 @@
-#include "vector/vector_ops.h"
 #include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <vector>
+
+#include "vector/vector_ops.h"
 
 // 生成随机向量
 std::vector<float> generate_random_vector(size_t dim) {

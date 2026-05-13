@@ -1,15 +1,16 @@
 #pragma once
 
-#include "../core/minkv.h"
-#include "../graph/graph_store.h"
-#include "../vector/vector_ops.h"
-#include "../vector/vector_value.h"
-#include "httplib.h"
 #include <atomic>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
+
+#include "../core/minkv.h"
+#include "../graph/graph_store.h"
+#include "../vector/vector_ops.h"
+#include "../vector/vector_value.h"
+#include "httplib.h"
 
 namespace minkv {
 namespace server {

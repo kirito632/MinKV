@@ -215,7 +215,55 @@ private:
     K key;                  // 键
     V value;                // 值
     int64_t expiry_time_ms; // 过期时间戳（毫秒），0 表示永不过期
+    // Per-Key 节流：每个节点独立记录上次提升时间戳
+    // 避免全局节流导致高并发下 LRU 退化为 FIFO/随机淘汰
+    std::atomic<uint64_t> last_promote_ms{0};
+
+    // std::atomic 不可拷贝/移动，需要自定义构造函数
+    Node(const K &k, const V &v, int64_t expiry)
+        : key(k), value(v), expiry_time_ms(expiry), last_promote_ms(0) {}
+
+    Node(K &&k, V &&v, int64_t expiry)
+        : key(std::move(k)), value(std::move(v)), expiry_time_ms(expiry),
+          last_promote_ms(0) {}
+
+    Node(const Node &other)
+        : key(other.key), value(other.value),
+          expiry_time_ms(other.expiry_time_ms),
+          last_promote_ms(
+              other.last_promote_ms.load(std::memory_order_relaxed)) {}
+
+    Node(Node &&other) noexcept
+        : key(std::move(other.key)), value(std::move(other.value)),
+          expiry_time_ms(other.expiry_time_ms),
+          last_promote_ms(
+              other.last_promote_ms.load(std::memory_order_relaxed)) {}
+
+    Node &operator=(const Node &other) {
+      if (this != &other) {
+        key = other.key;
+        value = other.value;
+        expiry_time_ms = other.expiry_time_ms;
+        last_promote_ms.store(
+            other.last_promote_ms.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+      }
+      return *this;
+    }
+
+    Node &operator=(Node &&other) noexcept {
+      if (this != &other) {
+        key = std::move(other.key);
+        value = std::move(other.value);
+        expiry_time_ms = other.expiry_time_ms;
+        last_promote_ms.store(
+            other.last_promote_ms.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+      }
+      return *this;
+    }
   };
+
   std::list<Node> cache_list_; // 真正存数据的地方
 
   // 哈希表：Key -> 链表迭代器
@@ -225,9 +273,12 @@ private:
   // 互斥锁（ThreadSafe=false 时为空结构体，零开销）
   struct NullMutex {
     void lock() {}
+
     void unlock() {}
+
     bool try_lock() { return true; }
   };
+
   using MutexType =
       std::conditional_t<ThreadSafe, std::shared_mutex, NullMutex>;
   mutable MutexType mutex_;
@@ -239,9 +290,6 @@ private:
   mutable std::atomic<uint64_t> stats_evictions_{0};
   mutable std::atomic<uint64_t> stats_puts_{0};
   mutable std::atomic<uint64_t> stats_removes_{0};
-
-  // Lazy LRU: 上次提升节点的时间
-  mutable std::atomic<uint64_t> last_promote_time_ms_{0};
 
   // ==================== 时间戳统计 ====================
   uint64_t start_time_ms_{0};                            // 缓存启动时间
@@ -311,7 +359,8 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
         return std::nullopt;
       }
       if (!is_expired(*it->second)) {
-        uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
+        uint64_t last =
+            it->second->last_promote_ms.load(std::memory_order_relaxed);
         if (now >= last && (now - last) <= 1000) {
           ++stats_hits_;
           last_hit_time_ms_.store(now, std::memory_order_relaxed);
@@ -334,10 +383,10 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
       ++stats_misses_;
       return std::nullopt;
     }
-    uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
+    uint64_t last = it->second->last_promote_ms.load(std::memory_order_relaxed);
     if (now >= last && (now - last) > 1000) {
       cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-      last_promote_time_ms_.store(now, std::memory_order_relaxed);
+      it->second->last_promote_ms.store(now, std::memory_order_relaxed);
     }
     ++stats_hits_;
     last_hit_time_ms_.store(now, std::memory_order_relaxed);
@@ -358,10 +407,10 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
       ++stats_misses_;
       return std::nullopt;
     }
-    uint64_t last = last_promote_time_ms_.load(std::memory_order_relaxed);
+    uint64_t last = it->second->last_promote_ms.load(std::memory_order_relaxed);
     if (now >= last && (now - last) > 1000) {
       cache_list_.splice(cache_list_.begin(), cache_list_, it->second);
-      last_promote_time_ms_.store(now, std::memory_order_relaxed);
+      it->second->last_promote_ms.store(now, std::memory_order_relaxed);
     }
     ++stats_hits_;
     last_hit_time_ms_.store(now, std::memory_order_relaxed);
@@ -393,7 +442,7 @@ void LruCache<K, V, ThreadSafe>::put(const K &key, const V &value,
     auto last = cache_list_.end();
     --last;
     K key_to_remove = last->key;
-    cache_list_.push_front({key, value, expiry_time});
+    cache_list_.push_front(Node(key, value, expiry_time));
     try {
       map_[key] = cache_list_.begin();
       map_.erase(key_to_remove);
@@ -404,7 +453,7 @@ void LruCache<K, V, ThreadSafe>::put(const K &key, const V &value,
       throw;
     }
   } else {
-    cache_list_.push_front({key, value, expiry_time});
+    cache_list_.push_front(Node(key, value, expiry_time));
     try {
       map_[key] = cache_list_.begin();
     } catch (...) {

@@ -3,13 +3,14 @@
  * @brief RAII重构验证测试 - 验证线程自动启动和停止
  */
 
-#include "../base/async_logger.h"
-#include "../base/expiration_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
 #include <thread>
+
+#include "../base/async_logger.h"
+#include "../base/expiration_manager.h"
 
 using namespace minkv;
 

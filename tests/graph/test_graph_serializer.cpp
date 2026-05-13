@@ -11,9 +11,6 @@
  *   Validates: Requirements 4.7, 4.8
  */
 
-#include "graph/graph_serializer.h"
-#include "graph/graph_types.h"
-
 #include <rapidcheck.h>
 
 #include <algorithm>
@@ -21,6 +18,9 @@
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "graph/graph_serializer.h"
+#include "graph/graph_types.h"
 
 using namespace minkv::graph;
 

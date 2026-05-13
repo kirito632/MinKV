@@ -1,4 +1,3 @@
-#include "../core/sharded_cache.h"
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -6,6 +5,8 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "../core/sharded_cache.h"
 
 using namespace minkv::db;
 

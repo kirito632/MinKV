@@ -207,13 +207,31 @@ jobs:
     needs: precondition
     if: ${{ needs.precondition.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - name: Install Linting Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang-format-18 cppcheck
-      - name: Run clang-format check
+      - name: Run clang-format (auto-fix)
+        run: |
+          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 -i
+      - name: Commit clang-format fixes (if any)
+        if: github.event_name == 'pull_request'
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style: auto-apply clang-format fixes"
+            git push origin HEAD:"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          fi
+      - name: Verify clang-format (idempotent check)
         run: |
           find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
       - name: Run cppcheck

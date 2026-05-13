@@ -94,8 +94,11 @@ public:
   // ==========================================
 
   size_t size() const { return header_ ? header_->len : 0; }
+
   size_t length() const { return size(); }
+
   bool empty() const { return size() == 0; }
+
   size_t capacity() const { return header_ ? header_->alloc : 0; }
 
   const char *data() const {
@@ -216,7 +219,9 @@ public:
   }
 
   bool operator!=(const SdsString &other) const { return !(*this == other); }
+
   bool operator!=(const std::string &str) const { return !(*this == str); }
+
   bool operator!=(std::string_view sv) const { return !(*this == sv); }
 
   // ==========================================

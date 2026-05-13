@@ -1,17 +1,18 @@
 #include "append_file.h"
-#include <cerrno>
-#include <cstring>
+
 #include <fcntl.h>
-#include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
 
 namespace minkv {
 namespace base {
 
 AppendFile::AppendFile(const std::string &filename)
     : fd_(-1), writtenBytes_(0), filename_(filename) {
-
   // [系统调用优化] 使用open()系统调用直接创建文件描述符
   // 这是高性能I/O的关键：绕过标准库的用户空间缓冲
 

@@ -1,7 +1,8 @@
 #pragma once
 
-#include <cmath>
 #include <immintrin.h> // AVX/AVX2
+
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -249,7 +250,6 @@ public:
   BatchCosineSimilarity(const float *query,
                         const std::vector<const float *> &candidates,
                         size_t dim) {
-
     std::vector<float> similarities;
     similarities.reserve(candidates.size());
 

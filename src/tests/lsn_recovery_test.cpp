@@ -11,14 +11,15 @@
  * 6. stop_background_fsync 快速退出（条件变量）
  */
 
-#include "../core/sharded_cache.h"
-#include "../persistence/checkpoint_manager.h"
 #include <cassert>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
+
+#include "../core/sharded_cache.h"
+#include "../persistence/checkpoint_manager.h"
 
 namespace fs = std::filesystem;
 using Cache = minkv::db::ShardedCache<std::string, std::string>;

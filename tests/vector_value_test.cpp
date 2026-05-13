@@ -1,9 +1,11 @@
-#include "../vector/vector_index.h"
-#include "../vector/vector_value.h"
-#include <cmath>
 #include <gtest/gtest.h>
+
+#include <cmath>
 #include <thread>
 #include <vector>
+
+#include "../vector/vector_index.h"
+#include "../vector/vector_value.h"
 
 using namespace minkv::vector;
 

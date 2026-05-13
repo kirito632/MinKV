@@ -9,7 +9,6 @@
  * 4. 测试不同数据类型的分片表现
  */
 
-#include "../core/sharded_cache.h"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -18,6 +17,8 @@
 #include <random>
 #include <string>
 #include <vector>
+
+#include "../core/sharded_cache.h"
 
 using namespace minkv::db;
 

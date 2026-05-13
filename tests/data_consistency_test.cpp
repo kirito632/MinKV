@@ -16,8 +16,6 @@
  * - 体现对数据一致性的深度理解
  */
 
-#include "core/sharded_cache.h"
-#include "persitence/checkpoint_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -29,6 +27,9 @@
 #include <thread>
 #include <vector>
 
+#include "core/sharded_cache.h"
+#include "persitence/checkpoint_manager.h"
+
 using namespace minkv::db;
 
 class DataConsistencyTester {
@@ -38,7 +39,6 @@ public:
         ,
         checkpoint_mgr_(&cache_), stop_flag_(false), total_writes_(0),
         successful_writes_(0) {
-
     // 启用持久化
     cache_.enable_persistence("test_data_consistency", 100);
   }

@@ -1,4 +1,3 @@
-#include "core/minkv.h"
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
@@ -9,6 +8,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "core/minkv.h"
 
 // 测试配置
 const int NUM_OPERATIONS = 1000000;

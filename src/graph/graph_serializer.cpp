@@ -1,4 +1,5 @@
 #include "graph_serializer.h"
+
 #include <cstdint>
 #include <cstring>
 

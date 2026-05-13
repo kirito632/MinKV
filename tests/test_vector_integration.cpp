@@ -1,7 +1,8 @@
-#include "core/sharded_cache.h"
 #include <iomanip>
 #include <iostream>
 #include <vector>
+
+#include "core/sharded_cache.h"
 
 using namespace minkv::db;
 

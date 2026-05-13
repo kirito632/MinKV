@@ -1,7 +1,3 @@
-#include "../db/lru_cache.h"
-#include "../db/lru_cache_lazy.h"
-#include "../db/sharded_cache.h"
-#include "../db/sharded_cache_v2.h"
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -9,6 +5,11 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "../db/lru_cache.h"
+#include "../db/lru_cache_lazy.h"
+#include "../db/sharded_cache.h"
+#include "../db/sharded_cache_v2.h"
 
 using namespace minkv::db;
 

@@ -1,9 +1,5 @@
 #pragma once
 
-#include "../base/thread_pool.h"
-#include "../core/sharded_cache.h"
-#include "graph_types.h"
-
 #include <climits>
 #include <memory>
 #include <optional>
@@ -11,6 +7,10 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "../base/thread_pool.h"
+#include "../core/sharded_cache.h"
+#include "graph_types.h"
 
 namespace minkv {
 namespace graph {
@@ -26,6 +26,10 @@ namespace graph {
  *   adj:out:{node_id}        -> 出边邻接表 JSON 数组
  *   adj:in:{node_id}         -> 入边邻接表 JSON 数组
  *   vec:{node_id}            -> embedding raw bytes (float[])
+ *   ec:{src}:{dst}           -> 边计数器（uint64_t 十进制字符串）
+ *                              记录 (src, dst) 之间的边数量，
+ *                              用于 DeleteEdge O(1)
+ * 判断是否还有同对节点的其他边
  */
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
 
@@ -225,6 +229,16 @@ private:
   /** Embedding Key：vec:{node_id} */
   static std::string VecKey(const std::string &node_id);
 
+  /**
+   * 边计数器 Key：ec:{src}:{dst}
+   *
+   * 用于 O(1) 判断 (src, dst) 之间是否还有其他 label 的边，
+   * 避免 DeleteEdge 全表扫描。
+   * Value 是 uint64_t 的十进制字符串，通过 update_in_place 原子增减。
+   */
+  static std::string EdgeCountKey(const std::string &src,
+                                  const std::string &dst);
+
   // ── 邻接表内部辅助 ────────────────────────────────────────────────────────
 
   /** 从 KV 读取邻接表并反序列化；Key 不存在时返回空列表 */
@@ -239,6 +253,20 @@ private:
 
   /** 从邻接表移除一个 id；列表变空时删除整个 Key */
   void AdjListRemove(const std::string &kv_key, const std::string &id);
+
+  // ── 边计数器辅助 ──────────────────────────────────────────────────────────
+
+  /**
+   * 原子递增边计数器（update_in_place 保证并发安全）
+   * 在 AddEdge 时调用。
+   */
+  void IncrementEdgeCount(const std::string &src, const std::string &dst);
+
+  /**
+   * 原子递减边计数器，返回递减后的值
+   * 在 DeleteEdge 时调用，返回 0 表示 (src,dst) 间已无其他边。
+   */
+  uint64_t DecrementEdgeCount(const std::string &src, const std::string &dst);
 };
 
 } // namespace graph

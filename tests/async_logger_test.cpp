@@ -1,8 +1,9 @@
-#include "base/async_logger.h"
 #include <chrono>
 #include <iostream>
 #include <thread>
 #include <vector>
+
+#include "base/async_logger.h"
 
 using namespace minkv::base;
 

@@ -1,8 +1,9 @@
 #pragma once
 
-#include "singleton.h"
 #include <iostream>
 #include <string>
+
+#include "singleton.h"
 
 namespace minkv {
 namespace base {

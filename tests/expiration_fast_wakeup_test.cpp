@@ -5,12 +5,13 @@
  * 验证析构函数能够快速停止线程，而不需要等待完整的 check_interval
  */
 
-#include "../base/async_logger.h"
-#include "../base/expiration_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
+
+#include "../base/async_logger.h"
+#include "../base/expiration_manager.h"
 
 using namespace minkv;
 

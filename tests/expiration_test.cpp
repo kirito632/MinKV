@@ -5,7 +5,6 @@
  * 测试 MinKV 的定期删除机制，验证类似 Redis serverCron 的功能
  */
 
-#include "../base/async_logger.h"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -13,6 +12,8 @@
 #include <iostream>
 #include <thread>
 #include <unordered_map>
+
+#include "../base/async_logger.h"
 
 using namespace minkv;
 
@@ -26,6 +27,7 @@ public:
     int64_t expire_time_ms;
 
     Item() : expire_time_ms(0) {} // 添加默认构造函数
+
     Item(const std::string &v, int64_t exp) : value(v), expire_time_ms(exp) {}
 
     bool isExpired() const {
@@ -159,6 +161,7 @@ public:
     // [RAII] 确保锁被正确释放
     struct LockGuard {
       MockCacheShard *shard_;
+
       ~LockGuard() { shard_->unlock(); }
     } guard{&shard};
 

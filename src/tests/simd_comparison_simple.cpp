@@ -1,5 +1,6 @@
-#include <chrono>
 #include <immintrin.h>
+
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <random>

@@ -8,14 +8,15 @@
  * 测试不同查询数量下的加速比。
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_store.h"
 #include <cassert>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_store.h"
 
 using namespace minkv;
 using namespace minkv::graph;

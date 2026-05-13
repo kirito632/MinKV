@@ -8,13 +8,14 @@
  * 3. 多次异常后线程仍然正常工作
  */
 
-#include "base/expiration_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+
+#include "base/expiration_manager.h"
 
 using namespace minkv::base;
 using namespace std::chrono_literals;

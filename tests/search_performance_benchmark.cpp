@@ -19,9 +19,6 @@
  *       -I.. -o search_benchmark
  */
 
-#include "../vector/vector_index.h"
-#include "../vector/vector_ops.h"
-#include "../vector/vector_search.h"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -31,6 +28,10 @@
 #include <numeric>
 #include <random>
 #include <vector>
+
+#include "../vector/vector_index.h"
+#include "../vector/vector_ops.h"
+#include "../vector/vector_search.h"
 
 using namespace std;
 using namespace std::chrono;

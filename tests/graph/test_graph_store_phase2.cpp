@@ -22,16 +22,16 @@
  *   - 无出/入边节点返回空列表
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_store.h"
-#include "graph/graph_types.h"
-
 #include <rapidcheck.h>
 
 #include <algorithm>
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_store.h"
+#include "graph/graph_types.h"
 
 using namespace minkv::graph;
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;

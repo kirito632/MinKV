@@ -1,4 +1,5 @@
 #include "group_commit.h"
+
 #include <future>
 #include <iostream>
 
@@ -10,7 +11,6 @@ GroupCommitManager::GroupCommitManager(const std::string &filename,
                                        std::chrono::milliseconds syncInterval)
     : batchSize_(batchSize), syncInterval_(syncInterval), running_(false),
       totalCommits_(0), totalBatches_(0), totalBytes_(0), currentBatchSize_(0) {
-
   try {
     // [系统调用优化] 创建高性能文件写入器，封装open/write/fsync系统调用
     // AppendFile使用O_APPEND模式，确保多进程写入的原子性

@@ -71,10 +71,12 @@ public:
 
 private:
   size_t capacity_;
+
   struct Node {
     int key;
     int value;
   };
+
   list<Node> list_;
   unordered_map<int, list<Node>::iterator> map_;
   mutex mutex_;

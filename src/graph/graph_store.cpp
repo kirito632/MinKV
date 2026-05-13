@@ -1,6 +1,4 @@
 #include "graph_store.h"
-#include "../base/thread_pool.h"
-#include "graph_serializer.h"
 
 #include <algorithm> // std::find, std::reverse
 #include <cstring>   // std::memcpy
@@ -8,6 +6,9 @@
 #include <mutex>
 #include <queue> // std::queue（BFS 用）
 #include <unordered_set>
+
+#include "../base/thread_pool.h"
+#include "graph_serializer.h"
 
 namespace minkv {
 namespace graph {
@@ -79,6 +80,13 @@ std::string GraphStore::VecKey(const std::string &node_id) {
   return "vec:" + EscapeId(node_id);
 }
 
+std::string GraphStore::EdgeCountKey(const std::string &src,
+                                     const std::string &dst) {
+  // 格式：ec:{src}:{dst}
+  // 与 e:{src}:{dst}:{label} 共享相同的 src/dst 转义规则
+  return "ec:" + EscapeId(src) + ":" + EscapeId(dst);
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // 邻接表内部辅助函数
 //
@@ -103,33 +111,100 @@ void GraphStore::SaveAdjList(const std::string &kv_key,
 
 /**
  * 向邻接表追加一个 id（自动去重）
- * 流程：读取现有列表 -> 检查是否已存在 -> 追加 -> 写回
+ *
+ * 使用 ShardedCache::update_in_place 实现原子 read-modify-write，
+ * 在分片锁内完成"读取 → 反序列化 → 去重追加 → 序列化 → 写入"整个流程，
+ * 消除并发写覆盖问题。
  */
 void GraphStore::AdjListAdd(const std::string &kv_key, const std::string &id) {
-  auto list = LoadAdjList(kv_key);
-  // 去重：如果 id 已经在列表里，不重复添加
-  if (std::find(list.begin(), list.end(), id) == list.end()) {
-    list.push_back(id);
-    SaveAdjList(kv_key, list);
-  }
+  kv_->update_in_place(kv_key, [&](const std::optional<std::string> &old_val) {
+    auto list = GraphSerializer::DeserializeAdjList(old_val);
+    if (std::find(list.begin(), list.end(), id) == list.end()) {
+      list.push_back(id);
+    }
+    return GraphSerializer::SerializeAdjList(list);
+  });
 }
 
 /**
  * 从邻接表移除一个 id
- * 如果移除后列表变空，直接删除整个 Key（节省存储空间）
+ *
+ * 同样使用 update_in_place 保证原子性。
+ * 如果移除后列表变空，返回空字符串作为"空列表"标记；
+ * 调用方（AdjListRemove 的调用者）在外部通过 kv_->remove() 删除 Key。
+ *
+ * 注意：这里不直接在回调内调用 kv_->remove()，因为 remove 会持另一把锁，
+ * 在分片锁内调用 remove 会导致死锁。改为返回空序列化结果，
+ * 由调用方在 update_in_place 返回后判断是否需要 remove。
  */
 void GraphStore::AdjListRemove(const std::string &kv_key,
                                const std::string &id) {
-  auto list = LoadAdjList(kv_key);
-  auto it = std::find(list.begin(), list.end(), id);
-  if (it == list.end())
-    return; // id 不在列表里，无需操作
-  list.erase(it);
-  if (list.empty()) {
-    kv_->remove(kv_key); // 空列表直接删 Key
-  } else {
-    SaveAdjList(kv_key, list);
+  bool became_empty = false;
+  kv_->update_in_place(kv_key, [&](const std::optional<std::string> &old_val) {
+    auto list = GraphSerializer::DeserializeAdjList(old_val);
+    auto it = std::find(list.begin(), list.end(), id);
+    if (it == list.end()) {
+      // id 不在列表里，返回原值（不做任何修改）
+      became_empty = false;
+      return old_val.value_or("");
+    }
+    list.erase(it);
+    became_empty = list.empty();
+    return GraphSerializer::SerializeAdjList(list);
+  });
+
+  // 在 update_in_place 返回后（分片锁已释放），如果列表变空则删除 Key
+  // 这是安全的，因为 update_in_place 已经原子地移除了 id，
+  // 后续的 remove 只是清理空 Key，不会导致数据不一致
+  if (became_empty) {
+    kv_->remove(kv_key);
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 边计数器辅助函数
+//
+// 边计数器 Key 格式：ec:{src}:{dst}
+// Value 是 uint64_t 的十进制字符串。
+//
+// 使用 update_in_place 保证原子性，与 AdjListAdd/AdjListRemove 一致。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 原子递增边计数器
+ *
+ * 在 AddEdge 和 RebuildAdjacencyList 中调用。
+ * 使用 update_in_place 在分片锁内完成"读 → 增 1 → 写"的 RMW 周期，
+ * 消除并发写覆盖问题。
+ */
+void GraphStore::IncrementEdgeCount(const std::string &src,
+                                    const std::string &dst) {
+  kv_->update_in_place(EdgeCountKey(src, dst),
+                       [&](const std::optional<std::string> &old_val) {
+                         uint64_t count = old_val ? std::stoull(*old_val) : 0;
+                         return std::to_string(count + 1);
+                       });
+}
+
+/**
+ * 原子递减边计数器，返回递减后的值
+ *
+ * 在 DeleteEdge 中调用。
+ * 返回 0 表示 (src, dst) 间已无其他边，调用方应清理邻接表。
+ *
+ * 注意：update_in_place 的回调在分片锁内执行，
+ * 返回值的捕获通过引用完成，保证线程安全。
+ */
+uint64_t GraphStore::DecrementEdgeCount(const std::string &src,
+                                        const std::string &dst) {
+  uint64_t new_count = 0;
+  kv_->update_in_place(EdgeCountKey(src, dst),
+                       [&](const std::optional<std::string> &old_val) {
+                         uint64_t count = old_val ? std::stoull(*old_val) : 0;
+                         new_count = (count > 0) ? (count - 1) : 0;
+                         return std::to_string(new_count);
+                       });
+  return new_count;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -231,13 +306,14 @@ void GraphStore::DeleteNode(const std::string &node_id) {
 /**
  * 添加有向边
  *
- * Phase 1 只写边数据（Step 1）。
- * Phase 2 会补全 Step 2（更新 adj:out）和 Step 3（更新 adj:in）。
- *
- * 写入顺序设计：先写边数据，再写邻接表。
- * 这样即使进程在 Step 2/3 之前崩溃，边数据是完整的，
+ * 写入顺序设计：先写边数据，再写邻接表，最后递增边计数器。
+ * 这样即使进程在中间步骤崩溃，边数据是完整的，
  * 邻接表只是缺了条目（可以用 RebuildAdjacencyList 修复），
  * 不会出现"邻接表有记录但边不存在"的更危险情况。
+ *
+ * 边计数器（ec:{src}:{dst}）用于 O(1) 判断 (src,dst) 间是否还有边，
+ * 避免 DeleteEdge 全表扫描。计数器在邻接表之后递增，
+ * 这样崩溃后计数器可能偏低（而非偏高），不会导致邻接表条目被误删。
  */
 void GraphStore::AddEdge(const Edge &edge) {
   // Step 1: 写边数据（先写边，再写邻接表，保证崩溃后边数据完整）
@@ -248,6 +324,9 @@ void GraphStore::AddEdge(const Edge &edge) {
   AdjListAdd(AdjOutKey(edge.src_id), edge.dst_id);
   // Step 3: 更新入边邻接表
   AdjListAdd(AdjInKey(edge.dst_id), edge.src_id);
+  // Step 4: 递增边计数器（原子操作，update_in_place 保证并发安全）
+  // 放在最后一步：崩溃后计数器偏低，不会导致邻接表误删
+  IncrementEdgeCount(edge.src_id, edge.dst_id);
 }
 
 /** 查询边：按三元组 Key 查找；不存在返回 nullopt */
@@ -262,7 +341,11 @@ std::optional<Edge> GraphStore::GetEdge(const std::string &src_id,
 
 /**
  * 删除边
- * Phase 1 只删边数据；Phase 2 补全邻接表清理。
+ *
+ * 利用边计数器（ec:{src}:{dst}）O(1) 判断 (src, dst) 间是否还有其他 label
+ * 的边。 计数器减到 0 时才清理邻接表，避免全表扫描。
+ *
+ * 复杂度：从 O(total_keys) 降为 O(1)。
  */
 void GraphStore::DeleteEdge(const std::string &src_id,
                             const std::string &dst_id,
@@ -270,30 +353,14 @@ void GraphStore::DeleteEdge(const std::string &src_id,
   // Step 1: 删除边数据
   kv_->remove(EdgeKey(src_id, dst_id, label));
 
-  // Step 2: 检查 (src, dst) 间是否还有其他 label 的边
-  // 只有当该对节点间所有边都删完后，才从邻接表中移除
-  // 策略：尝试用 export_all_data 扫描太重，改用"尝试读取任意其他边"的方式
-  // 实际上邻接表存的是 dst，不区分 label，所以需要检查是否还有同 src->dst 的边
-  // 简单做法：扫描 KV 中是否还有 e:{src}:{dst}: 前缀的 Key
-  bool has_other_edge = false;
-  const std::string edge_prefix =
-      "e:" + EscapeId(src_id) + ":" + EscapeId(dst_id) + ":";
-  auto all_data = kv_->export_all_data();
-  for (const auto &[k, v] : all_data) {
-    // 注意：必须使用 >= 而非 >，因为当 src 和 dst 都为空字符串时，
-    // edge_prefix = "e:::"，而空 label 的边 Key 也是 "e:::"，长度相等。
-    // 使用 >= 确保这种情况也能正确匹配。
-    if (k.size() >= edge_prefix.size() &&
-        k.substr(0, edge_prefix.size()) == edge_prefix) {
-      has_other_edge = true;
-      break;
-    }
-  }
-
-  if (!has_other_edge) {
+  // Step 2: 原子递减边计数器，返回递减后的值
+  // 为 0 表示 (src, dst) 间已无其他边，清理邻接表
+  if (DecrementEdgeCount(src_id, dst_id) == 0) {
     // (src, dst) 间无其他边，从邻接表中移除
     AdjListRemove(AdjOutKey(src_id), dst_id);
     AdjListRemove(AdjInKey(dst_id), src_id);
+    // 清理空计数器 Key（可选，LRU 淘汰也会处理）
+    kv_->remove(EdgeCountKey(src_id, dst_id));
   }
 }
 
@@ -314,21 +381,25 @@ GraphStore::GetInNeighbors(const std::string &node_id) const {
 }
 
 void GraphStore::RebuildAdjacencyList() {
-  // Step 1: 导出所有 KV 数据，过滤出边数据（e: 前缀）和邻接表 Key（adj: 前缀）
+  // Step 1: 导出所有 KV 数据，过滤出边数据（e: 前缀）、邻接表 Key（adj: 前缀）
+  // 和边计数器 Key（ec: 前缀）
   auto all_data = kv_->export_all_data();
 
-  // Step 2: 清空所有现有邻接表（adj:out:* 和 adj:in:*）
+  // Step 2: 清空所有现有邻接表（adj:out:* 和 adj:in:*）和边计数器（ec:*）
   // 注意：不能直接在持有 export_all_data 的 unique_lock 时调用 kv_->remove，
   // 因为 remove 内部会尝试获取 shared_lock，导致死锁（shared_mutex 不允许
   // 同一线程同时持有 unique_lock 和 shared_lock）。
   // 解决方案：先释放 export_all_data 的锁（通过让 all_data 离开作用域），
   // 或者直接使用 all_data 快照中的 adj key 列表，在锁外删除。
-  // 这里采用方案：从快照中收集需要删除的 adj key，然后逐个删除。
-  std::vector<std::string> adj_keys_to_remove;
+  // 这里采用方案：从快照中收集需要删除的 key，然后逐个删除。
+  std::vector<std::string> keys_to_remove;
   std::vector<std::pair<std::string, std::string>> edge_entries;
   for (const auto &[k, v] : all_data) {
     if (k.size() > 4 && k.substr(0, 4) == "adj:") {
-      adj_keys_to_remove.push_back(k);
+      keys_to_remove.push_back(k);
+    } else if (k.size() > 3 && k.substr(0, 3) == "ec:") {
+      // 边计数器在重建时会被重新计算，先清空
+      keys_to_remove.push_back(k);
     } else if (k.size() > 2 && k.substr(0, 2) == "e:") {
       edge_entries.push_back({k, v});
     }
@@ -338,18 +409,20 @@ void GraphStore::RebuildAdjacencyList() {
   // 此时可以安全地调用 kv_->remove（它内部获取 shared_lock）
   all_data.clear();
 
-  // 清空邻接表
-  for (const auto &k : adj_keys_to_remove) {
+  // 清空邻接表和边计数器
+  for (const auto &k : keys_to_remove) {
     kv_->remove(k);
   }
 
-  // Step 3: 遍历所有边，重新构建邻接表
+  // Step 3: 遍历所有边，重新构建邻接表和边计数器
   // 边 Key 格式：e:{src}:{dst}:{label}，Value 是序列化的 Edge 结构体
   for (const auto &[k, v] : edge_entries) {
     try {
       Edge edge = GraphSerializer::DeserializeEdge(v);
       AdjListAdd(AdjOutKey(edge.src_id), edge.dst_id);
       AdjListAdd(AdjInKey(edge.dst_id), edge.src_id);
+      // 重建边计数器：每条边递增一次
+      IncrementEdgeCount(edge.src_id, edge.dst_id);
     } catch (const std::exception &) {
       // 跳过损坏的边数据，继续处理其他边
     }

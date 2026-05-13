@@ -16,10 +16,6 @@
  * e；未添加的边返回 nullopt Validates: Requirements 3.1, 3.2, 3.3
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_serializer.h"
-#include "graph/graph_store.h"
-
 #include <rapidcheck.h>
 
 #include <cassert>
@@ -27,6 +23,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_serializer.h"
+#include "graph/graph_store.h"
 
 using namespace minkv::graph;
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;

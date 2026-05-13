@@ -1,11 +1,12 @@
-#include "base/append_file.h"
-#include "persistence/group_commit.h"
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "base/append_file.h"
+#include "persistence/group_commit.h"
 
 using namespace minkv::base;
 

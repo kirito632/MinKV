@@ -9,7 +9,6 @@
  * Requirements: FR-1.3
  */
 
-#include "../vector/vector_ops.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -17,6 +16,8 @@
 #include <iostream>
 #include <random>
 #include <vector>
+
+#include "../vector/vector_ops.h"
 
 // Test configuration
 const size_t TEST_DIMENSIONS[] = {128, 256, 512, 768, 1536};

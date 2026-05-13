@@ -1,8 +1,10 @@
 #include "expiration_manager.h"
-#include "async_logger.h"
+
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
+
+#include "async_logger.h"
 
 namespace minkv {
 namespace base {
@@ -20,7 +22,6 @@ ExpirationManager::ExpirationManager(ExpirationCallback callback,
       rng_(std::random_device{}()), shard_dist_(0, shard_count - 1)
 // cron_thread_ is NOT initialized here - will be started in constructor body
 {
-
   // [参数验证] 在线程启动前验证所有参数，确保强异常安全保证
   if (!callback_) {
     throw std::invalid_argument("ExpirationManager: callback cannot be null");

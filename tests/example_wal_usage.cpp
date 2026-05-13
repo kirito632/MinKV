@@ -1,8 +1,9 @@
-#include "core/sharded_cache.h"
-#include "persistence/wal.h"
 #include <chrono>
 #include <iostream>
 #include <thread>
+
+#include "core/sharded_cache.h"
+#include "persistence/wal.h"
 
 /**
  * 示例：如何在 MinKV 中使用 WAL 持久化

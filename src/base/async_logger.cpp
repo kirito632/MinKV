@@ -1,14 +1,17 @@
 #include "async_logger.h"
-#include "append_file.h"
+
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <mutex> // for std::once_flag
 #include <sstream>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include <utility>
+
+#include "append_file.h"
 
 namespace minkv {
 namespace base {

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "../base/append_file.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -9,6 +8,8 @@
 #include <mutex>
 #include <queue>
 #include <thread>
+
+#include "../base/append_file.h"
 
 namespace minkv {
 namespace base {

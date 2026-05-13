@@ -13,10 +13,6 @@
  *   ./bin/demo_graphrag
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_serializer.h"
-#include "graph/graph_store.h"
-
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -26,6 +22,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_serializer.h"
+#include "graph/graph_store.h"
 
 using namespace minkv::graph;
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;

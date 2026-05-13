@@ -1,4 +1,3 @@
-#include "core/sharded_cache.h"
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -6,6 +5,8 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "core/sharded_cache.h"
 
 /**
  * @brief 专用基准测试：缓存行对齐对伪共享的影响

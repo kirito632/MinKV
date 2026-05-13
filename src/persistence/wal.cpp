@@ -1,11 +1,14 @@
 #include "wal.h"
+
+#include <fcntl.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <fcntl.h>
 #include <filesystem>
-#include <unistd.h>
 
 namespace minkv {
 namespace db {
@@ -149,19 +152,31 @@ bool WriteAheadLog::flush() {
 std::vector<LogEntry> WriteAheadLog::read_all() {
   std::vector<LogEntry> entries;
 
-  std::ifstream file(wal_file_, std::ios::binary);
-  if (!file.is_open()) {
+  // 使用 raw fd + posix_fadvise 预读提示，优化 WAL 恢复时的顺序读取性能
+  int fd = ::open(wal_file_.c_str(), O_RDONLY);
+  if (fd == -1) {
     return entries;
   }
 
-  // 读取文件内容
-  file.seekg(0, std::ios::end);
-  size_t file_size = file.tellg();
-  file.seekg(0, std::ios::beg);
+  // 告知内核：我们将顺序读取整个文件，并建议内核预读
+  ::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+  ::posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
 
-  std::vector<uint8_t> data(file_size);
-  file.read(reinterpret_cast<char *>(data.data()), file_size);
-  file.close();
+  // 获取文件大小
+  off_t file_size = ::lseek(fd, 0, SEEK_END);
+  ::lseek(fd, 0, SEEK_SET);
+  if (file_size <= 0) {
+    ::close(fd);
+    return entries;
+  }
+
+  std::vector<uint8_t> data(static_cast<size_t>(file_size));
+  ssize_t bytes_read = ::read(fd, data.data(), data.size());
+  ::close(fd);
+
+  if (bytes_read != file_size) {
+    return entries;
+  }
 
   // 反序列化日志条目
   size_t offset = 0;

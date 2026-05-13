@@ -10,14 +10,14 @@
  * 运行：./bin/test_mcp_simulation
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_store.h"
-
 #include <cmath>
 #include <iostream>
 #include <random>
 #include <string>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_store.h"
 
 using namespace minkv::graph;
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;

@@ -9,14 +9,15 @@
  * 4. 恢复时LSN过滤正确性
  */
 
-#include "../core/sharded_cache.h"
-#include "../persistence/checkpoint_manager.h"
 #include <cassert>
 #include <filesystem>
 #include <iostream>
 #include <set>
 #include <thread>
 #include <vector>
+
+#include "../core/sharded_cache.h"
+#include "../persistence/checkpoint_manager.h"
 
 using namespace minkv::db;
 

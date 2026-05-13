@@ -1,10 +1,5 @@
 #pragma once
 
-#include "../base/expiration_manager.h"
-#include "../base/serializer.h"
-#include "../persistence/wal.h"
-#include "../vector/vector_ops.h"
-#include "lru_cache.h"
 #include <functional>
 #include <future>
 #include <memory>
@@ -14,6 +9,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "../base/expiration_manager.h"
+#include "../base/serializer.h"
+#include "../persistence/wal.h"
+#include "../vector/vector_ops.h"
+#include "lru_cache.h"
 
 namespace minkv {
 namespace db {
@@ -119,6 +120,27 @@ public:
    * @brief 重置所有分片的统计计数器（归零）
    */
   void resetStats();
+
+  /**
+   * @brief 原子 read-modify-write 操作
+   *
+   * 在分片锁内完成"读旧值 → 应用更新函数 → 写新值"的整个 RMW 周期，
+   * 确保并发安全，消除 read-modify-write 非原子性导致的写覆盖问题。
+   *
+   * 与 put() 一样会持 global_consistency_lock_ 的 shared_lock，
+   * 保证与 export_all_data / create_snapshot 的互斥。
+   * 如果启用了持久化，会在分片锁内完成内存写入后，再写 WAL。
+   *
+   * @tparam F  回调类型，签名: V(const std::optional<V>& old_val)
+   * @param key      要更新的键
+   * @param updater  接收旧值（std::nullopt 表示 key 不存在），返回新值
+   * @return 更新后的新值
+   *
+   * @note
+   * 回调在分片锁内执行，应尽量轻量，避免长时间阻塞其他线程对该分片的访问。
+   *       典型用途：邻接表追加/删除、计数器增减等 RMW 场景。
+   */
+  template <typename F> V update_in_place(const K &key, F &&updater);
 
   // ==========================================
   // 持久化接口 (Persistence API)
@@ -380,6 +402,24 @@ private:
      */
     size_t expireKeys(const std::vector<K> &keys);
 
+    /**
+     * @brief 原子 read-modify-write：在分片锁内完成读-更新-写
+     *
+     * 调用者必须已持有 global_consistency_lock_ 的 shared_lock，
+     * 本方法只负责分片锁内的 RMW 操作。
+     *
+     * @param key      要更新的键
+     * @param updater  回调函数，接收旧值的 optional，返回新值
+     * @return 更新后的新值
+     */
+    template <typename F> V update_in_place(const K &key, F &&updater) {
+      std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
+      auto old_val = cache_->get(key);
+      auto new_val = updater(old_val);
+      cache_->put(key, new_val, 0);
+      return new_val;
+    }
+
   private:
     // 条件对齐的互斥锁包装
     struct alignas(EnableCacheAlign ? 64 : 1) AlignedMutex {
@@ -448,7 +488,6 @@ template <typename K, typename V, bool EnableCacheAlign>
 ShardedCache<K, V, EnableCacheAlign>::ShardedCache(size_t capacity_per_shard,
                                                    size_t shard_count)
     : last_health_check_(std::chrono::steady_clock::now()) {
-
   // 创建增强的分片
   for (size_t i = 0; i < shard_count; ++i) {
     shards_.push_back(std::make_unique<EnhancedLruShard>(capacity_per_shard));
@@ -539,6 +578,66 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key, const V &value,
   } catch (const std::exception &e) {
     recordShardError(shard_idx);
   }
+}
+
+// ==========================================
+// update_in_place 实现
+// ==========================================
+
+template <typename K, typename V, bool EnableCacheAlign>
+template <typename F>
+V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key,
+                                                        F &&updater) {
+  // 持全局一致性锁（shared），与 put()/remove() 一致，
+  // 保证与 export_all_data / create_snapshot 的互斥
+  std::shared_lock<std::shared_mutex> consistency_lock(
+      global_consistency_lock_);
+
+  size_t shard_idx = get_shard_index(key);
+
+  if (isShardDisabled(shard_idx)) {
+    // 分片被禁用时，仍调用 updater 让调用方感知"旧值不存在"
+    // 但结果不会被写入，返回空字符串作为占位
+    (void)updater(std::nullopt);
+    return V{};
+  }
+
+  // Step 1: 在分片锁内完成 RMW（读旧值 → 应用回调 → 写新值）
+  V new_val;
+  try {
+    new_val =
+        shards_[shard_idx]->update_in_place(key, std::forward<F>(updater));
+    recordShardSuccess(shard_idx);
+  } catch (const std::exception &e) {
+    recordShardError(shard_idx);
+    throw; // 重新抛出，让调用方感知失败
+  }
+
+  // Step 2: 写 WAL（在分片锁外执行，避免长时间持锁）
+  // 注意：WAL 写入在内存写入之后，但这是可接受的——
+  // 崩溃恢复时 WAL replay 会覆盖内存数据，最终状态一致
+  if (persistence_enabled_ && wal_) {
+    LogEntry wal_entry;
+    wal_entry.op = LogEntry::PUT;
+    try {
+      wal_entry.key = Serializer<K>::serialize(key);
+      wal_entry.value = Serializer<V>::serialize(new_val);
+      wal_entry.timestamp_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::high_resolution_clock::now().time_since_epoch())
+              .count();
+      wal_entry.lsn = next_lsn();
+
+      std::lock_guard<std::mutex> wal_lock(persistence_mutex_);
+      wal_->append(wal_entry);
+    } catch (const std::exception &e) {
+      // WAL 写入失败不阻止内存写入完成（与 put() 行为一致）
+      std::cerr << "[WAL] update_in_place WAL append failed: " << e.what()
+                << std::endl;
+    }
+  }
+
+  return new_val;
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
@@ -825,7 +924,9 @@ std::vector<K> ShardedCache<K, V, EnableCacheAlign>::vectorSearch(
   struct SearchResult {
     K key;
     float distance;
+
     SearchResult(const K &k, float d) : key(k), distance(d) {}
+
     bool operator<(const SearchResult &other) const {
       return distance < other.distance; // 大顶堆
     }
@@ -952,6 +1053,7 @@ ShardedCache<K, V, EnableCacheAlign>::expirationCallback(size_t shard_id,
   // RAII锁管理
   struct LockGuard {
     EnhancedLruShard *shard_;
+
     ~LockGuard() { shard_->unlock(); }
   } guard{shard.get()};
 

@@ -1,9 +1,10 @@
 #pragma once
 
-#include "../persistence/checkpoint_manager.h"
-#include "sharded_cache.h"
 #include <memory>
 #include <string>
+
+#include "../persistence/checkpoint_manager.h"
+#include "sharded_cache.h"
 
 namespace minkv {
 
@@ -55,6 +56,7 @@ public:
   MinKV(size_t capacity_per_shard, size_t shard_count)
       : cache_(std::make_unique<db::ShardedCache<K, V>>(capacity_per_shard,
                                                         shard_count)) {}
+
   // ==========================================
   // 基础KV接口 - 简洁易用
   // ==========================================

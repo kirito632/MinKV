@@ -8,13 +8,14 @@
  * 3. 验证析构后线程已终止
  */
 
-#include "../base/async_logger.h"
-#include "../base/expiration_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
 #include <thread>
+
+#include "../base/async_logger.h"
+#include "../base/expiration_manager.h"
 
 using namespace minkv;
 
