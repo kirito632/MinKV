@@ -32,7 +32,8 @@ std::vector<float> random_embedding(int dim, std::mt19937 &rng) {
 }
 
 // 构建测试图
-void build_test_graph(GraphStore &gs, int num_nodes, int edges_per_node, int dim) {
+void build_test_graph(GraphStore &gs, int num_nodes, int edges_per_node,
+                      int dim) {
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> node_dist(0, num_nodes - 1);
 
@@ -40,7 +41,8 @@ void build_test_graph(GraphStore &gs, int num_nodes, int edges_per_node, int dim
   for (int i = 0; i < num_nodes; ++i) {
     Node node;
     node.node_id = "node_" + std::to_string(i);
-    node.properties_json = "{\"type\":\"test\",\"index\":" + std::to_string(i) + "}";
+    node.properties_json =
+        "{\"type\":\"test\",\"index\":" + std::to_string(i) + "}";
     gs.AddNode(node);
     // 设置 embedding
     gs.SetNodeEmbedding(node.node_id, random_embedding(dim, rng));
@@ -62,14 +64,15 @@ void build_test_graph(GraphStore &gs, int num_nodes, int edges_per_node, int dim
   }
 
   std::cout << "构建测试图完成: " << num_nodes << " 节点, "
-            << (num_nodes * edges_per_node) << " 边, embedding 维度 " << dim << std::endl;
+            << (num_nodes * edges_per_node) << " 边, embedding 维度 " << dim
+            << std::endl;
 }
 
 // 测试单查询版本（串行循环）
-double test_single_query(GraphStore &gs,
-                         const std::vector<std::vector<float>> &query_embeddings,
-                         int vector_top_k,
-                         int hop_depth) {
+double
+test_single_query(GraphStore &gs,
+                  const std::vector<std::vector<float>> &query_embeddings,
+                  int vector_top_k, int hop_depth) {
   auto start = std::chrono::high_resolution_clock::now();
 
   for (const auto &emb : query_embeddings) {
@@ -86,8 +89,7 @@ double test_single_query(GraphStore &gs,
 // 测试批量并发版本
 double test_batch_query(GraphStore &gs,
                         const std::vector<std::vector<float>> &query_embeddings,
-                        int vector_top_k,
-                        int hop_depth) {
+                        int vector_top_k, int hop_depth) {
   auto start = std::chrono::high_resolution_clock::now();
 
   auto results = gs.GraphRAGQuery(query_embeddings, vector_top_k, hop_depth);
@@ -123,15 +125,16 @@ int main() {
 
   std::cout << "\n══════════════════════════════════════════════════════\n";
   std::cout << "测试配置:\n";
-  std::cout << "  - 线程池大小: " << std::thread::hardware_concurrency() << "\n";
+  std::cout << "  - 线程池大小: " << std::thread::hardware_concurrency()
+            << "\n";
   std::cout << "  - vector_top_k: " << VECTOR_TOP_K << "\n";
   std::cout << "  - hop_depth: " << HOP_DEPTH << "\n";
   std::cout << "  - 查询向量数量: " << query_counts.back() << " (最大)\n";
   std::cout << "══════════════════════════════════════════════════════\n\n";
 
-  std::cout << std::left << std::setw(12) << "查询数量" << std::setw(20) << "单查询(ms)"
-            << std::setw(20) << "批量并发(ms)" << std::setw(15) << "加速比"
-            << std::setw(20) << "效率(%)" << std::endl;
+  std::cout << std::left << std::setw(12) << "查询数量" << std::setw(20)
+            << "单查询(ms)" << std::setw(20) << "批量并发(ms)" << std::setw(15)
+            << "加速比" << std::setw(20) << "效率(%)" << std::endl;
   std::cout << std::string(85, '-') << std::endl;
 
   for (int n : query_counts) {
@@ -149,7 +152,8 @@ int main() {
     }
 
     // 运行测试
-    double time_single = test_single_query(gs, queries, VECTOR_TOP_K, HOP_DEPTH);
+    double time_single =
+        test_single_query(gs, queries, VECTOR_TOP_K, HOP_DEPTH);
     double time_batch = test_batch_query(gs, queries, VECTOR_TOP_K, HOP_DEPTH);
 
     // 计算加速比和效率
@@ -157,15 +161,17 @@ int main() {
     double efficiency = (speedup / n) * 100.0; // 理想加速比是 n
 
     std::cout << std::left << std::setw(12) << n << std::setw(20) << std::fixed
-              << std::setprecision(2) << time_single << std::setw(20) << time_batch
-              << std::setw(15) << std::setprecision(2) << speedup << std::setw(20)
-              << std::setprecision(1) << efficiency << std::endl;
+              << std::setprecision(2) << time_single << std::setw(20)
+              << time_batch << std::setw(15) << std::setprecision(2) << speedup
+              << std::setw(20) << std::setprecision(1) << efficiency
+              << std::endl;
   }
 
   std::cout << "\n══════════════════════════════════════════════════════\n";
   std::cout << "结论:\n";
   std::cout << "1. 当查询数量 > 1 时，批量并发版本显著快于串行循环。\n";
-  std::cout << "2. 加速比随查询数量增加而提高，但受限于 CPU 核心数和任务并行度。\n";
+  std::cout
+      << "2. 加速比随查询数量增加而提高，但受限于 CPU 核心数和任务并行度。\n";
   std::cout << "3. 效率指标显示并行化效果（理想值 100%）。\n";
   std::cout << "══════════════════════════════════════════════════════\n";
 

@@ -89,7 +89,8 @@ public:
     auto bound = std::bind(std::forward<F>(fn), std::forward<Args>(args)...);
 
     // packaged_task 持有任务和 promise，future 从它这里取
-    auto task = std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
+    auto task =
+        std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
     std::future<ReturnType> fut = task->get_future();
 
     {

@@ -41,7 +41,7 @@ struct CacheStats {
   uint64_t start_time_ms = 0;       // 缓存启动时间（毫秒时间戳）
   uint64_t last_access_time_ms = 0; // 最后访问时间（毫秒时间戳）
   uint64_t last_hit_time_ms = 0;    // 最后命中时间（毫秒时间戳）
-  uint64_t last_miss_time_ms = 0;   // 最后未命中时间（毫秒时间戳）
+  uint64_t last_miss_time_ms = 0; // 最后未命中时间（毫秒时间戳）
 
   // ==================== 峰值统计 ====================
   size_t peak_size = 0;  // 历史峰值大小
@@ -110,8 +110,7 @@ struct CacheStats {
  * @tparam ThreadSafe 是否启用内部锁，默认 true；被 ShardedCache 包装时设为
  * false
  */
-template <typename K, typename V, bool ThreadSafe = true>
-class LruCache {
+template <typename K, typename V, bool ThreadSafe = true> class LruCache {
 public:
   // 构造函数，指定缓存容量
   explicit LruCache(size_t capacity);
@@ -218,37 +217,36 @@ private:
     int64_t expiry_time_ms; // 过期时间戳（毫秒），0 表示永不过期
     // Per-Key 节流：每个节点独立记录上次提升时间戳
     // 避免全局节流导致高并发下 LRU 退化为 FIFO/随机淘汰
-    std::atomic<uint64_t> last_promote_ms {0};
+    std::atomic<uint64_t> last_promote_ms{0};
 
     // std::atomic 不可拷贝/移动，需要自定义构造函数
     Node(const K &k, const V &v, int64_t expiry)
         : key(k), value(v), expiry_time_ms(expiry), last_promote_ms(0) {}
 
     Node(K &&k, V &&v, int64_t expiry)
-        : key(std::move(k)),
-          value(std::move(v)),
-          expiry_time_ms(expiry),
+        : key(std::move(k)), value(std::move(v)), expiry_time_ms(expiry),
           last_promote_ms(0) {}
 
     Node(const Node &other)
-        : key(other.key),
-          value(other.value),
+        : key(other.key), value(other.value),
           expiry_time_ms(other.expiry_time_ms),
-          last_promote_ms(other.last_promote_ms.load(std::memory_order_relaxed)) {}
+          last_promote_ms(
+              other.last_promote_ms.load(std::memory_order_relaxed)) {}
 
     Node(Node &&other) noexcept
-        : key(std::move(other.key)),
-          value(std::move(other.value)),
+        : key(std::move(other.key)), value(std::move(other.value)),
           expiry_time_ms(other.expiry_time_ms),
-          last_promote_ms(other.last_promote_ms.load(std::memory_order_relaxed)) {}
+          last_promote_ms(
+              other.last_promote_ms.load(std::memory_order_relaxed)) {}
 
     Node &operator=(const Node &other) {
       if (this != &other) {
         key = other.key;
         value = other.value;
         expiry_time_ms = other.expiry_time_ms;
-        last_promote_ms.store(other.last_promote_ms.load(std::memory_order_relaxed),
-                              std::memory_order_relaxed);
+        last_promote_ms.store(
+            other.last_promote_ms.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
       }
       return *this;
     }
@@ -258,8 +256,9 @@ private:
         key = std::move(other.key);
         value = std::move(other.value);
         expiry_time_ms = other.expiry_time_ms;
-        last_promote_ms.store(other.last_promote_ms.load(std::memory_order_relaxed),
-                              std::memory_order_relaxed);
+        last_promote_ms.store(
+            other.last_promote_ms.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
       }
       return *this;
     }
@@ -280,30 +279,31 @@ private:
     bool try_lock() { return true; }
   };
 
-  using MutexType = std::conditional_t<ThreadSafe, std::shared_mutex, NullMutex>;
+  using MutexType =
+      std::conditional_t<ThreadSafe, std::shared_mutex, NullMutex>;
   mutable MutexType mutex_;
 
   // ==================== 基础统计计数器 ====================
-  mutable std::atomic<uint64_t> stats_hits_ {0};
-  mutable std::atomic<uint64_t> stats_misses_ {0};
-  mutable std::atomic<uint64_t> stats_expired_ {0};
-  mutable std::atomic<uint64_t> stats_evictions_ {0};
-  mutable std::atomic<uint64_t> stats_puts_ {0};
-  mutable std::atomic<uint64_t> stats_removes_ {0};
+  mutable std::atomic<uint64_t> stats_hits_{0};
+  mutable std::atomic<uint64_t> stats_misses_{0};
+  mutable std::atomic<uint64_t> stats_expired_{0};
+  mutable std::atomic<uint64_t> stats_evictions_{0};
+  mutable std::atomic<uint64_t> stats_puts_{0};
+  mutable std::atomic<uint64_t> stats_removes_{0};
 
   // ==================== 时间戳统计 ====================
-  uint64_t start_time_ms_ {0};                            // 缓存启动时间
-  mutable std::atomic<uint64_t> last_access_time_ms_ {0}; // 最后访问时间
-  mutable std::atomic<uint64_t> last_hit_time_ms_ {0};    // 最后命中时间
-  mutable std::atomic<uint64_t> last_miss_time_ms_ {0};   // 最后未命中时间
+  uint64_t start_time_ms_{0};                            // 缓存启动时间
+  mutable std::atomic<uint64_t> last_access_time_ms_{0}; // 最后访问时间
+  mutable std::atomic<uint64_t> last_hit_time_ms_{0};    // 最后命中时间
+  mutable std::atomic<uint64_t> last_miss_time_ms_{0}; // 最后未命中时间
 
   // ==================== 峰值统计 ====================
-  mutable std::atomic<size_t> peak_size_ {0}; // 历史峰值大小
+  mutable std::atomic<size_t> peak_size_{0}; // 历史峰值大小
 
   // ==================== 后台清理线程 ====================
-  std::thread cleanup_thread_;                        // 后台清理线程
-  mutable std::atomic<bool> cleanup_running_ {false}; // 清理线程是否运行中
-  int64_t cleanup_interval_ms_ {1000};                // 清理间隔（毫秒）
+  std::thread cleanup_thread_;                       // 后台清理线程
+  mutable std::atomic<bool> cleanup_running_{false}; // 清理线程是否运行中
+  int64_t cleanup_interval_ms_{1000};                // 清理间隔（毫秒）
 
   // 辅助函数：检查节点是否过期
   bool is_expired(const Node &node) const;
@@ -324,7 +324,8 @@ template <typename K, typename V, bool ThreadSafe>
 int64_t LruCache<K, V, ThreadSafe>::current_time_ms() {
   auto now = std::chrono::high_resolution_clock::now();
   auto duration = now.time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+      .count();
 }
 
 template <typename K, typename V, bool ThreadSafe>
@@ -337,7 +338,8 @@ bool LruCache<K, V, ThreadSafe>::is_expired(const Node &node) const {
 
 template <typename K, typename V, bool ThreadSafe>
 LruCache<K, V, ThreadSafe>::LruCache(size_t capacity)
-    : capacity_(capacity), start_time_ms_(static_cast<uint64_t>(current_time_ms())) {}
+    : capacity_(capacity),
+      start_time_ms_(static_cast<uint64_t>(current_time_ms())) {}
 
 template <typename K, typename V, bool ThreadSafe>
 std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
@@ -357,7 +359,8 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
         return std::nullopt;
       }
       if (!is_expired(*it->second)) {
-        uint64_t last = it->second->last_promote_ms.load(std::memory_order_relaxed);
+        uint64_t last =
+            it->second->last_promote_ms.load(std::memory_order_relaxed);
         if (now >= last && (now - last) <= 1000) {
           ++stats_hits_;
           last_hit_time_ms_.store(now, std::memory_order_relaxed);
@@ -416,7 +419,8 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
 }
 
 template <typename K, typename V, bool ThreadSafe>
-void LruCache<K, V, ThreadSafe>::put(const K &key, const V &value, int64_t ttl_ms) {
+void LruCache<K, V, ThreadSafe>::put(const K &key, const V &value,
+                                     int64_t ttl_ms) {
   std::lock_guard<MutexType> lock(mutex_);
 
   int64_t expiry_time = 0;
@@ -496,7 +500,8 @@ CacheStats LruCache<K, V, ThreadSafe>::getStats() const {
   stats.current_size = map_.size();
   stats.capacity = capacity_;
   stats.start_time_ms = start_time_ms_;
-  stats.last_access_time_ms = last_access_time_ms_.load(std::memory_order_relaxed);
+  stats.last_access_time_ms =
+      last_access_time_ms_.load(std::memory_order_relaxed);
   stats.last_hit_time_ms = last_hit_time_ms_.load(std::memory_order_relaxed);
   stats.last_miss_time_ms = last_miss_time_ms_.load(std::memory_order_relaxed);
   stats.peak_size = peak_size_.load(std::memory_order_relaxed);
@@ -524,7 +529,8 @@ void LruCache<K, V, ThreadSafe>::update_peak_size() const {
   size_t current = map_.size();
   size_t peak = peak_size_.load(std::memory_order_relaxed);
   while (current > peak) {
-    if (peak_size_.compare_exchange_weak(peak, current, std::memory_order_relaxed)) {
+    if (peak_size_.compare_exchange_weak(peak, current,
+                                         std::memory_order_relaxed)) {
       break;
     }
   }
@@ -558,7 +564,8 @@ size_t LruCache<K, V, ThreadSafe>::cleanup_expired_keys() {
 template <typename K, typename V, bool ThreadSafe>
 void LruCache<K, V, ThreadSafe>::cleanup_thread_main() {
   while (cleanup_running_.load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(cleanup_interval_ms_));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(cleanup_interval_ms_));
     if (!cleanup_running_.load(std::memory_order_relaxed)) {
       break;
     }
@@ -567,7 +574,8 @@ void LruCache<K, V, ThreadSafe>::cleanup_thread_main() {
 }
 
 template <typename K, typename V, bool ThreadSafe>
-void LruCache<K, V, ThreadSafe>::start_cleanup_thread(int64_t cleanup_interval_ms) {
+void LruCache<K, V, ThreadSafe>::start_cleanup_thread(
+    int64_t cleanup_interval_ms) {
   if (cleanup_running_.load(std::memory_order_relaxed)) {
     return;
   }

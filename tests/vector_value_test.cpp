@@ -180,7 +180,8 @@ TEST(VectorIndexTest, ThreadSafety) {
   for (int t = 0; t < num_threads; ++t) {
     threads.emplace_back([&index, t, ops_per_thread]() {
       for (int i = 0; i < ops_per_thread; ++i) {
-        std::string key = "thread" + std::to_string(t) + "_key" + std::to_string(i);
+        std::string key =
+            "thread" + std::to_string(t) + "_key" + std::to_string(i);
         VectorValue v({1.0f, 2.0f, 3.0f}, "{}", i);
         index.insert(key, v);
       }
@@ -206,7 +207,7 @@ TEST(VectorIndexTest, ConcurrentReadWrite) {
   }
 
   std::vector<std::thread> threads;
-  std::atomic<int> read_count {0};
+  std::atomic<int> read_count{0};
 
   // Readers
   for (int t = 0; t < 5; ++t) {

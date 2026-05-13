@@ -82,8 +82,8 @@ void test_vector_search_integration() {
   auto search_results = engine->vectorSearch(query, 2);
 
   assert(search_results.size() <= 2);
-  std::cout << "✅ 向量搜索集成测试通过，找到 " << search_results.size() << " 个结果"
-            << std::endl;
+  std::cout << "✅ 向量搜索集成测试通过，找到 " << search_results.size()
+            << " 个结果" << std::endl;
 
   // 验证向量读取
   auto retrieved_vec = engine->vectorGet("vec1");
@@ -119,8 +119,8 @@ void test_expiration_service() {
   // 获取统计信息
   auto stats = engine->getExpirationStats();
   std::cout << "过期删除统计: 总检查=" << stats.total_checks
-            << ", 总过期=" << stats.total_expired << ", 总跳过=" << stats.total_skipped
-            << std::endl;
+            << ", 总过期=" << stats.total_expired
+            << ", 总跳过=" << stats.total_skipped << std::endl;
 
   std::cout << "✅ 定期删除服务测试通过" << std::endl;
 }
@@ -148,7 +148,8 @@ void test_health_check_and_recovery() {
   auto final_health = engine->getHealthStatus();
   std::cout << "健康检查后: " << final_health.healthy_shards << "/"
             << final_health.total_shards << " 分片健康" << std::endl;
-  std::cout << "错误率: " << (final_health.error_rate * 100) << "%" << std::endl;
+  std::cout << "错误率: " << (final_health.error_rate * 100) << "%"
+            << std::endl;
 
   std::cout << "✅ 健康检查和故障恢复测试通过" << std::endl;
 }
@@ -169,7 +170,8 @@ void test_concurrent_operations() {
       std::uniform_int_distribution<int> dist(0, 999);
 
       for (int i = 0; i < operations_per_thread; ++i) {
-        std::string key = "thread" + std::to_string(t) + "_key" + std::to_string(i);
+        std::string key =
+            "thread" + std::to_string(t) + "_key" + std::to_string(i);
         std::string value = "value" + std::to_string(dist(rng));
 
         // 随机操作：70%写入，30%读取
@@ -192,8 +194,9 @@ void test_concurrent_operations() {
   std::cout << "并发测试完成: " << "总操作="
             << (final_stats.puts + final_stats.hits + final_stats.misses)
             << ", 当前大小=" << final_stats.current_size << ", 命中率="
-            << (100.0 * final_stats.hits / (final_stats.hits + final_stats.misses)) << "%"
-            << std::endl;
+            << (100.0 * final_stats.hits /
+                (final_stats.hits + final_stats.misses))
+            << "%" << std::endl;
 
   std::cout << "✅ 并发操作测试通过" << std::endl;
 }
@@ -211,18 +214,19 @@ void test_comprehensive_integration() {
   // 2. 混合数据操作
   // 普通缓存数据
   for (int i = 0; i < 100; ++i) {
-    engine->put("cache_key_" + std::to_string(i), "cache_value_" + std::to_string(i));
+    engine->put("cache_key_" + std::to_string(i),
+                "cache_value_" + std::to_string(i));
   }
 
   // 带TTL的数据
   for (int i = 0; i < 50; ++i) {
-    engine->put("ttl_key_" + std::to_string(i), "ttl_value_" + std::to_string(i), 1000);
+    engine->put("ttl_key_" + std::to_string(i),
+                "ttl_value_" + std::to_string(i), 1000);
   }
 
   // 向量数据
   for (int i = 0; i < 20; ++i) {
-    std::vector<float> vec = {static_cast<float>(i),
-                              static_cast<float>(i * 2),
+    std::vector<float> vec = {static_cast<float>(i), static_cast<float>(i * 2),
                               static_cast<float>(i * 3),
                               static_cast<float>(i * 4)};
     engine->vectorPut("vector_" + std::to_string(i), vec);
@@ -236,7 +240,8 @@ void test_comprehensive_integration() {
   // 4. 向量搜索
   std::vector<float> query = {5.0f, 10.0f, 15.0f, 20.0f};
   auto search_results = engine->vectorSearch(query, 5);
-  std::cout << "✅ 向量搜索找到 " << search_results.size() << " 个结果" << std::endl;
+  std::cout << "✅ 向量搜索找到 " << search_results.size() << " 个结果"
+            << std::endl;
 
   // 5. 等待部分数据过期
   std::this_thread::sleep_for(std::chrono::milliseconds(1200));
@@ -256,16 +261,18 @@ void test_comprehensive_integration() {
 
   std::cout << "过期删除统计:" << std::endl;
   std::cout << "  - 总检查次数: " << expiration_stats.total_checks << std::endl;
-  std::cout << "  - 总过期删除: " << expiration_stats.total_expired << std::endl;
-  std::cout << "  - 平均过期比例: " << (expiration_stats.avg_expired_ratio * 100) << "%"
+  std::cout << "  - 总过期删除: " << expiration_stats.total_expired
             << std::endl;
+  std::cout << "  - 平均过期比例: "
+            << (expiration_stats.avg_expired_ratio * 100) << "%" << std::endl;
 
   std::cout << "健康状态:" << std::endl;
   std::cout << "  - 整体健康: " << (health_status.overall_healthy ? "是" : "否")
             << std::endl;
   std::cout << "  - 健康分片: " << health_status.healthy_shards << "/"
             << health_status.total_shards << std::endl;
-  std::cout << "  - 错误率: " << (health_status.error_rate * 100) << "%" << std::endl;
+  std::cout << "  - 错误率: " << (health_status.error_rate * 100) << "%"
+            << std::endl;
 
   // 7. 清理
   engine->disablePersistence();

@@ -79,7 +79,8 @@ void AppendFile::writeUnlocked(const char *data, size_t len) {
       } else {
         // [错误处理] 其他错误情况，抛出异常
         // 常见错误：ENOSPC(磁盘满)、EIO(I/O错误)、EBADF(无效文件描述符)
-        throw std::runtime_error("Write failed: " + std::string(std::strerror(errno)));
+        throw std::runtime_error("Write failed: " +
+                                 std::string(std::strerror(errno)));
       }
     }
 
@@ -112,7 +113,8 @@ void AppendFile::sync() {
   if (::fsync(fd_) < 0) {
     // [错误处理] fsync失败通常表示严重的I/O问题
     // 常见错误：EIO(I/O错误)、ENOSPC(磁盘满)、EROFS(只读文件系统)
-    throw std::runtime_error("fsync failed: " + std::string(std::strerror(errno)));
+    throw std::runtime_error("fsync failed: " +
+                             std::string(std::strerror(errno)));
   }
 
   // [面试要点] fsync vs fdatasync的区别：

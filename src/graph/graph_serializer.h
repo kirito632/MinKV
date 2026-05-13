@@ -67,8 +67,8 @@ public:
    * @param old_val  KV 读取结果，nullopt 表示 Key 不存在
    * @return 反序列化后的邻居 ID 列表
    */
-  static std::vector<std::string> DeserializeAdjList(
-      const std::optional<std::string> &old_val) {
+  static std::vector<std::string>
+  DeserializeAdjList(const std::optional<std::string> &old_val) {
     if (!old_val.has_value() || old_val->empty())
       return {};
     return DeserializeAdjList(*old_val);

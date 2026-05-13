@@ -8,14 +8,9 @@ namespace server {
 
 HttpServer::HttpServer(std::shared_ptr<MinKV<std::string, std::string>> kv,
                        std::shared_ptr<graph::GraphStore> graph_store,
-                       const std::string &host,
-                       int port)
-    : kv_(kv),
-      graph_store_(graph_store),
-      host_(host),
-      port_(port),
-      running_(false),
-      server_(std::make_unique<httplib::Server>()) {
+                       const std::string &host, int port)
+    : kv_(kv), graph_store_(graph_store), host_(host), port_(port),
+      running_(false), server_(std::make_unique<httplib::Server>()) {
   setup_routes(); // 构造时完成路由注册，start() 前不发起监听
 }
 
@@ -29,15 +24,18 @@ HttpServer::~HttpServer() {
 
 void HttpServer::setup_routes() {
   // [KV 基础接口] 工作记忆的快速读写
-  server_->Post("/kv/set", [this](const httplib::Request &req, httplib::Response &res) {
-    handle_kv_set(req, res);
-  });
-  server_->Get("/kv/get", [this](const httplib::Request &req, httplib::Response &res) {
-    handle_kv_get(req, res);
-  });
-  server_->Delete("/kv/del", [this](const httplib::Request &req, httplib::Response &res) {
-    handle_kv_delete(req, res);
-  });
+  server_->Post("/kv/set",
+                [this](const httplib::Request &req, httplib::Response &res) {
+                  handle_kv_set(req, res);
+                });
+  server_->Get("/kv/get",
+               [this](const httplib::Request &req, httplib::Response &res) {
+                 handle_kv_get(req, res);
+               });
+  server_->Delete("/kv/del",
+                  [this](const httplib::Request &req, httplib::Response &res) {
+                    handle_kv_delete(req, res);
+                  });
 
   // [向量接口] 情景记忆的语义存取与相似度检索
   server_->Post("/vector/put",
@@ -89,9 +87,11 @@ bool HttpServer::start() {
     std::cerr << "[HttpServer] 服务器已在运行中" << std::endl;
     return false;
   }
-  std::cout << "[HttpServer] 启动服务器：" << host_ << ":" << port_ << std::endl;
+  std::cout << "[HttpServer] 启动服务器：" << host_ << ":" << port_
+            << std::endl;
   running_.store(true);
-  bool success = server_->listen(host_.c_str(), port_); // 阻塞，直到 stop() 被调用
+  bool success =
+      server_->listen(host_.c_str(), port_); // 阻塞，直到 stop() 被调用
   running_.store(false);
   return success;
 }
@@ -131,7 +131,8 @@ void HttpServer::stop() {
 // KV 基础接口处理器
 // ==========================================
 
-void HttpServer::handle_kv_set(const httplib::Request &req, httplib::Response &res) {
+void HttpServer::handle_kv_set(const httplib::Request &req,
+                               httplib::Response &res) {
   try {
     json body = json::parse(req.body);
     if (!body.contains("key") || !body.contains("value")) {
@@ -150,7 +151,8 @@ void HttpServer::handle_kv_set(const httplib::Request &req, httplib::Response &r
   }
 }
 
-void HttpServer::handle_kv_get(const httplib::Request &req, httplib::Response &res) {
+void HttpServer::handle_kv_get(const httplib::Request &req,
+                               httplib::Response &res) {
   try {
     if (!req.has_param("key")) {
       send_error(res, 400, "缺少必填查询参数：key");
@@ -168,7 +170,8 @@ void HttpServer::handle_kv_get(const httplib::Request &req, httplib::Response &r
   }
 }
 
-void HttpServer::handle_kv_delete(const httplib::Request &req, httplib::Response &res) {
+void HttpServer::handle_kv_delete(const httplib::Request &req,
+                                  httplib::Response &res) {
   try {
     if (!req.has_param("key")) {
       send_error(res, 400, "缺少必填查询参数：key");
@@ -190,7 +193,8 @@ void HttpServer::handle_kv_delete(const httplib::Request &req, httplib::Response
 // 向量接口处理器
 // ==========================================
 
-void HttpServer::handle_vector_put(const httplib::Request &req, httplib::Response &res) {
+void HttpServer::handle_vector_put(const httplib::Request &req,
+                                   httplib::Response &res) {
   try {
     json request_body = json::parse(req.body);
 
@@ -218,11 +222,10 @@ void HttpServer::handle_vector_put(const httplib::Request &req, httplib::Respons
     // [核心写入] 调用 MinKV 向量存储接口
     kv_->vectorPut(key, embedding, ttl_ms);
 
-    send_success(res,
-                 {{"success", true},
-                  {"message", "向量写入成功"},
-                  {"key", key},
-                  {"dimension", embedding.size()}});
+    send_success(res, {{"success", true},
+                       {"message", "向量写入成功"},
+                       {"key", key},
+                       {"dimension", embedding.size()}});
   } catch (const json::exception &e) {
     send_error(res, 400, std::string("JSON 解析错误：") + e.what());
   } catch (const std::exception &e) {
@@ -259,12 +262,11 @@ void HttpServer::handle_vector_search(const httplib::Request &req,
       results_json.push_back(key);
     }
 
-    send_success(res,
-                 {{"success", true},
-                  {"query_dimension", query.size()},
-                  {"top_k", top_k},
-                  {"results_count", results.size()},
-                  {"results", results_json}});
+    send_success(res, {{"success", true},
+                       {"query_dimension", query.size()},
+                       {"top_k", top_k},
+                       {"results_count", results.size()},
+                       {"results", results_json}});
   } catch (const json::exception &e) {
     send_error(res, 400, std::string("JSON 解析错误：") + e.what());
   } catch (const std::exception &e) {
@@ -272,7 +274,8 @@ void HttpServer::handle_vector_search(const httplib::Request &req,
   }
 }
 
-void HttpServer::handle_vector_get(const httplib::Request &req, httplib::Response &res) {
+void HttpServer::handle_vector_get(const httplib::Request &req,
+                                   httplib::Response &res) {
   try {
     if (!req.has_param("key")) {
       send_error(res, 400, "缺少必填查询参数：key");
@@ -314,7 +317,8 @@ void HttpServer::handle_vector_delete(const httplib::Request &req,
     bool success = kv_->remove(key);
 
     if (success) {
-      send_success(res, {{"success", true}, {"message", "向量删除成功"}, {"key", key}});
+      send_success(
+          res, {{"success", true}, {"message", "向量删除成功"}, {"key", key}});
     } else {
       send_error(res, 404, "向量不存在");
     }
@@ -339,8 +343,7 @@ DistanceMetric HttpServer::parse_metric(const std::string &metric_str) {
   }
 }
 
-void HttpServer::send_error(httplib::Response &res,
-                            int status_code,
+void HttpServer::send_error(httplib::Response &res, int status_code,
                             const std::string &message) {
   // [统一错误格式] {"success": false, "error": "<message>"}
   json response = {{"success", false}, {"error", message}};
@@ -369,7 +372,8 @@ void HttpServer::handle_graph_add_node(const httplib::Request &req,
 
     graph::Node node;
     node.node_id = body["node_id"];
-    node.properties_json = body.value("properties_json", "{}"); // 节点属性，默认空对象
+    node.properties_json =
+        body.value("properties_json", "{}"); // 节点属性，默认空对象
     graph_store_->AddNode(node);
 
     // 可选：写入 embedding，使该节点可被 GraphRAG 的向量检索阶段命中
@@ -390,7 +394,8 @@ void HttpServer::handle_graph_add_edge(const httplib::Request &req,
                                        httplib::Response &res) {
   try {
     json body = json::parse(req.body);
-    if (!body.contains("src_id") || !body.contains("dst_id") || !body.contains("label")) {
+    if (!body.contains("src_id") || !body.contains("dst_id") ||
+        !body.contains("label")) {
       send_error(res, 400, "缺少必填字段：src_id, dst_id, label");
       return;
     }
@@ -399,15 +404,15 @@ void HttpServer::handle_graph_add_edge(const httplib::Request &req,
     edge.src_id = body["src_id"];
     edge.dst_id = body["dst_id"];
     edge.label = body["label"];
-    edge.weight = body.value("weight", 1.0f);                   // 边权重，默认 1.0
-    edge.properties_json = body.value("properties_json", "{}"); // 边属性，默认空对象
+    edge.weight = body.value("weight", 1.0f); // 边权重，默认 1.0
+    edge.properties_json =
+        body.value("properties_json", "{}"); // 边属性，默认空对象
     graph_store_->AddEdge(edge);
 
-    send_success(res,
-                 {{"success", true},
-                  {"src_id", edge.src_id},
-                  {"dst_id", edge.dst_id},
-                  {"label", edge.label}});
+    send_success(res, {{"success", true},
+                       {"src_id", edge.src_id},
+                       {"dst_id", edge.dst_id},
+                       {"label", edge.label}});
   } catch (const json::exception &e) {
     send_error(res, 400, std::string("JSON 解析错误：") + e.what());
   } catch (const std::exception &e) {
@@ -425,13 +430,15 @@ void HttpServer::handle_graph_rag_query(const httplib::Request &req,
     }
 
     std::vector<float> query_emb = body["query_embedding"];
-    int vector_top_k = body.value("vector_top_k", 3); // 向量检索阶段返回的入口节点数
+    int vector_top_k =
+        body.value("vector_top_k", 3); // 向量检索阶段返回的入口节点数
     int hop_depth = body.value("hop_depth", 2); // BFS 图遍历的最大跳数
 
     // [两阶段 GraphRAG]
     // 第一阶段：向量检索，找到语义最近的 vector_top_k 个入口节点
     // 第二阶段：从入口节点出发做 hop_depth 跳 BFS，收集所有可达节点
-    auto nodes = graph_store_->GraphRAGQuery(query_emb, vector_top_k, hop_depth);
+    auto nodes =
+        graph_store_->GraphRAGQuery(query_emb, vector_top_k, hop_depth);
 
     // 将节点列表序列化为 JSON 数组
     json nodes_json = json::array();
@@ -440,12 +447,11 @@ void HttpServer::handle_graph_rag_query(const httplib::Request &req,
           {{"node_id", n.node_id}, {"properties_json", n.properties_json}});
     }
 
-    send_success(res,
-                 {{"success", true},
-                  {"node_count", nodes.size()},
-                  {"vector_top_k", vector_top_k},
-                  {"hop_depth", hop_depth},
-                  {"nodes", nodes_json}});
+    send_success(res, {{"success", true},
+                       {"node_count", nodes.size()},
+                       {"vector_top_k", vector_top_k},
+                       {"hop_depth", hop_depth},
+                       {"nodes", nodes_json}});
   } catch (const json::exception &e) {
     send_error(res, 400, std::string("JSON 解析错误：") + e.what());
   } catch (const std::exception &e) {

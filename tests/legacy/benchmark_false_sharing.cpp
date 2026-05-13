@@ -39,18 +39,18 @@ private:
 
     // 有伪共享的版本
     struct BadLayout {
-      std::atomic<uint64_t> counter1 {0};
-      std::atomic<uint64_t> counter2 {0}; // 可能与counter1在同一cache line
-      std::atomic<uint64_t> counter3 {0};
-      std::atomic<uint64_t> counter4 {0};
+      std::atomic<uint64_t> counter1{0};
+      std::atomic<uint64_t> counter2{0}; // 可能与counter1在同一cache line
+      std::atomic<uint64_t> counter3{0};
+      std::atomic<uint64_t> counter4{0};
     };
 
     // 避免伪共享的版本
     struct GoodLayout {
-      alignas(64) std::atomic<uint64_t> counter1 {0};
-      alignas(64) std::atomic<uint64_t> counter2 {0}; // 强制不同cache line
-      alignas(64) std::atomic<uint64_t> counter3 {0};
-      alignas(64) std::atomic<uint64_t> counter4 {0};
+      alignas(64) std::atomic<uint64_t> counter1{0};
+      alignas(64) std::atomic<uint64_t> counter2{0}; // 强制不同cache line
+      alignas(64) std::atomic<uint64_t> counter3{0};
+      alignas(64) std::atomic<uint64_t> counter4{0};
     };
 
     BadLayout bad_data;
@@ -64,18 +64,18 @@ private:
       threads.emplace_back([&bad_data, t, ITERATIONS, NUM_THREADS]() {
         for (int i = 0; i < ITERATIONS; ++i) {
           switch (t % 4) {
-            case 0:
-              bad_data.counter1.fetch_add(1, std::memory_order_relaxed);
-              break;
-            case 1:
-              bad_data.counter2.fetch_add(1, std::memory_order_relaxed);
-              break;
-            case 2:
-              bad_data.counter3.fetch_add(1, std::memory_order_relaxed);
-              break;
-            case 3:
-              bad_data.counter4.fetch_add(1, std::memory_order_relaxed);
-              break;
+          case 0:
+            bad_data.counter1.fetch_add(1, std::memory_order_relaxed);
+            break;
+          case 1:
+            bad_data.counter2.fetch_add(1, std::memory_order_relaxed);
+            break;
+          case 2:
+            bad_data.counter3.fetch_add(1, std::memory_order_relaxed);
+            break;
+          case 3:
+            bad_data.counter4.fetch_add(1, std::memory_order_relaxed);
+            break;
           }
         }
       });
@@ -98,18 +98,18 @@ private:
       threads.emplace_back([&good_data, t, ITERATIONS, NUM_THREADS]() {
         for (int i = 0; i < ITERATIONS; ++i) {
           switch (t % 4) {
-            case 0:
-              good_data.counter1.fetch_add(1, std::memory_order_relaxed);
-              break;
-            case 1:
-              good_data.counter2.fetch_add(1, std::memory_order_relaxed);
-              break;
-            case 2:
-              good_data.counter3.fetch_add(1, std::memory_order_relaxed);
-              break;
-            case 3:
-              good_data.counter4.fetch_add(1, std::memory_order_relaxed);
-              break;
+          case 0:
+            good_data.counter1.fetch_add(1, std::memory_order_relaxed);
+            break;
+          case 1:
+            good_data.counter2.fetch_add(1, std::memory_order_relaxed);
+            break;
+          case 2:
+            good_data.counter3.fetch_add(1, std::memory_order_relaxed);
+            break;
+          case 3:
+            good_data.counter4.fetch_add(1, std::memory_order_relaxed);
+            break;
           }
         }
       });
@@ -125,10 +125,11 @@ private:
 
     std::cout << "Bad Layout (False Sharing):  " << bad_duration.count() << "ms"
               << std::endl;
-    std::cout << "Good Layout (Cache Aligned): " << good_duration.count() << "ms"
-              << std::endl;
+    std::cout << "Good Layout (Cache Aligned): " << good_duration.count()
+              << "ms" << std::endl;
     std::cout << "Performance Improvement: "
-              << (double)bad_duration.count() / good_duration.count() << "x" << std::endl;
+              << (double)bad_duration.count() / good_duration.count() << "x"
+              << std::endl;
     std::cout << std::endl;
   }
 
@@ -141,11 +142,12 @@ private:
     const int CACHE_SIZE = 10000;
 
     // 原始实现
-    ShardedCache<int, std::string> original_cache(CACHE_SIZE / NUM_THREADS, NUM_THREADS);
+    ShardedCache<int, std::string> original_cache(CACHE_SIZE / NUM_THREADS,
+                                                  NUM_THREADS);
 
     // 优化实现
-    OptimizedShardedCache<int, std::string> optimized_cache(CACHE_SIZE / NUM_THREADS,
-                                                            NUM_THREADS);
+    OptimizedShardedCache<int, std::string> optimized_cache(
+        CACHE_SIZE / NUM_THREADS, NUM_THREADS);
 
     // 预填充数据
     for (int i = 0; i < CACHE_SIZE / 2; ++i) {
@@ -216,13 +218,13 @@ private:
     auto optimized_duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    std::cout << "Original Implementation:  " << original_duration.count() << "ms"
-              << std::endl;
-    std::cout << "Optimized Implementation: " << optimized_duration.count() << "ms"
-              << std::endl;
+    std::cout << "Original Implementation:  " << original_duration.count()
+              << "ms" << std::endl;
+    std::cout << "Optimized Implementation: " << optimized_duration.count()
+              << "ms" << std::endl;
     std::cout << "Performance Improvement: "
-              << (double)original_duration.count() / optimized_duration.count() << "x"
-              << std::endl;
+              << (double)original_duration.count() / optimized_duration.count()
+              << "x" << std::endl;
 
     // 计算吞吐量
     double original_qps =
@@ -258,23 +260,23 @@ private:
     auto start = std::chrono::high_resolution_clock::now();
 
     std::vector<std::thread> threads;
-    std::atomic<long long> sequential_sum {0};
+    std::atomic<long long> sequential_sum{0};
 
     for (int t = 0; t < NUM_THREADS; ++t) {
-      threads.emplace_back(
-          [&sequential_array, &sequential_sum, t, NUM_THREADS, ITERATIONS, ARRAY_SIZE]() {
-            long long local_sum = 0;
-            int start_idx = t * (ARRAY_SIZE / NUM_THREADS);
-            int end_idx = (t + 1) * (ARRAY_SIZE / NUM_THREADS);
+      threads.emplace_back([&sequential_array, &sequential_sum, t, NUM_THREADS,
+                            ITERATIONS, ARRAY_SIZE]() {
+        long long local_sum = 0;
+        int start_idx = t * (ARRAY_SIZE / NUM_THREADS);
+        int end_idx = (t + 1) * (ARRAY_SIZE / NUM_THREADS);
 
-            for (int iter = 0; iter < ITERATIONS; ++iter) {
-              for (int i = start_idx; i < end_idx; ++i) {
-                local_sum += sequential_array[i];
-              }
-            }
+        for (int iter = 0; iter < ITERATIONS; ++iter) {
+          for (int i = start_idx; i < end_idx; ++i) {
+            local_sum += sequential_array[i];
+          }
+        }
 
-            sequential_sum.fetch_add(local_sum, std::memory_order_relaxed);
-          });
+        sequential_sum.fetch_add(local_sum, std::memory_order_relaxed);
+      });
     }
 
     for (auto &t : threads) {
@@ -290,23 +292,23 @@ private:
     // 测试随机访问
     start = std::chrono::high_resolution_clock::now();
 
-    std::atomic<long long> random_sum {0};
+    std::atomic<long long> random_sum{0};
 
     for (int t = 0; t < NUM_THREADS; ++t) {
-      threads.emplace_back(
-          [&random_array, &random_sum, t, NUM_THREADS, ITERATIONS, ARRAY_SIZE]() {
-            long long local_sum = 0;
-            int start_idx = t * (ARRAY_SIZE / NUM_THREADS);
-            int end_idx = (t + 1) * (ARRAY_SIZE / NUM_THREADS);
+      threads.emplace_back([&random_array, &random_sum, t, NUM_THREADS,
+                            ITERATIONS, ARRAY_SIZE]() {
+        long long local_sum = 0;
+        int start_idx = t * (ARRAY_SIZE / NUM_THREADS);
+        int end_idx = (t + 1) * (ARRAY_SIZE / NUM_THREADS);
 
-            for (int iter = 0; iter < ITERATIONS; ++iter) {
-              for (int i = start_idx; i < end_idx; ++i) {
-                local_sum += random_array[i];
-              }
-            }
+        for (int iter = 0; iter < ITERATIONS; ++iter) {
+          for (int i = start_idx; i < end_idx; ++i) {
+            local_sum += random_array[i];
+          }
+        }
 
-            random_sum.fetch_add(local_sum, std::memory_order_relaxed);
-          });
+        random_sum.fetch_add(local_sum, std::memory_order_relaxed);
+      });
     }
 
     for (auto &t : threads) {
@@ -319,7 +321,8 @@ private:
 
     std::cout << "Sequential Access: " << sequential_duration.count() << "ms"
               << std::endl;
-    std::cout << "Random Access:     " << random_duration.count() << "ms" << std::endl;
+    std::cout << "Random Access:     " << random_duration.count() << "ms"
+              << std::endl;
     std::cout << "Cache Locality Impact: "
               << (double)random_duration.count() / sequential_duration.count()
               << "x slower" << std::endl;
@@ -329,7 +332,8 @@ private:
     std::cout << "Sequential Sum: " << sequential_sum.load() << std::endl;
     std::cout << "Random Sum:     " << random_sum.load() << std::endl;
     std::cout << "Results Match:  "
-              << (sequential_sum.load() == random_sum.load() ? "Yes" : "No") << std::endl;
+              << (sequential_sum.load() == random_sum.load() ? "Yes" : "No")
+              << std::endl;
   }
 };
 
@@ -343,10 +347,12 @@ int main() {
   std::cout << "=== Benchmark Complete ===" << std::endl;
   std::cout << std::endl;
   std::cout << "Key Findings:" << std::endl;
-  std::cout << "1. Cache line alignment can provide 2-5x performance improvement"
-            << std::endl;
-  std::cout << "2. False sharing significantly impacts multi-threaded performance"
-            << std::endl;
+  std::cout
+      << "1. Cache line alignment can provide 2-5x performance improvement"
+      << std::endl;
+  std::cout
+      << "2. False sharing significantly impacts multi-threaded performance"
+      << std::endl;
   std::cout << "3. Memory access patterns have major impact on cache efficiency"
             << std::endl;
   std::cout << "4. Optimized cache implementation shows measurable improvements"

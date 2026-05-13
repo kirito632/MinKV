@@ -29,7 +29,8 @@ struct BenchmarkResult {
 
 // 分片锁版本的压测
 BenchmarkResult benchmark_sharded_lock(int shard_count) {
-  ShardedCache<std::string, std::string> cache(10000 / shard_count, shard_count);
+  ShardedCache<std::string, std::string> cache(10000 / shard_count,
+                                               shard_count);
 
   auto start = std::chrono::high_resolution_clock::now();
 
@@ -63,7 +64,8 @@ BenchmarkResult benchmark_sharded_lock(int shard_count) {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -103,8 +105,8 @@ void print_result(const BenchmarkResult &r) {
   }
 
   if (r.relative_to_best > 0) {
-    std::cout << std::setw(12) << std::fixed << std::setprecision(2) << r.relative_to_best
-              << "x";
+    std::cout << std::setw(12) << std::fixed << std::setprecision(2)
+              << r.relative_to_best << "x";
   }
 
   // 添加评价标签
@@ -140,15 +142,17 @@ void print_analysis(const std::vector<BenchmarkResult> &results) {
   std::cout << "========================================\n" << std::endl;
 
   // 找到最优配置
-  auto best_it = std::max_element(
-      results.begin(),
-      results.end(),
-      [](const BenchmarkResult &a, const BenchmarkResult &b) { return a.qps < b.qps; });
+  auto best_it =
+      std::max_element(results.begin(), results.end(),
+                       [](const BenchmarkResult &a, const BenchmarkResult &b) {
+                         return a.qps < b.qps;
+                       });
 
   std::cout << "🏆 Best Configuration: " << best_it->name << " ("
             << (long long)best_it->qps << " QPS)" << std::endl;
-  std::cout << "   Performance improvement: " << std::fixed << std::setprecision(2)
-            << best_it->relative_to_single << "x vs single lock\n"
+  std::cout << "   Performance improvement: " << std::fixed
+            << std::setprecision(2) << best_it->relative_to_single
+            << "x vs single lock\n"
             << std::endl;
 
   // 分析性能趋势
@@ -161,17 +165,21 @@ void print_analysis(const std::vector<BenchmarkResult> &results) {
     if (i == 0) {
       std::cout << "Baseline (single lock)" << std::endl;
     } else if (r.relative_to_single < 1.0) {
-      std::cout << "❌ Performance degradation (" << std::fixed << std::setprecision(1)
-                << (1.0 - r.relative_to_single) * 100 << "% slower)" << std::endl;
+      std::cout << "❌ Performance degradation (" << std::fixed
+                << std::setprecision(1) << (1.0 - r.relative_to_single) * 100
+                << "% slower)" << std::endl;
     } else if (r.shard_count == best_it->shard_count) {
-      std::cout << "✅ Optimal configuration (" << std::fixed << std::setprecision(1)
-                << (r.relative_to_single - 1.0) * 100 << "% faster)" << std::endl;
+      std::cout << "✅ Optimal configuration (" << std::fixed
+                << std::setprecision(1) << (r.relative_to_single - 1.0) * 100
+                << "% faster)" << std::endl;
     } else if (r.relative_to_best >= 0.90) {
       std::cout << "⚠️  Close to optimal (" << std::fixed << std::setprecision(1)
-                << (r.relative_to_single - 1.0) * 100 << "% faster)" << std::endl;
+                << (r.relative_to_single - 1.0) * 100 << "% faster)"
+                << std::endl;
     } else {
-      std::cout << "Performance improvement (" << std::fixed << std::setprecision(1)
-                << (r.relative_to_single - 1.0) * 100 << "% faster)" << std::endl;
+      std::cout << "Performance improvement (" << std::fixed
+                << std::setprecision(1) << (r.relative_to_single - 1.0) * 100
+                << "% faster)" << std::endl;
     }
   }
 
@@ -186,26 +194,30 @@ void print_analysis(const std::vector<BenchmarkResult> &results) {
         std::cout << "   • Too few shards cause hash collisions:" << std::endl;
         has_degradation = true;
       }
-      std::cout << "     - " << r.name << ": collision probability ~" << std::fixed
-                << std::setprecision(0)
-                << (1.0 - std::pow(1.0 - 1.0 / r.shard_count, NUM_THREADS)) * 100 << "%"
-                << std::endl;
+      std::cout << "     - " << r.name << ": collision probability ~"
+                << std::fixed << std::setprecision(0)
+                << (1.0 - std::pow(1.0 - 1.0 / r.shard_count, NUM_THREADS)) *
+                       100
+                << "%" << std::endl;
     }
   }
 
   std::cout << "   • Optimal shard count: " << best_it->shard_count
             << " (2x thread count)" << std::endl;
-  std::cout << "     - Collision probability: ~" << std::fixed << std::setprecision(0)
-            << (1.0 - std::pow(1.0 - 1.0 / best_it->shard_count, NUM_THREADS)) * 100
+  std::cout << "     - Collision probability: ~" << std::fixed
+            << std::setprecision(0)
+            << (1.0 - std::pow(1.0 - 1.0 / best_it->shard_count, NUM_THREADS)) *
+                   100
             << "%" << std::endl;
 
   // 检查是否有性能回落
   if (results.size() > 2) {
     const auto &last = results.back();
     if (last.relative_to_best < 0.95) {
-      std::cout << "   • Too many shards cause cache line contention:" << std::endl;
-      std::cout << "     - " << last.name << ": false sharing reduces L2 cache hit rate"
+      std::cout << "   • Too many shards cause cache line contention:"
                 << std::endl;
+      std::cout << "     - " << last.name
+                << ": false sharing reduces L2 cache hit rate" << std::endl;
     }
   }
 }

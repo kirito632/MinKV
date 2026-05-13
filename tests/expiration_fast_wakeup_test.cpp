@@ -26,10 +26,11 @@ using namespace minkv;
 void testFastWakeup() {
   std::cout << "\n=== 测试快速唤醒机制 ===" << std::endl;
 
-  std::atomic<int> callback_count {0};
+  std::atomic<int> callback_count{0};
 
   // 创建一个简单的回调函数
-  auto callback = [&callback_count](size_t shard_id, size_t sample_size) -> size_t {
+  auto callback = [&callback_count](size_t shard_id,
+                                    size_t sample_size) -> size_t {
     callback_count.fetch_add(1);
     std::cout << "  回调执行: shard=" << shard_id << ", sample=" << sample_size
               << std::endl;
@@ -53,8 +54,8 @@ void testFastWakeup() {
   }
 
   auto end_time = std::chrono::steady_clock::now();
-  auto elapsed =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
 
   std::cout << "总耗时: " << elapsed.count() << "ms" << std::endl;
   std::cout << "回调执行次数: " << callback_count.load() << std::endl;
@@ -78,7 +79,7 @@ void testFastWakeup() {
 void testAutoStart() {
   std::cout << "\n=== 测试自动启动 ===" << std::endl;
 
-  std::atomic<bool> callback_called {false};
+  std::atomic<bool> callback_called{false};
 
   auto callback = [&callback_called](size_t, size_t) -> size_t {
     callback_called.store(true);
@@ -105,9 +106,7 @@ void testAutoStart() {
 void testMultipleCreateDestroy() {
   std::cout << "\n=== 测试多次创建销毁 ===" << std::endl;
 
-  auto callback = [](size_t, size_t) -> size_t {
-    return 0;
-  };
+  auto callback = [](size_t, size_t) -> size_t { return 0; };
 
   const int iterations = 10;
   std::cout << "执行 " << iterations << " 次创建和销毁..." << std::endl;
@@ -115,17 +114,19 @@ void testMultipleCreateDestroy() {
   auto start_time = std::chrono::steady_clock::now();
 
   for (int i = 0; i < iterations; ++i) {
-    base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(500), 10);
+    base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(500),
+                                10);
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     // mgr 在这里析构
   }
 
   auto end_time = std::chrono::steady_clock::now();
-  auto elapsed =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - start_time);
 
   std::cout << "总耗时: " << elapsed.count() << "ms" << std::endl;
-  std::cout << "平均每次: " << (elapsed.count() / iterations) << "ms" << std::endl;
+  std::cout << "平均每次: " << (elapsed.count() / iterations) << "ms"
+            << std::endl;
 
   // 如果快速唤醒生效，每次应该在 50ms 以内完成
   if (elapsed.count() / iterations < 100) {
@@ -142,7 +143,7 @@ void testMultipleCreateDestroy() {
 void testExceptionSafety() {
   std::cout << "\n=== 测试异常安全性 ===" << std::endl;
 
-  std::atomic<int> callback_count {0};
+  std::atomic<int> callback_count{0};
 
   // 回调函数会抛出异常
   auto callback = [&callback_count](size_t shard_id, size_t) -> size_t {

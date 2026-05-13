@@ -62,7 +62,8 @@ public:
     std::cout << "  标准差: " << stddev << "\n";
     std::cout << "  变异系数: " << (stddev / mean * 100) << "%\n";
     std::cout << "  最大值: " << max_count << " (偏差 " << std::fixed
-              << std::setprecision(2) << ((max_count - mean) / mean * 100) << "%)\n";
+              << std::setprecision(2) << ((max_count - mean) / mean * 100)
+              << "%)\n";
     std::cout << "  最小值: " << min_count << " (偏差 "
               << ((mean - min_count) / mean * 100) << "%)\n";
     std::cout << "  极差: " << (max_count - min_count) << "\n\n";
@@ -145,7 +146,7 @@ void test_integer_key_distribution() {
   std::cout << "\n测试场景: 连续整数 (0 ~ " << TEST_SIZE - 1 << ")\n";
   for (int i = 0; i < TEST_SIZE; ++i) {
     // 模拟 get_shard_index 的实现
-    size_t shard_idx = std::hash<int> {}(i) % SHARD_COUNT;
+    size_t shard_idx = std::hash<int>{}(i) % SHARD_COUNT;
     analyzer.record(shard_idx);
   }
 
@@ -183,7 +184,7 @@ void test_string_key_distribution() {
       key += static_cast<char>(char_dist(gen));
     }
 
-    size_t shard_idx = std::hash<std::string> {}(key) % SHARD_COUNT;
+    size_t shard_idx = std::hash<std::string>{}(key) % SHARD_COUNT;
     analyzer.record(shard_idx);
   }
 
@@ -211,7 +212,7 @@ void test_realistic_user_id_distribution() {
   std::cout << "\n测试场景: 用户ID (user_0 ~ user_" << TEST_SIZE - 1 << ")\n";
   for (size_t i = 0; i < TEST_SIZE; ++i) {
     std::string key = "user_" + std::to_string(i);
-    size_t shard_idx = std::hash<std::string> {}(key) % SHARD_COUNT;
+    size_t shard_idx = std::hash<std::string>{}(key) % SHARD_COUNT;
     analyzer.record(shard_idx);
   }
 
@@ -233,15 +234,15 @@ void test_different_shard_counts() {
   std::vector<size_t> shard_counts = {8, 16, 32, 64, 128};
 
   std::cout << "\n测试场景: 整数键在不同分片数下的分布\n\n";
-  std::cout << std::setw(12) << "分片数" << std::setw(12) << "变异系数" << std::setw(12)
-            << "最大偏差" << std::setw(12) << "评估\n";
+  std::cout << std::setw(12) << "分片数" << std::setw(12) << "变异系数"
+            << std::setw(12) << "最大偏差" << std::setw(12) << "评估\n";
   std::cout << std::string(48, '-') << "\n";
 
   for (size_t shard_count : shard_counts) {
     ShardDistributionAnalyzer analyzer(shard_count);
 
     for (int i = 0; i < TEST_SIZE; ++i) {
-      size_t shard_idx = std::hash<int> {}(i) % shard_count;
+      size_t shard_idx = std::hash<int>{}(i) % shard_count;
       analyzer.record(shard_idx);
     }
 
@@ -252,7 +253,7 @@ void test_different_shard_counts() {
 
     std::vector<size_t> distribution(shard_count, 0);
     for (int i = 0; i < TEST_SIZE; ++i) {
-      size_t shard_idx = std::hash<int> {}(i) % shard_count;
+      size_t shard_idx = std::hash<int>{}(i) % shard_count;
       distribution[shard_idx]++;
     }
 
@@ -289,7 +290,7 @@ void test_hotspot_detection() {
 
   // 正常键分布
   for (size_t i = 0; i < NORMAL_KEYS; ++i) {
-    size_t shard_idx = std::hash<int> {}(i) % SHARD_COUNT;
+    size_t shard_idx = std::hash<int>{}(i) % SHARD_COUNT;
     analyzer.record(shard_idx);
   }
 
@@ -297,7 +298,7 @@ void test_hotspot_detection() {
   for (size_t i = 0; i < HOTSPOT_KEYS; ++i) {
     // 使用特定模式使键集中在某些分片
     int hotspot_key = 1000000 + i * 32; // 尝试制造热点
-    size_t shard_idx = std::hash<int> {}(hotspot_key) % SHARD_COUNT;
+    size_t shard_idx = std::hash<int>{}(hotspot_key) % SHARD_COUNT;
     analyzer.record(shard_idx);
   }
 
@@ -319,7 +320,7 @@ void test_hash_collision_analysis() {
   std::cout << "\n测试场景: 记录每个分片的键分布\n";
 
   for (int i = 0; i < TEST_SIZE; ++i) {
-    size_t shard_idx = std::hash<int> {}(i) % SHARD_COUNT;
+    size_t shard_idx = std::hash<int>{}(i) % SHARD_COUNT;
     shard_to_keys[shard_idx].push_back(i);
   }
 
@@ -338,8 +339,8 @@ void test_hash_collision_analysis() {
   }
 
   double imbalance_ratio = (double)max_keys / min_keys;
-  std::cout << "\n负载不平衡比: " << std::fixed << std::setprecision(2) << imbalance_ratio
-            << ":1\n";
+  std::cout << "\n负载不平衡比: " << std::fixed << std::setprecision(2)
+            << imbalance_ratio << ":1\n";
 
   if (imbalance_ratio < 1.2) {
     std::cout << "✅ 优秀: 负载非常均衡\n";

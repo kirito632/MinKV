@@ -53,8 +53,8 @@ TestResult test_lsn_monotonic() {
     for (size_t i = 1; i < lsns.size(); ++i) {
       if (lsns[i] <= lsns[i - 1]) {
         result.fail("LSN not monotonic: lsn[" + std::to_string(i - 1) +
-                    "]=" + std::to_string(lsns[i - 1]) + ", lsn[" + std::to_string(i) +
-                    "]=" + std::to_string(lsns[i]));
+                    "]=" + std::to_string(lsns[i - 1]) + ", lsn[" +
+                    std::to_string(i) + "]=" + std::to_string(lsns[i]));
         return result;
       }
     }
@@ -62,8 +62,8 @@ TestResult test_lsn_monotonic() {
     // 验证连续性（应该是1, 2, 3, ...）
     for (size_t i = 0; i < lsns.size(); ++i) {
       if (lsns[i] != i + 1) {
-        result.fail("LSN not continuous: expected " + std::to_string(i + 1) + ", got " +
-                    std::to_string(lsns[i]));
+        result.fail("LSN not continuous: expected " + std::to_string(i + 1) +
+                    ", got " + std::to_string(lsns[i]));
         return result;
       }
     }
@@ -120,8 +120,9 @@ TestResult test_lsn_concurrent() {
     // 验证：所有LSN应该是唯一的
     size_t total_lsns = num_threads * lsns_per_thread;
     if (all_lsns.size() != total_lsns) {
-      result.fail("LSN collision detected: expected " + std::to_string(total_lsns) +
-                  " unique LSNs, got " + std::to_string(all_lsns.size()));
+      result.fail("LSN collision detected: expected " +
+                  std::to_string(total_lsns) + " unique LSNs, got " +
+                  std::to_string(all_lsns.size()));
       return result;
     }
 
@@ -129,8 +130,9 @@ TestResult test_lsn_concurrent() {
     uint64_t expected_lsn = 1;
     for (uint64_t lsn : all_lsns) {
       if (lsn != expected_lsn) {
-        result.fail("LSN gap detected: expected " + std::to_string(expected_lsn) +
-                    ", got " + std::to_string(lsn));
+        result.fail("LSN gap detected: expected " +
+                    std::to_string(expected_lsn) + ", got " +
+                    std::to_string(lsn));
         return result;
       }
       expected_lsn++;
@@ -168,7 +170,8 @@ TestResult test_checkpoint_lsn() {
 
     // 获取当前LSN
     uint64_t lsn_before_checkpoint = cache.current_lsn();
-    std::cout << "   LSN before checkpoint: " << lsn_before_checkpoint << std::endl;
+    std::cout << "   LSN before checkpoint: " << lsn_before_checkpoint
+              << std::endl;
 
     // 创建checkpoint
     SimpleCheckpointManager<std::string, std::string> checkpoint_mgr(&cache);
@@ -181,12 +184,13 @@ TestResult test_checkpoint_lsn() {
 
     // 验证：checkpoint后LSN不应该回退
     uint64_t lsn_after_checkpoint = cache.current_lsn();
-    std::cout << "   LSN after checkpoint: " << lsn_after_checkpoint << std::endl;
+    std::cout << "   LSN after checkpoint: " << lsn_after_checkpoint
+              << std::endl;
 
     if (lsn_after_checkpoint < lsn_before_checkpoint) {
-      result.fail(
-          "LSN decreased after checkpoint: " + std::to_string(lsn_before_checkpoint) +
-          " -> " + std::to_string(lsn_after_checkpoint));
+      result.fail("LSN decreased after checkpoint: " +
+                  std::to_string(lsn_before_checkpoint) + " -> " +
+                  std::to_string(lsn_after_checkpoint));
       return result;
     }
 
@@ -196,7 +200,8 @@ TestResult test_checkpoint_lsn() {
     }
 
     uint64_t lsn_after_more_writes = cache.current_lsn();
-    std::cout << "   LSN after more writes: " << lsn_after_more_writes << std::endl;
+    std::cout << "   LSN after more writes: " << lsn_after_more_writes
+              << std::endl;
 
     // 验证：LSN继续递增
     if (lsn_after_more_writes <= lsn_after_checkpoint) {
@@ -238,7 +243,8 @@ TestResult test_lsn_vs_timestamp() {
       auto now = std::chrono::high_resolution_clock::now();
       auto duration = now.time_since_epoch();
       timestamps.push_back(
-          std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+          std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+              .count());
     }
 
     // 统计LSN重复
@@ -299,8 +305,8 @@ TestResult test_current_lsn_no_increment() {
     uint64_t lsn3 = cache.current_lsn();
 
     if (lsn1 != lsn2 || lsn2 != lsn3) {
-      result.fail("current_lsn() is incrementing: " + std::to_string(lsn1) + ", " +
-                  std::to_string(lsn2) + ", " + std::to_string(lsn3));
+      result.fail("current_lsn() is incrementing: " + std::to_string(lsn1) +
+                  ", " + std::to_string(lsn2) + ", " + std::to_string(lsn3));
       return result;
     }
 
@@ -356,8 +362,8 @@ int main() {
       std::cout << "Test " << (i + 1) << ": ✅ PASSED" << std::endl;
     } else {
       failed++;
-      std::cout << "Test " << (i + 1) << ": ❌ FAILED - " << results[i].error_message
-                << std::endl;
+      std::cout << "Test " << (i + 1) << ": ❌ FAILED - "
+                << results[i].error_message << std::endl;
     }
   }
 

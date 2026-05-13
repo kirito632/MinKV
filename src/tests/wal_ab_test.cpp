@@ -22,14 +22,14 @@ enum class WALMode {
 
 const char *wal_mode_name(WALMode mode) {
   switch (mode) {
-    case WALMode::NONE:
-      return "纯内存(WAL关闭)";
-    case WALMode::SYNC_EVERY:
-      return "同步刷盘(每次fsync)";
-    case WALMode::GROUP_COMMIT:
-      return "Group Commit";
-    default:
-      return "Unknown";
+  case WALMode::NONE:
+    return "纯内存(WAL关闭)";
+  case WALMode::SYNC_EVERY:
+    return "同步刷盘(每次fsync)";
+  case WALMode::GROUP_COMMIT:
+    return "Group Commit";
+  default:
+    return "Unknown";
   }
 }
 
@@ -70,15 +70,13 @@ public:
 };
 
 // 清理测试数据
-void cleanup_test_data() {
-  std::filesystem::remove_all("./test_wal_data");
-}
+void cleanup_test_data() { std::filesystem::remove_all("./test_wal_data"); }
 
 // 单次测试
 TestResult run_test(WALMode mode, int thread_count, int ops_per_thread) {
   std::cout << "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-  std::cout << "测试模式: " << wal_mode_name(mode) << " | 线程数: " << thread_count
-            << "\n";
+  std::cout << "测试模式: " << wal_mode_name(mode)
+            << " | 线程数: " << thread_count << "\n";
   std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
 
   // 清理旧数据
@@ -106,7 +104,7 @@ TestResult run_test(WALMode mode, int thread_count, int ops_per_thread) {
   std::cout << " 完成！\n";
 
   // 准备测试
-  std::atomic<int64_t> total_ops {0};
+  std::atomic<int64_t> total_ops{0};
   LatencyStats latency_stats;
 
   auto worker = [&](int thread_id) {
@@ -155,7 +153,8 @@ TestResult run_test(WALMode mode, int thread_count, int ops_per_thread) {
   }
 
   auto end_time = std::chrono::high_resolution_clock::now();
-  double duration_sec = std::chrono::duration<double>(end_time - start_time).count();
+  double duration_sec =
+      std::chrono::duration<double>(end_time - start_time).count();
 
   std::cout << " 完成！\n";
 
@@ -168,7 +167,8 @@ TestResult run_test(WALMode mode, int thread_count, int ops_per_thread) {
   result.qps = total_ops / duration_sec;
   result.p99_latency_us = latency_stats.get_p99();
 
-  std::cout << "  ✓ QPS: " << std::fixed << std::setprecision(0) << result.qps << "\n";
+  std::cout << "  ✓ QPS: " << std::fixed << std::setprecision(0) << result.qps
+            << "\n";
   std::cout << "  ✓ P99延迟: " << std::fixed << std::setprecision(2)
             << result.p99_latency_us << " μs\n";
 
@@ -197,9 +197,9 @@ void print_comparison(const std::vector<TestResult> &results) {
   for (const auto &[threads, group] : grouped) {
     std::cout << "【" << threads << " 线程】\n";
     std::cout << std::string(80, '-') << "\n";
-    std::cout << std::left << std::setw(25) << "模式" << std::right << std::setw(15)
-              << "QPS" << std::setw(15) << "P99延迟(μs)" << std::setw(15) << "性能损耗"
-              << "\n";
+    std::cout << std::left << std::setw(25) << "模式" << std::right
+              << std::setw(15) << "QPS" << std::setw(15) << "P99延迟(μs)"
+              << std::setw(15) << "性能损耗" << "\n";
     std::cout << std::string(80, '-') << "\n";
 
     // 找到baseline（纯内存）
@@ -217,16 +217,16 @@ void print_comparison(const std::vector<TestResult> &results) {
         loss_pct = (baseline_qps - r.qps) / baseline_qps * 100;
       }
 
-      std::cout << std::left << std::setw(25) << wal_mode_name(r.mode) << std::right
-                << std::setw(15) << std::fixed << std::setprecision(0) << r.qps
-                << std::setw(15) << std::fixed << std::setprecision(2)
-                << r.p99_latency_us;
+      std::cout << std::left << std::setw(25) << wal_mode_name(r.mode)
+                << std::right << std::setw(15) << std::fixed
+                << std::setprecision(0) << r.qps << std::setw(15) << std::fixed
+                << std::setprecision(2) << r.p99_latency_us;
 
       if (r.mode == WALMode::NONE) {
         std::cout << std::setw(15) << "Baseline";
       } else {
-        std::cout << std::setw(14) << std::fixed << std::setprecision(1) << loss_pct
-                  << "%";
+        std::cout << std::setw(14) << std::fixed << std::setprecision(1)
+                  << loss_pct << "%";
       }
       std::cout << "\n";
     }
@@ -267,27 +267,29 @@ void print_comparison(const std::vector<TestResult> &results) {
   double speedup = best_group_commit_qps / worst_sync_qps;
 
   std::cout << "1. 纯内存峰值性能: " << std::fixed << std::setprecision(2)
-            << best_baseline_qps / 1000000.0 << "M QPS (" << best_threads << "线程)\n\n";
+            << best_baseline_qps / 1000000.0 << "M QPS (" << best_threads
+            << "线程)\n\n";
 
   std::cout << "2. Group Commit性能: " << std::fixed << std::setprecision(2)
             << best_group_commit_qps / 1000000.0 << "M QPS\n";
-  std::cout << "   性能损耗: " << std::fixed << std::setprecision(1) << group_commit_loss
-            << "%\n";
+  std::cout << "   性能损耗: " << std::fixed << std::setprecision(1)
+            << group_commit_loss << "%\n";
   std::cout << "   ✓ 在保证持久化的前提下，性能损耗控制在 " << std::fixed
             << std::setprecision(0) << group_commit_loss << "% 以内！\n\n";
 
-  std::cout << "3. 同步刷盘性能: " << std::fixed << std::setprecision(0) << worst_sync_qps
-            << " QPS\n";
-  std::cout << "   ✓ Group Commit相比同步刷盘提升 " << std::fixed << std::setprecision(0)
-            << speedup << " 倍！\n\n";
+  std::cout << "3. 同步刷盘性能: " << std::fixed << std::setprecision(0)
+            << worst_sync_qps << " QPS\n";
+  std::cout << "   ✓ Group Commit相比同步刷盘提升 " << std::fixed
+            << std::setprecision(0) << speedup << " 倍！\n\n";
 
   std::cout << "💡 面试话术:\n";
   std::cout << "   \"为了验证Group Commit的效果，我对比了三种模式：\n";
   std::cout << "    - 纯内存模式达到 " << std::fixed << std::setprecision(1)
             << best_baseline_qps / 1000000.0 << "M QPS\n";
-  std::cout << "    - 开启Group Commit后仍有 " << std::fixed << std::setprecision(1)
-            << best_group_commit_qps / 1000000.0 << "M QPS，性能损耗仅 " << std::fixed
-            << std::setprecision(0) << group_commit_loss << "%\n";
+  std::cout << "    - 开启Group Commit后仍有 " << std::fixed
+            << std::setprecision(1) << best_group_commit_qps / 1000000.0
+            << "M QPS，性能损耗仅 " << std::fixed << std::setprecision(0)
+            << group_commit_loss << "%\n";
   std::cout << "    - 而同步刷盘只有 " << std::fixed << std::setprecision(0)
             << worst_sync_qps / 1000.0 << "K QPS\n";
   std::cout << "    Group Commit相比同步刷盘性能提升了 " << std::fixed
@@ -295,19 +297,20 @@ void print_comparison(const std::vector<TestResult> &results) {
 }
 
 // 保存结果到CSV
-void save_results(const std::vector<TestResult> &results, const std::string &filename) {
+void save_results(const std::vector<TestResult> &results,
+                  const std::string &filename) {
   std::ofstream file(filename);
   file << "# MinKV WAL Performance A/B Test Results\n";
-  file << "# Test Date: " << std::chrono::system_clock::now().time_since_epoch().count()
-       << "\n";
+  file << "# Test Date: "
+       << std::chrono::system_clock::now().time_since_epoch().count() << "\n";
   file << "#\n";
   file << "Mode,Threads,TotalOps,Duration(s),QPS,P99Latency(us)\n";
 
   for (const auto &r : results) {
-    file << wal_mode_name(r.mode) << "," << r.thread_count << "," << r.total_ops << ","
-         << std::fixed << std::setprecision(2) << r.duration_sec << "," << std::fixed
-         << std::setprecision(0) << r.qps << "," << std::fixed << std::setprecision(2)
-         << r.p99_latency_us << "\n";
+    file << wal_mode_name(r.mode) << "," << r.thread_count << "," << r.total_ops
+         << "," << std::fixed << std::setprecision(2) << r.duration_sec << ","
+         << std::fixed << std::setprecision(0) << r.qps << "," << std::fixed
+         << std::setprecision(2) << r.p99_latency_us << "\n";
   }
 
   file.close();
@@ -351,7 +354,8 @@ int main() {
     // 3. 同步刷盘模式 (The "Bad" Case)
     // 注意：同步刷盘非常慢，减少操作数
     if (threads <= 2) {
-      results.push_back(run_test(WALMode::SYNC_EVERY, threads, 1000)); // 只测1000次
+      results.push_back(
+          run_test(WALMode::SYNC_EVERY, threads, 1000)); // 只测1000次
     }
   }
 

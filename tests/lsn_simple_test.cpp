@@ -19,10 +19,12 @@
 // 简化的LSN测试类
 class LSNCounter {
 private:
-  std::atomic<uint64_t> global_lsn_ {1}; // 从1开始
+  std::atomic<uint64_t> global_lsn_{1}; // 从1开始
 
 public:
-  uint64_t next_lsn() { return global_lsn_.fetch_add(1, std::memory_order_relaxed); }
+  uint64_t next_lsn() {
+    return global_lsn_.fetch_add(1, std::memory_order_relaxed);
+  }
 
   uint64_t current_lsn() const {
     uint64_t next = global_lsn_.load(std::memory_order_relaxed);
@@ -62,8 +64,8 @@ TestResult test_lsn_monotonic() {
     for (size_t i = 1; i < lsns.size(); ++i) {
       if (lsns[i] <= lsns[i - 1]) {
         result.fail("LSN not monotonic: lsn[" + std::to_string(i - 1) +
-                    "]=" + std::to_string(lsns[i - 1]) + ", lsn[" + std::to_string(i) +
-                    "]=" + std::to_string(lsns[i]));
+                    "]=" + std::to_string(lsns[i - 1]) + ", lsn[" +
+                    std::to_string(i) + "]=" + std::to_string(lsns[i]));
         return result;
       }
     }
@@ -71,8 +73,8 @@ TestResult test_lsn_monotonic() {
     // 验证连续性（应该是1, 2, 3, ...）
     for (size_t i = 0; i < lsns.size(); ++i) {
       if (lsns[i] != i + 1) {
-        result.fail("LSN not continuous: expected " + std::to_string(i + 1) + ", got " +
-                    std::to_string(lsns[i]));
+        result.fail("LSN not continuous: expected " + std::to_string(i + 1) +
+                    ", got " + std::to_string(lsns[i]));
         return result;
       }
     }
@@ -129,8 +131,9 @@ TestResult test_lsn_concurrent() {
     // 验证：所有LSN应该是唯一的
     size_t total_lsns = num_threads * lsns_per_thread;
     if (all_lsns.size() != total_lsns) {
-      result.fail("LSN collision detected: expected " + std::to_string(total_lsns) +
-                  " unique LSNs, got " + std::to_string(all_lsns.size()));
+      result.fail("LSN collision detected: expected " +
+                  std::to_string(total_lsns) + " unique LSNs, got " +
+                  std::to_string(all_lsns.size()));
       return result;
     }
 
@@ -138,8 +141,9 @@ TestResult test_lsn_concurrent() {
     uint64_t expected_lsn = 1;
     for (uint64_t lsn : all_lsns) {
       if (lsn != expected_lsn) {
-        result.fail("LSN gap detected: expected " + std::to_string(expected_lsn) +
-                    ", got " + std::to_string(lsn));
+        result.fail("LSN gap detected: expected " +
+                    std::to_string(expected_lsn) + ", got " +
+                    std::to_string(lsn));
         return result;
       }
       expected_lsn++;
@@ -176,7 +180,8 @@ TestResult test_lsn_vs_timestamp() {
       auto now = std::chrono::high_resolution_clock::now();
       auto duration = now.time_since_epoch();
       timestamps.push_back(
-          std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+          std::chrono::duration_cast<std::chrono::milliseconds>(duration)
+              .count());
     }
 
     // 统计LSN重复
@@ -237,8 +242,8 @@ TestResult test_current_lsn_no_increment() {
     uint64_t lsn3 = counter.current_lsn();
 
     if (lsn1 != lsn2 || lsn2 != lsn3) {
-      result.fail("current_lsn() is incrementing: " + std::to_string(lsn1) + ", " +
-                  std::to_string(lsn2) + ", " + std::to_string(lsn3));
+      result.fail("current_lsn() is incrementing: " + std::to_string(lsn1) +
+                  ", " + std::to_string(lsn2) + ", " + std::to_string(lsn3));
       return result;
     }
 
@@ -285,12 +290,13 @@ TestResult test_lsn_performance() {
     }
 
     auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    auto duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
 
     double avg_time_us = static_cast<double>(duration.count()) / iterations;
 
-    std::cout << "   " << iterations << " LSN allocations: " << duration.count() << " μs"
-              << std::endl;
+    std::cout << "   " << iterations << " LSN allocations: " << duration.count()
+              << " μs" << std::endl;
     std::cout << "   Average: " << avg_time_us << " μs per LSN" << std::endl;
 
     // 性能要求：平均每次LSN分配应该 < 0.1μs
@@ -301,7 +307,8 @@ TestResult test_lsn_performance() {
     }
 
     std::cout << "✅ LSN performance test PASSED" << std::endl;
-    std::cout << "   Performance: " << (1.0 / avg_time_us) << " M ops/sec" << std::endl;
+    std::cout << "   Performance: " << (1.0 / avg_time_us) << " M ops/sec"
+              << std::endl;
 
   } catch (const std::exception &e) {
     result.fail(std::string("Exception: ") + e.what());
@@ -338,8 +345,8 @@ int main() {
       std::cout << "Test " << (i + 1) << ": ✅ PASSED" << std::endl;
     } else {
       failed++;
-      std::cout << "Test " << (i + 1) << ": ❌ FAILED - " << results[i].error_message
-                << std::endl;
+      std::cout << "Test " << (i + 1) << ": ❌ FAILED - "
+                << results[i].error_message << std::endl;
     }
   }
 
@@ -350,7 +357,8 @@ int main() {
   std::cout << "========================================" << std::endl;
 
   if (failed == 0) {
-    std::cout << "\n🎉 All tests passed! LSN implementation is correct." << std::endl;
+    std::cout << "\n🎉 All tests passed! LSN implementation is correct."
+              << std::endl;
   }
 
   return (failed == 0) ? 0 : 1;

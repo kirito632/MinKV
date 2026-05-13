@@ -37,8 +37,7 @@ namespace minkv {
  * @tparam K 键类型，默认std::string
  * @tparam V 值类型，默认std::string
  */
-template <typename K = std::string, typename V = std::string>
-class MinKV {
+template <typename K = std::string, typename V = std::string> class MinKV {
 public:
   /**
    * @brief 创建MinKV实例
@@ -55,8 +54,8 @@ public:
    * @brief 构造函数
    */
   MinKV(size_t capacity_per_shard, size_t shard_count)
-      : cache_(
-            std::make_unique<db::ShardedCache<K, V>>(capacity_per_shard, shard_count)) {}
+      : cache_(std::make_unique<db::ShardedCache<K, V>>(capacity_per_shard,
+                                                        shard_count)) {}
 
   // ==========================================
   // 基础KV接口 - 简洁易用
@@ -99,15 +98,16 @@ public:
    * @param data_dir 数据目录
    * @param fsync_interval_ms 同步间隔
    */
-  void enablePersistence(const std::string &data_dir, int64_t fsync_interval_ms = 1000) {
+  void enablePersistence(const std::string &data_dir,
+                         int64_t fsync_interval_ms = 1000) {
     data_dir_ = data_dir;
     cache_->enable_persistence(data_dir, fsync_interval_ms);
     // 创建 CheckpointManager（如果还没有）
     if (!checkpoint_mgr_) {
       typename db::SimpleCheckpointManager<K, V>::CheckpointConfig cfg;
       cfg.data_dir = data_dir;
-      checkpoint_mgr_ =
-          std::make_unique<db::SimpleCheckpointManager<K, V>>(cache_.get(), cfg);
+      checkpoint_mgr_ = std::make_unique<db::SimpleCheckpointManager<K, V>>(
+          cache_.get(), cfg);
     }
   }
 
@@ -139,7 +139,8 @@ public:
    * @param check_interval_ms 检查间隔（毫秒）
    * @param sample_size 每次采样大小
    */
-  void startExpirationService(int64_t check_interval_ms = 100, size_t sample_size = 20) {
+  void startExpirationService(int64_t check_interval_ms = 100,
+                              size_t sample_size = 20) {
     cache_->startExpirationService(std::chrono::milliseconds(check_interval_ms),
                                    sample_size);
   }
@@ -152,7 +153,8 @@ public:
   /**
    * @brief 存储向量数据
    */
-  void vectorPut(const K &key, const std::vector<float> &vec, int64_t ttl_ms = 0) {
+  void vectorPut(const K &key, const std::vector<float> &vec,
+                 int64_t ttl_ms = 0) {
     cache_->vectorPut(key, vec, ttl_ms);
   }
 

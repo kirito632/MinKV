@@ -44,13 +44,15 @@ static void send_ok(httplib::Response &res, const json &data) {
 
 static void send_err(httplib::Response &res, int code, const std::string &msg) {
   res.status = code;
-  res.set_content(json {{"success", false}, {"error", msg}}.dump(), "application/json");
+  res.set_content(json{{"success", false}, {"error", msg}}.dump(),
+                  "application/json");
 }
 
 // ── 路由处理
 // ──────────────────────────────────────────────────────────────────
 
-static void handle_add_node(const httplib::Request &req, httplib::Response &res) {
+static void handle_add_node(const httplib::Request &req,
+                            httplib::Response &res) {
   try {
     auto body = json::parse(req.body);
     if (!body.contains("node_id")) {
@@ -74,10 +76,12 @@ static void handle_add_node(const httplib::Request &req, httplib::Response &res)
   }
 }
 
-static void handle_add_edge(const httplib::Request &req, httplib::Response &res) {
+static void handle_add_edge(const httplib::Request &req,
+                            httplib::Response &res) {
   try {
     auto body = json::parse(req.body);
-    if (!body.contains("src_id") || !body.contains("dst_id") || !body.contains("label")) {
+    if (!body.contains("src_id") || !body.contains("dst_id") ||
+        !body.contains("label")) {
       send_err(res, 400, "missing src_id/dst_id/label");
       return;
     }
@@ -90,17 +94,17 @@ static void handle_add_edge(const httplib::Request &req, httplib::Response &res)
     e.properties_json = body.value("properties_json", "{}");
     g_gs->AddEdge(e);
 
-    send_ok(res,
-            {{"success", true},
-             {"src_id", e.src_id},
-             {"dst_id", e.dst_id},
-             {"label", e.label}});
+    send_ok(res, {{"success", true},
+                  {"src_id", e.src_id},
+                  {"dst_id", e.dst_id},
+                  {"label", e.label}});
   } catch (const std::exception &e) {
     send_err(res, 500, e.what());
   }
 }
 
-static void handle_rag_query(const httplib::Request &req, httplib::Response &res) {
+static void handle_rag_query(const httplib::Request &req,
+                             httplib::Response &res) {
   try {
     auto body = json::parse(req.body);
     int vector_top_k = body.value("vector_top_k", 3);
@@ -111,11 +115,13 @@ static void handle_rag_query(const httplib::Request &req, httplib::Response &res
     // 支持批量向量检索 (query_embeddings) 或 单向量检索 (query_embedding)
     if (body.contains("query_embeddings")) {
       // 批量模式
-      auto query_embs = body["query_embeddings"].get<std::vector<std::vector<float>>>();
+      auto query_embs =
+          body["query_embeddings"].get<std::vector<std::vector<float>>>();
       nodes = g_gs->GraphRAGQuery(query_embs, vector_top_k, hop_depth);
     } else if (body.contains("query_embedding")) {
       // 单向量模式 (兼容旧版)
-      std::vector<float> query_emb = body["query_embedding"].get<std::vector<float>>();
+      std::vector<float> query_emb =
+          body["query_embedding"].get<std::vector<float>>();
       nodes = g_gs->GraphRAGQuery(query_emb, vector_top_k, hop_depth);
     } else {
       send_err(res, 400, "missing query_embedding or query_embeddings");
@@ -128,12 +134,11 @@ static void handle_rag_query(const httplib::Request &req, httplib::Response &res
           {{"node_id", n.node_id}, {"properties_json", n.properties_json}});
     }
 
-    send_ok(res,
-            {{"success", true},
-             {"node_count", (int)nodes.size()},
-             {"vector_top_k", vector_top_k},
-             {"hop_depth", hop_depth},
-             {"nodes", nodes_json}});
+    send_ok(res, {{"success", true},
+                  {"node_count", (int)nodes.size()},
+                  {"vector_top_k", vector_top_k},
+                  {"hop_depth", hop_depth},
+                  {"nodes", nodes_json}});
   } catch (const std::exception &e) {
     send_err(res, 500, e.what());
   }

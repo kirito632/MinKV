@@ -42,8 +42,7 @@ static std::vector<float> make_embedding(size_t dim, unsigned seed) {
 }
 
 // 在 base 向量上加小扰动（模拟语义相近的查询）
-static std::vector<float> perturb(const std::vector<float> &base,
-                                  float noise,
+static std::vector<float> perturb(const std::vector<float> &base, float noise,
                                   unsigned seed) {
   std::mt19937 rng(seed);
   std::normal_distribution<float> dist(0.0f, noise);
@@ -63,11 +62,10 @@ static std::vector<float> perturb(const std::vector<float> &base,
 // ─────────────────────────────────────────────────────────
 
 // 模拟 graph_add_node 工具
-static void tool_graph_add_node(GraphStore &gs,
-                                const std::string &node_id,
+static void tool_graph_add_node(GraphStore &gs, const std::string &node_id,
                                 const std::string &props_json,
                                 const std::vector<float> &embedding = {}) {
-  Node n {node_id, props_json};
+  Node n{node_id, props_json};
   gs.AddNode(n);
   if (!embedding.empty()) {
     gs.SetNodeEmbedding(node_id, embedding);
@@ -76,23 +74,21 @@ static void tool_graph_add_node(GraphStore &gs,
 }
 
 // 模拟 graph_add_edge 工具
-static void tool_graph_add_edge(GraphStore &gs,
-                                const std::string &src,
+static void tool_graph_add_edge(GraphStore &gs, const std::string &src,
                                 const std::string &dst,
-                                const std::string &label,
-                                float weight = 1.0f) {
-  Edge e {src, dst, label, weight, "{}"};
+                                const std::string &label, float weight = 1.0f) {
+  Edge e{src, dst, label, weight, "{}"};
   gs.AddEdge(e);
-  std::cout << "  [graph_add_edge] " << src << " -[" << label << "]-> " << dst << "\n";
+  std::cout << "  [graph_add_edge] " << src << " -[" << label << "]-> " << dst
+            << "\n";
 }
 
 // 模拟 graph_rag_query 工具（不调用 OpenAI，直接用传入的向量）
-static std::vector<Node> tool_graph_rag_query(GraphStore &gs,
-                                              const std::vector<float> &query_embedding,
-                                              int vector_top_k,
-                                              int hop_depth) {
-  std::cout << "  [graph_rag_query] top_k=" << vector_top_k << " hop_depth=" << hop_depth
-            << "\n";
+static std::vector<Node>
+tool_graph_rag_query(GraphStore &gs, const std::vector<float> &query_embedding,
+                     int vector_top_k, int hop_depth) {
+  std::cout << "  [graph_rag_query] top_k=" << vector_top_k
+            << " hop_depth=" << hop_depth << "\n";
   return gs.GraphRAGQuery(query_embedding, vector_top_k, hop_depth);
 }
 
@@ -116,12 +112,15 @@ int main() {
   auto emb_spacex = make_embedding(DIM, 2);
   // Starship 没有 embedding（测试图遍历能找到无 embedding 的节点）
 
+  tool_graph_add_node(gs, "Elon_Musk",
+                      R"({"role":"CEO","desc":"Tesla & SpaceX founder"})",
+                      emb_musk);
+  tool_graph_add_node(gs, "SpaceX",
+                      R"({"type":"company","desc":"aerospace manufacturer"})",
+                      emb_spacex);
   tool_graph_add_node(
-      gs, "Elon_Musk", R"({"role":"CEO","desc":"Tesla & SpaceX founder"})", emb_musk);
-  tool_graph_add_node(
-      gs, "SpaceX", R"({"type":"company","desc":"aerospace manufacturer"})", emb_spacex);
-  tool_graph_add_node(
-      gs, "Starship", R"({"type":"rocket","desc":"fully reusable launch vehicle"})");
+      gs, "Starship",
+      R"({"type":"rocket","desc":"fully reusable launch vehicle"})");
 
   tool_graph_add_edge(gs, "Elon_Musk", "SpaceX", "founded");
   tool_graph_add_edge(gs, "SpaceX", "Starship", "product");
@@ -173,9 +172,10 @@ int main() {
   bool all_pass = true;
   all_pass &= check(found_musk, "2-hop 包含 Elon_Musk（向量检索入口节点）");
   all_pass &= check(found_spacex, "2-hop 包含 SpaceX（1-hop 邻居）");
+  all_pass &= check(found_starship,
+                    "2-hop 包含 Starship（2-hop 邻居，无 embedding 也能找到）");
   all_pass &=
-      check(found_starship, "2-hop 包含 Starship（2-hop 邻居，无 embedding 也能找到）");
-  all_pass &= check(result1.size() < result2.size(), "2-hop 结果集 > 1-hop 结果集");
+      check(result1.size() < result2.size(), "2-hop 结果集 > 1-hop 结果集");
 
   std::cout << "\n[面试亮点]\n";
   std::cout << "  传统 RAG：只能找到 Elon_Musk（向量相似）\n";

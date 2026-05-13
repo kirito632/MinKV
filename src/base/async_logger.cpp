@@ -17,12 +17,10 @@ namespace minkv {
 namespace base {
 
 // [原子操作] 全局日志级别，默认INFO级别，多线程安全
-std::atomic<LogLevel> AsyncLogger::logLevel_ {LogLevel::INFO};
+std::atomic<LogLevel> AsyncLogger::logLevel_{LogLevel::INFO};
 
 AsyncLogger::AsyncLogger(const std::string &basename, size_t rollSize)
-    : basename_(basename),
-      rollSize_(rollSize),
-      running_(false),
+    : basename_(basename), rollSize_(rollSize), running_(false),
       // [核心优化] 预分配两个缓冲区，避免运行时动态分配造成的性能损失
       currentBuffer_(std::make_unique<Buffer>()),
       nextBuffer_(std::make_unique<Buffer>()) {}
@@ -234,7 +232,8 @@ LogLevel AsyncLogger::getLogLevel() {
 
 // ==================== LogStream 实现 ====================
 
-LogStream::LogStream(LogLevel level, const char *file, int line) : level_(level) {
+LogStream::LogStream(LogLevel level, const char *file, int line)
+    : level_(level) {
   // 构造时立即格式化日志头部，包含时间戳、级别、文件位置
   formatHeader(level, file, line);
 }
@@ -254,9 +253,9 @@ void LogStream::formatHeader(LogLevel level, const char *file, int line) {
   // [时间戳生成] 获取高精度时间戳，包含毫秒信息
   auto now = std::chrono::system_clock::now();
   auto time_t = std::chrono::system_clock::to_time_t(now);
-  auto ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
-      1000;
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()) %
+            1000;
 
   // [字符串格式化] 使用ostringstream进行高效的字符串拼接
   std::ostringstream oss;
@@ -275,8 +274,8 @@ void LogStream::formatHeader(LogLevel level, const char *file, int line) {
   }
 
   // [日志格式] 标准格式：[时间戳] [级别] [文件名:行号] 消息内容
-  buffer_ = "[" + oss.str() + "] [" + levelStr[static_cast<int>(level)] + "] [" +
-            basename + ":" + std::to_string(line) + "] ";
+  buffer_ = "[" + oss.str() + "] [" + levelStr[static_cast<int>(level)] +
+            "] [" + basename + ":" + std::to_string(line) + "] ";
 }
 
 // ==================== 流式操作符重载实现 ====================

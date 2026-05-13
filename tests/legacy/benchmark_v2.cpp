@@ -54,7 +54,8 @@ BenchmarkResult benchmark_lru() {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -65,7 +66,8 @@ BenchmarkResult benchmark_lru() {
 }
 
 BenchmarkResult benchmark_sharded(int shard_count) {
-  ShardedCache<std::string, std::string> cache(10000 / shard_count, shard_count);
+  ShardedCache<std::string, std::string> cache(10000 / shard_count,
+                                               shard_count);
 
   auto start = std::chrono::high_resolution_clock::now();
 
@@ -95,7 +97,8 @@ BenchmarkResult benchmark_sharded(int shard_count) {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -106,7 +109,8 @@ BenchmarkResult benchmark_sharded(int shard_count) {
 }
 
 BenchmarkResult benchmark_optimized_sharded(int shard_count) {
-  OptimizedShardedCache<std::string, std::string> cache(10000 / shard_count, shard_count);
+  OptimizedShardedCache<std::string, std::string> cache(10000 / shard_count,
+                                                        shard_count);
 
   auto start = std::chrono::high_resolution_clock::now();
 
@@ -136,7 +140,8 @@ BenchmarkResult benchmark_optimized_sharded(int shard_count) {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -178,7 +183,8 @@ BenchmarkResult benchmark_lazy_lru() {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -241,11 +247,12 @@ int main() {
 
   std::cout << "ShardedCache(32) vs LruCache: " << improvement_sharded << "x"
             << std::endl;
-  std::cout << "OptimizedShardedCache(32) vs LruCache: " << improvement_optimized << "x"
+  std::cout << "OptimizedShardedCache(32) vs LruCache: "
+            << improvement_optimized << "x" << std::endl;
+  std::cout << "LazyLruCache vs LruCache: " << improvement_lazy << "x"
             << std::endl;
-  std::cout << "LazyLruCache vs LruCache: " << improvement_lazy << "x" << std::endl;
-  std::cout << "OptimizedShardedCache(64) vs LruCache: " << improvement_optimized_64
-            << "x" << std::endl;
+  std::cout << "OptimizedShardedCache(64) vs LruCache: "
+            << improvement_optimized_64 << "x" << std::endl;
 
   return 0;
 }

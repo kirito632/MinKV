@@ -14,9 +14,8 @@
 #include <vector>
 
 // 模拟分片函数
-template <typename K>
-size_t get_shard_index(const K &key, size_t shard_count) {
-  return std::hash<K> {}(key) % shard_count;
+template <typename K> size_t get_shard_index(const K &key, size_t shard_count) {
+  return std::hash<K>{}(key) % shard_count;
 }
 
 // 统计分析器
@@ -52,12 +51,14 @@ public:
     std::cout << "\n统计结果:\n";
     std::cout << "  总键数: " << total_ << "\n";
     std::cout << "  分片数: " << shard_count_ << "\n";
-    std::cout << "  均值: " << std::fixed << std::setprecision(2) << mean << "\n";
+    std::cout << "  均值: " << std::fixed << std::setprecision(2) << mean
+              << "\n";
     std::cout << "  标准差: " << std << "\n";
     std::cout << "  变异系数: " << (cv * 100) << "%\n";
     std::cout << "  最大值: " << max_v << " (+" << ((max_v - mean) / mean * 100)
               << "%)\n";
-    std::cout << "  最小值: " << min_v << " (" << ((mean - min_v) / mean * 100) << "%)\n";
+    std::cout << "  最小值: " << min_v << " (" << ((mean - min_v) / mean * 100)
+              << "%)\n";
     std::cout << "  负载比: " << ((double)max_v / min_v) << ":1\n";
 
     if (cv < 0.10) {
@@ -134,12 +135,15 @@ void test_performance() {
   }
   auto end = std::chrono::high_resolution_clock::now();
 
-  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  auto ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
   double avg_ns = (double)ns / SIZE;
 
   std::cout << "\n性能指标:\n";
-  std::cout << "  平均延迟: " << std::fixed << std::setprecision(2) << avg_ns << " ns\n";
-  std::cout << "  吞吐量: " << std::setprecision(0) << (1e9 / avg_ns) << " ops/s\n";
+  std::cout << "  平均延迟: " << std::fixed << std::setprecision(2) << avg_ns
+            << " ns\n";
+  std::cout << "  吞吐量: " << std::setprecision(0) << (1e9 / avg_ns)
+            << " ops/s\n";
 
   if (avg_ns < 50) {
     std::cout << "✅ 性能优秀\n";

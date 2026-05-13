@@ -34,17 +34,17 @@ using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
 // ── 辅助宏
 // ────────────────────────────────────────────────────────────────────
 
-#define CHECK(cond, msg)                     \
-  do {                                       \
-    if (!(cond)) {                           \
-      std::cerr << "[FAIL] " << msg << "\n"; \
-      return false;                          \
-    }                                        \
+#define CHECK(cond, msg)                                                       \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::cerr << "[FAIL] " << msg << "\n";                                   \
+      return false;                                                            \
+    }                                                                          \
   } while (0)
 
-#define PASS(name)                          \
-  do {                                      \
-    std::cout << "[PASS] " << name << "\n"; \
+#define PASS(name)                                                             \
+  do {                                                                         \
+    std::cout << "[PASS] " << name << "\n";                                    \
   } while (0)
 
 // ── GraphSerializer 测试
@@ -138,7 +138,8 @@ bool test_adjlist_serializer_empty() {
 bool test_adjlist_serializer_special_chars() {
   // IDs with quotes and backslashes
   std::vector<std::string> ids = {R"(id"1)", R"(id\2)"};
-  auto ids2 = GraphSerializer::DeserializeAdjList(GraphSerializer::SerializeAdjList(ids));
+  auto ids2 = GraphSerializer::DeserializeAdjList(
+      GraphSerializer::SerializeAdjList(ids));
   CHECK(ids == ids2, "AdjList roundtrip: special chars");
   PASS("AdjList serializer roundtrip (special chars)");
   return true;
@@ -155,7 +156,7 @@ bool test_node_add_get() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Node n {"node1", R"({"x":1})"};
+  Node n{"node1", R"({"x":1})"};
   gs.AddNode(n);
 
   auto got = gs.GetNode("node1");
@@ -179,10 +180,10 @@ bool test_node_update() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Node n {"node1", R"({"x":1})"};
+  Node n{"node1", R"({"x":1})"};
   gs.AddNode(n);
 
-  Node updated {"node1", R"({"x":99})"};
+  Node updated{"node1", R"({"x":99})"};
   gs.UpdateNode(updated);
 
   auto got = gs.GetNode("node1");
@@ -196,7 +197,7 @@ bool test_node_delete() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Node n {"node1", R"({})"};
+  Node n{"node1", R"({})"};
   gs.AddNode(n);
   gs.DeleteNode("node1");
 
@@ -211,8 +212,8 @@ bool test_node_key_escaping() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Node n1 {"a:b", R"({"id":"a:b"})"};
-  Node n2 {"a", R"({"id":"a"})"};
+  Node n1{"a:b", R"({"id":"a:b"})"};
+  Node n2{"a", R"({"id":"a"})"};
   gs.AddNode(n1);
   gs.AddNode(n2);
 
@@ -231,7 +232,7 @@ bool test_edge_add_get() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Edge e {"alice", "bob", "KNOWS", 0.9f, R"({"since":2021})"};
+  Edge e{"alice", "bob", "KNOWS", 0.9f, R"({"since":2021})"};
   gs.AddEdge(e);
 
   auto got = gs.GetEdge("alice", "bob", "KNOWS");
@@ -255,7 +256,7 @@ bool test_edge_delete() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Edge e {"alice", "bob", "KNOWS", 1.0f, ""};
+  Edge e{"alice", "bob", "KNOWS", 1.0f, ""};
   gs.AddEdge(e);
   gs.DeleteEdge("alice", "bob", "KNOWS");
 
@@ -270,8 +271,8 @@ bool test_edge_multi_label() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Edge e1 {"a", "b", "KNOWS", 1.0f, ""};
-  Edge e2 {"a", "b", "LIKES", 0.5f, ""};
+  Edge e1{"a", "b", "KNOWS", 1.0f, ""};
+  Edge e2{"a", "b", "LIKES", 0.5f, ""};
   gs.AddEdge(e1);
   gs.AddEdge(e2);
 
@@ -288,7 +289,7 @@ bool test_edge_label_escaping() {
   auto kv = make_kv();
   GraphStore gs(kv);
 
-  Edge e {"src", "dst", "TYPE:A", 1.0f, ""};
+  Edge e{"src", "dst", "TYPE:A", 1.0f, ""};
   gs.AddEdge(e);
 
   auto got = gs.GetEdge("src", "dst", "TYPE:A");
@@ -302,8 +303,7 @@ bool test_edge_label_escaping() {
 namespace rc {
 
 // Node 生成器：node_id 和 properties_json 可以是任意字符串（含 ':'）
-template <>
-struct Arbitrary<Node> {
+template <> struct Arbitrary<Node> {
   static Gen<Node> arbitrary() {
     return gen::build<Node>(
         gen::set(&Node::node_id, gen::arbitrary<std::string>()),
@@ -312,11 +312,10 @@ struct Arbitrary<Node> {
 };
 
 // Edge 生成器：weight 过滤掉 NaN/Inf（NaN != NaN，无法做往返相等断言）
-template <>
-struct Arbitrary<Edge> {
+template <> struct Arbitrary<Edge> {
   static Gen<Edge> arbitrary() {
-    auto finite_float =
-        gen::suchThat(gen::arbitrary<float>(), [](float f) { return std::isfinite(f); });
+    auto finite_float = gen::suchThat(gen::arbitrary<float>(),
+                                      [](float f) { return std::isfinite(f); });
     return gen::build<Edge>(
         gen::set(&Edge::src_id, gen::arbitrary<std::string>()),
         gen::set(&Edge::dst_id, gen::arbitrary<std::string>()),
@@ -344,20 +343,22 @@ struct Arbitrary<Edge> {
  */
 static bool run_property5() {
   // Feature: graph-on-kv, Property 5: Node CRUD 往返
-  bool p5a = rc::check("Property 5a: AddNode(n); GetNode(id) == n", [](const Node &n) {
-    auto kv = std::make_shared<GraphKVStore>(1024, 4);
-    GraphStore gs(kv);
-    gs.AddNode(n);
-    auto got = gs.GetNode(n.node_id);
-    RC_ASSERT(got.has_value());
-    RC_ASSERT(*got == n);
-  });
+  bool p5a =
+      rc::check("Property 5a: AddNode(n); GetNode(id) == n", [](const Node &n) {
+        auto kv = std::make_shared<GraphKVStore>(1024, 4);
+        GraphStore gs(kv);
+        gs.AddNode(n);
+        auto got = gs.GetNode(n.node_id);
+        RC_ASSERT(got.has_value());
+        RC_ASSERT(*got == n);
+      });
 
   // 未添加的 node_id 返回 nullopt
   // 生成两个不同的 node_id，只添加其中一个
   bool p5b = rc::check("Property 5b: GetNode(未添加的 id) == nullopt",
                        [](const Node &n, const std::string &other_id) {
-                         RC_PRE(n.node_id != other_id); // 确保 other_id 与 n.node_id 不同
+                         RC_PRE(n.node_id !=
+                                other_id); // 确保 other_id 与 n.node_id 不同
                          auto kv = std::make_shared<GraphKVStore>(1024, 4);
                          GraphStore gs(kv);
                          gs.AddNode(n);
@@ -436,7 +437,8 @@ int main() {
   run(test_edge_serializer_default_weight, "edge_serializer_default_weight");
   run(test_adjlist_serializer_roundtrip, "adjlist_serializer_roundtrip");
   run(test_adjlist_serializer_empty, "adjlist_serializer_empty");
-  run(test_adjlist_serializer_special_chars, "adjlist_serializer_special_chars");
+  run(test_adjlist_serializer_special_chars,
+      "adjlist_serializer_special_chars");
 
   // GraphStore Node CRUD
   run(test_node_add_get, "node_add_get");
@@ -475,7 +477,7 @@ int main() {
   }
 
   int total_failed = failed + pbt_failed;
-  std::cout << "\n=== Total: " << (passed) << " unit tests, " << (2 - pbt_failed)
-            << "/2 PBT suites passed ===\n";
+  std::cout << "\n=== Total: " << (passed) << " unit tests, "
+            << (2 - pbt_failed) << "/2 PBT suites passed ===\n";
   return total_failed == 0 ? 0 : 1;
 }

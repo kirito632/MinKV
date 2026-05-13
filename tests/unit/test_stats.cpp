@@ -188,17 +188,18 @@ void test_reset_stats() {
 
   std::cout << "重置前：\n";
   auto stats_before = cache.getStats();
-  std::cout << "  命中: " << stats_before.hits << ", 未命中: " << stats_before.misses
-            << "\n";
+  std::cout << "  命中: " << stats_before.hits
+            << ", 未命中: " << stats_before.misses << "\n";
 
   // 重置统计
   cache.resetStats();
 
   std::cout << "重置后：\n";
   auto stats_after = cache.getStats();
-  std::cout << "  命中: " << stats_after.hits << ", 未命中: " << stats_after.misses
-            << "\n";
-  std::cout << "  缓存大小: " << stats_after.current_size << " (数据未被清除)\n";
+  std::cout << "  命中: " << stats_after.hits
+            << ", 未命中: " << stats_after.misses << "\n";
+  std::cout << "  缓存大小: " << stats_after.current_size
+            << " (数据未被清除)\n";
 }
 
 int main() {

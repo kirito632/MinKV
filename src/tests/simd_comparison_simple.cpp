@@ -101,17 +101,18 @@ int main() {
   }
 
   auto end_scalar = std::chrono::high_resolution_clock::now();
-  auto duration_scalar =
-      std::chrono::duration_cast<std::chrono::microseconds>(end_scalar - start_scalar)
-          .count();
+  auto duration_scalar = std::chrono::duration_cast<std::chrono::microseconds>(
+                             end_scalar - start_scalar)
+                             .count();
 
   double qps_scalar = NUM_QUERIES * 1000000.0 / duration_scalar;
   double latency_scalar = duration_scalar * 1.0 / NUM_QUERIES;
 
   std::cout << "耗时: " << duration_scalar / 1000 << " ms" << std::endl;
-  std::cout << "QPS: " << std::fixed << std::setprecision(0) << qps_scalar << std::endl;
-  std::cout << "平均延迟: " << std::fixed << std::setprecision(2) << latency_scalar
-            << " μs" << std::endl;
+  std::cout << "QPS: " << std::fixed << std::setprecision(0) << qps_scalar
+            << std::endl;
+  std::cout << "平均延迟: " << std::fixed << std::setprecision(2)
+            << latency_scalar << " μs" << std::endl;
   std::cout << std::endl;
 
   // ========================================
@@ -130,16 +131,18 @@ int main() {
   }
 
   auto end_simd = std::chrono::high_resolution_clock::now();
-  auto duration_simd =
-      std::chrono::duration_cast<std::chrono::microseconds>(end_simd - start_simd).count();
+  auto duration_simd = std::chrono::duration_cast<std::chrono::microseconds>(
+                           end_simd - start_simd)
+                           .count();
 
   double qps_simd = NUM_QUERIES * 1000000.0 / duration_simd;
   double latency_simd = duration_simd * 1.0 / NUM_QUERIES;
 
   std::cout << "耗时: " << duration_simd / 1000 << " ms" << std::endl;
-  std::cout << "QPS: " << std::fixed << std::setprecision(0) << qps_simd << std::endl;
-  std::cout << "平均延迟: " << std::fixed << std::setprecision(2) << latency_simd << " μs"
+  std::cout << "QPS: " << std::fixed << std::setprecision(0) << qps_simd
             << std::endl;
+  std::cout << "平均延迟: " << std::fixed << std::setprecision(2)
+            << latency_simd << " μs" << std::endl;
   std::cout << std::endl;
 
   // ========================================
@@ -155,21 +158,24 @@ int main() {
 
   std::cout << "| 指标 | 标量版本 | SIMD版本 | 提升 |" << std::endl;
   std::cout << "|------|----------|----------|------|" << std::endl;
-  std::cout << "| 耗时 | " << duration_scalar / 1000 << " ms | " << duration_simd / 1000
-            << " ms | " << std::fixed << std::setprecision(1)
-            << (1 - static_cast<double>(duration_simd) / duration_scalar) * 100 << "% |"
-            << std::endl;
-  std::cout << "| QPS | " << std::fixed << std::setprecision(0) << qps_scalar << " | "
-            << qps_simd << " | " << std::setprecision(1) << improvement << "% |"
-            << std::endl;
-  std::cout << "| 延迟 | " << std::fixed << std::setprecision(2) << latency_scalar
-            << " μs | " << latency_simd << " μs | " << std::setprecision(1)
-            << (1 - latency_simd / latency_scalar) * 100 << "% |" << std::endl;
+  std::cout << "| 耗时 | " << duration_scalar / 1000 << " ms | "
+            << duration_simd / 1000 << " ms | " << std::fixed
+            << std::setprecision(1)
+            << (1 - static_cast<double>(duration_simd) / duration_scalar) * 100
+            << "% |" << std::endl;
+  std::cout << "| QPS | " << std::fixed << std::setprecision(0) << qps_scalar
+            << " | " << qps_simd << " | " << std::setprecision(1) << improvement
+            << "% |" << std::endl;
+  std::cout << "| 延迟 | " << std::fixed << std::setprecision(2)
+            << latency_scalar << " μs | " << latency_simd << " μs | "
+            << std::setprecision(1) << (1 - latency_simd / latency_scalar) * 100
+            << "% |" << std::endl;
   std::cout << std::endl;
 
-  std::cout << "🚀 加速比: " << std::fixed << std::setprecision(2) << speedup << "x"
+  std::cout << "🚀 加速比: " << std::fixed << std::setprecision(2) << speedup
+            << "x" << std::endl;
+  std::cout << "📈 性能提升: " << std::setprecision(1) << improvement << "%"
             << std::endl;
-  std::cout << "📈 性能提升: " << std::setprecision(1) << improvement << "%" << std::endl;
   std::cout << std::endl;
 
   // 理论分析
@@ -178,8 +184,8 @@ int main() {
   std::cout << "========================================" << std::endl;
   std::cout << std::endl;
   std::cout << "理论最大加速比: 8x (AVX2并行处理8个float)" << std::endl;
-  std::cout << "实际加速比: " << std::fixed << std::setprecision(2) << speedup << "x"
-            << std::endl;
+  std::cout << "实际加速比: " << std::fixed << std::setprecision(2) << speedup
+            << "x" << std::endl;
   std::cout << "效率: " << std::setprecision(1) << (speedup / 8.0 * 100) << "%"
             << std::endl;
   std::cout << std::endl;

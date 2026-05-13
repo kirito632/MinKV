@@ -61,7 +61,8 @@ int main() {
   std::cout << "\n[Test 4] 缓存统计" << std::endl;
 
   auto stats = cache.getStats();
-  std::cout << "缓存大小: " << stats.current_size << " / " << stats.capacity << std::endl;
+  std::cout << "缓存大小: " << stats.current_size << " / " << stats.capacity
+            << std::endl;
   std::cout << "命中次数: " << stats.hits << std::endl;
   std::cout << "未命中次数: " << stats.misses << std::endl;
 
@@ -69,7 +70,8 @@ int main() {
   std::cout << "\n✓ MinKV 现在支持：" << std::endl;
   std::cout << "  1. 传统的 String KV 存储 (put/get)" << std::endl;
   std::cout << "  2. 向量数据存储 (vectorPut/vectorGet)" << std::endl;
-  std::cout << "  3. 向量相似度搜索 (vectorSearch) - 使用 AVX2 SIMD 加速" << std::endl;
+  std::cout << "  3. 向量相似度搜索 (vectorSearch) - 使用 AVX2 SIMD 加速"
+            << std::endl;
   std::cout << "  4. 分片并发架构 - 支持多线程并行访问" << std::endl;
 
   return 0;

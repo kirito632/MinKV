@@ -72,8 +72,7 @@ public:
    */
   explicit HttpServer(std::shared_ptr<MinKV<std::string, std::string>> kv,
                       std::shared_ptr<graph::GraphStore> graph_store = nullptr,
-                      const std::string &host = "0.0.0.0",
-                      int port = 8080);
+                      const std::string &host = "0.0.0.0", int port = 8080);
 
   /**
    * @brief 析构函数，自动停止服务器并回收线程资源
@@ -133,10 +132,12 @@ public:
 private:
   std::shared_ptr<MinKV<std::string, std::string>>
       kv_; ///< MinKV 存储引擎，提供 KV、向量、持久化能力
-  std::shared_ptr<graph::GraphStore> graph_store_; ///< 图存储实例，为空时不注册图端点
-  std::unique_ptr<httplib::Server> server_; ///< cpp-httplib 服务器对象，管理路由与事件循环
-  std::string host_;                        ///< 监听地址
-  int port_;                                ///< 监听端口
+  std::shared_ptr<graph::GraphStore>
+      graph_store_; ///< 图存储实例，为空时不注册图端点
+  std::unique_ptr<httplib::Server>
+      server_; ///< cpp-httplib 服务器对象，管理路由与事件循环
+  std::string host_;          ///< 监听地址
+  int port_;                  ///< 监听端口
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证可见性
   std::unique_ptr<std::thread> server_thread_; ///< 异步模式下的后台线程
 
@@ -237,7 +238,8 @@ private:
    * [性能] 底层使用 SIMD（AVX2）加速 L2 距离计算，微秒级延迟
    * @note 当前实现仅支持 L2 距离，返回结果按距离升序排列（最近邻在前）
    */
-  void handle_vector_search(const httplib::Request &req, httplib::Response &res);
+  void handle_vector_search(const httplib::Request &req,
+                            httplib::Response &res);
 
   /**
    * @brief GET /vector/get?key=vec1 — 按 key 获取向量详情
@@ -266,7 +268,8 @@ private:
    *
    * @note 底层调用 KV remove，向量与元数据一同删除
    */
-  void handle_vector_delete(const httplib::Request &req, httplib::Response &res);
+  void handle_vector_delete(const httplib::Request &req,
+                            httplib::Response &res);
 
   // ==========================================
   // 图接口处理器
@@ -287,7 +290,8 @@ private:
    *
    * [应用场景] 构建知识图谱节点，embedding 字段使该节点可被向量检索命中
    */
-  void handle_graph_add_node(const httplib::Request &req, httplib::Response &res);
+  void handle_graph_add_node(const httplib::Request &req,
+                             httplib::Response &res);
 
   /**
    * @brief POST /graph/add_edge — 添加有向边
@@ -304,7 +308,8 @@ private:
    * [响应] {"success": true, "src_id": "alice", "dst_id": "bob", "label":
    * "KNOWS"}
    */
-  void handle_graph_add_edge(const httplib::Request &req, httplib::Response &res);
+  void handle_graph_add_edge(const httplib::Request &req,
+                             httplib::Response &res);
 
   /**
    * @brief POST /graph/rag_query — GraphRAG 混合查询
@@ -332,7 +337,8 @@ private:
    *   ]
    * }
    */
-  void handle_graph_rag_query(const httplib::Request &req, httplib::Response &res);
+  void handle_graph_rag_query(const httplib::Request &req,
+                              httplib::Response &res);
 
   // ==========================================
   // 辅助方法
@@ -355,7 +361,8 @@ private:
    *
    * [统一格式] 响应体为 {"success": false, "error": "<message>"}
    */
-  void send_error(httplib::Response &res, int status_code, const std::string &message);
+  void send_error(httplib::Response &res, int status_code,
+                  const std::string &message);
 
   /**
    * @brief 发送成功响应（HTTP 200）

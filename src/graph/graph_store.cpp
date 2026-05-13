@@ -61,8 +61,7 @@ std::string GraphStore::NodeKey(const std::string &node_id) {
   return "n:" + EscapeId(node_id);
 }
 
-std::string GraphStore::EdgeKey(const std::string &src,
-                                const std::string &dst,
+std::string GraphStore::EdgeKey(const std::string &src, const std::string &dst,
                                 const std::string &label) {
   // 格式：e:{src}:{dst}:{label}
   // 三段都需要转义，确保每个 ':' 分隔符都是真正的分隔符
@@ -81,7 +80,8 @@ std::string GraphStore::VecKey(const std::string &node_id) {
   return "vec:" + EscapeId(node_id);
 }
 
-std::string GraphStore::EdgeCountKey(const std::string &src, const std::string &dst) {
+std::string GraphStore::EdgeCountKey(const std::string &src,
+                                     const std::string &dst) {
   // 格式：ec:{src}:{dst}
   // 与 e:{src}:{dst}:{label} 共享相同的 src/dst 转义规则
   return "ec:" + EscapeId(src) + ":" + EscapeId(dst);
@@ -95,7 +95,8 @@ std::string GraphStore::EdgeCountKey(const std::string &src, const std::string &
 // ══════════════════════════════════════════════════════════════════════════════
 
 /** 从 KV 读取邻接表；Key 不存在时返回空列表，不报错 */
-std::vector<std::string> GraphStore::LoadAdjList(const std::string &kv_key) const {
+std::vector<std::string>
+GraphStore::LoadAdjList(const std::string &kv_key) const {
   auto val = kv_->get(kv_key);
   if (!val)
     return {}; // Key 不存在 -> 空邻接表
@@ -136,7 +137,8 @@ void GraphStore::AdjListAdd(const std::string &kv_key, const std::string &id) {
  * 在分片锁内调用 remove 会导致死锁。改为返回空序列化结果，
  * 由调用方在 update_in_place 返回后判断是否需要 remove。
  */
-void GraphStore::AdjListRemove(const std::string &kv_key, const std::string &id) {
+void GraphStore::AdjListRemove(const std::string &kv_key,
+                               const std::string &id) {
   bool became_empty = false;
   kv_->update_in_place(kv_key, [&](const std::optional<std::string> &old_val) {
     auto list = GraphSerializer::DeserializeAdjList(old_val);
@@ -175,7 +177,8 @@ void GraphStore::AdjListRemove(const std::string &kv_key, const std::string &id)
  * 使用 update_in_place 在分片锁内完成"读 → 增 1 → 写"的 RMW 周期，
  * 消除并发写覆盖问题。
  */
-void GraphStore::IncrementEdgeCount(const std::string &src, const std::string &dst) {
+void GraphStore::IncrementEdgeCount(const std::string &src,
+                                    const std::string &dst) {
   kv_->update_in_place(EdgeCountKey(src, dst),
                        [&](const std::optional<std::string> &old_val) {
                          uint64_t count = old_val ? std::stoull(*old_val) : 0;
@@ -192,7 +195,8 @@ void GraphStore::IncrementEdgeCount(const std::string &src, const std::string &d
  * 注意：update_in_place 的回调在分片锁内执行，
  * 返回值的捕获通过引用完成，保证线程安全。
  */
-uint64_t GraphStore::DecrementEdgeCount(const std::string &src, const std::string &dst) {
+uint64_t GraphStore::DecrementEdgeCount(const std::string &src,
+                                        const std::string &dst) {
   uint64_t new_count = 0;
   kv_->update_in_place(EdgeCountKey(src, dst),
                        [&](const std::optional<std::string> &old_val) {
@@ -285,7 +289,8 @@ void GraphStore::DeleteNode(const std::string &node_id) {
     if (first_colon != std::string::npos) {
       auto second_colon = k.find(':', first_colon + 1);
       if (second_colon != std::string::npos) {
-        std::string dst_part = k.substr(first_colon + 1, second_colon - first_colon - 1);
+        std::string dst_part =
+            k.substr(first_colon + 1, second_colon - first_colon - 1);
         if (dst_part == escaped) {
           kv_->remove(k);
         }
@@ -337,8 +342,8 @@ std::optional<Edge> GraphStore::GetEdge(const std::string &src_id,
 /**
  * 删除边
  *
- * 利用边计数器（ec:{src}:{dst}）O(1) 判断 (src, dst) 间是否还有其他 label 的边。
- * 计数器减到 0 时才清理邻接表，避免全表扫描。
+ * 利用边计数器（ec:{src}:{dst}）O(1) 判断 (src, dst) 间是否还有其他 label
+ * 的边。 计数器减到 0 时才清理邻接表，避免全表扫描。
  *
  * 复杂度：从 O(total_keys) 降为 O(1)。
  */
@@ -364,12 +369,14 @@ void GraphStore::DeleteEdge(const std::string &src_id,
 // ══════════════════════════════════════════════════════════════════════════════
 
 /** 返回 node_id 的所有出边邻居；节点无出边时返回空列表 */
-std::vector<std::string> GraphStore::GetOutNeighbors(const std::string &node_id) const {
+std::vector<std::string>
+GraphStore::GetOutNeighbors(const std::string &node_id) const {
   return LoadAdjList(AdjOutKey(node_id));
 }
 
 /** 返回 node_id 的所有入边前驱；节点无入边时返回空列表 */
-std::vector<std::string> GraphStore::GetInNeighbors(const std::string &node_id) const {
+std::vector<std::string>
+GraphStore::GetInNeighbors(const std::string &node_id) const {
   return LoadAdjList(AdjInKey(node_id));
 }
 
@@ -429,8 +436,8 @@ void GraphStore::RebuildAdjacencyList() {
 // 返回 {node_id -> hop_distance}，不含起始节点。
 // ══════════════════════════════════════════════════════════════════════════════
 
-std::unordered_map<std::string, int> GraphStore::KHopNeighbors(
-    const std::string &start_id, int k) const {
+std::unordered_map<std::string, int>
+GraphStore::KHopNeighbors(const std::string &start_id, int k) const {
   std::unordered_map<std::string, int> result;
   if (k <= 0)
     return result; // k=0 直接返回空
@@ -535,7 +542,8 @@ void GraphStore::SetNodeEmbedding(const std::string &node_id,
  * 读取 embedding：把 KV 中的字节流还原为 float[]
  * 维度 = 字节数 / 4（每个 float 4 字节）
  */
-std::vector<float> GraphStore::GetNodeEmbedding(const std::string &node_id) const {
+std::vector<float>
+GraphStore::GetNodeEmbedding(const std::string &node_id) const {
   auto val = kv_->get(VecKey(node_id));
   if (!val || val->empty())
     return {};
@@ -555,8 +563,9 @@ std::vector<float> GraphStore::GetNodeEmbedding(const std::string &node_id) cons
  *
  * 维度不匹配的节点直接跳过，不中断查询。
  */
-std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodes(
-    const std::vector<float> &query_embedding, int top_k) const {
+std::vector<std::pair<std::string, float>>
+GraphStore::SearchSimilarNodes(const std::vector<float> &query_embedding,
+                               int top_k) const {
   if (query_embedding.empty() || top_k <= 0)
     return {};
 
@@ -573,7 +582,8 @@ std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodes(
 
   for (const auto &[k, v] : all_data) {
     // 只处理 vec: 前缀的 Key
-    if (k.size() <= VEC_PREFIX.size() || k.substr(0, VEC_PREFIX.size()) != VEC_PREFIX) {
+    if (k.size() <= VEC_PREFIX.size() ||
+        k.substr(0, VEC_PREFIX.size()) != VEC_PREFIX) {
       continue;
     }
 
@@ -585,7 +595,8 @@ std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodes(
       continue;
 
     const float *node_ptr = reinterpret_cast<const float *>(v.data());
-    float sim = VectorOps::CosineSimilarity_AVX2(query_ptr, node_ptr, query_dim);
+    float sim =
+        VectorOps::CosineSimilarity_AVX2(query_ptr, node_ptr, query_dim);
 
     // node_id 是 Key 去掉 "vec:" 前缀后的部分（已转义，但对外接口直接用原始 Key
     // 后缀） 注意：这里存的是转义后的 node_id，调用方通过 GetNode 时需要原始
@@ -645,9 +656,9 @@ std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodes(
  * 并发收益：top_k 个入口节点的 BFS 从串行变并行，
  * 在多核机器上延迟接近单次 BFS，而非 top_k 倍。
  */
-std::vector<Node> GraphStore::GraphRAGQuery(const std::vector<float> &query_embedding,
-                                            int vector_top_k,
-                                            int hop_depth) const {
+std::vector<Node>
+GraphStore::GraphRAGQuery(const std::vector<float> &query_embedding,
+                          int vector_top_k, int hop_depth) const {
   // Phase 1: 向量检索入口节点
   auto entries = SearchSimilarNodes(query_embedding, vector_top_k);
   if (entries.empty())
@@ -656,8 +667,9 @@ std::vector<Node> GraphStore::GraphRAGQuery(const std::vector<float> &query_embe
   // Phase 2: 并发 K-hop 扩展
   // 策略：有线程池 且 入口节点 > 1 且 hop_depth >= 2 时并发，否则串行
   // 线程池预创建线程，消除 std::async 每次创建线程的 50~200μs 开销
-  const bool use_parallel =
-      thread_pool_ && (static_cast<int>(entries.size()) > 1) && (hop_depth >= 2);
+  const bool use_parallel = thread_pool_ &&
+                            (static_cast<int>(entries.size()) > 1) &&
+                            (hop_depth >= 2);
 
   std::unordered_set<std::string> all_node_ids;
   for (const auto &[entry_id, score] : entries) {
@@ -670,8 +682,9 @@ std::vector<Node> GraphStore::GraphRAGQuery(const std::vector<float> &query_embe
     std::vector<std::future<std::unordered_map<std::string, int>>> futures;
     futures.reserve(entries.size());
     for (const auto &[entry_id, score] : entries) {
-      futures.push_back(thread_pool_->submit(
-          [this, entry_id, hop_depth]() { return KHopNeighbors(entry_id, hop_depth); }));
+      futures.push_back(thread_pool_->submit([this, entry_id, hop_depth]() {
+        return KHopNeighbors(entry_id, hop_depth);
+      }));
     }
     for (auto &fut : futures) {
       for (const auto &[nb_id, dist] : fut.get()) {
@@ -712,8 +725,7 @@ namespace graph {
  *  3. 并发图遍历: 对所有入口节点并发执行 KHopNeighbors
  */
 std::vector<Node> GraphStore::GraphRAGQuery(
-    const std::vector<std::vector<float>> &query_embeddings,
-    int vector_top_k,
+    const std::vector<std::vector<float>> &query_embeddings, int vector_top_k,
     int hop_depth) const {
   if (query_embeddings.empty()) {
     return {};
@@ -721,16 +733,19 @@ std::vector<Node> GraphStore::GraphRAGQuery(
 
   // Phase 1: 并发向量检索入口节点
   std::unordered_set<std::string> all_entry_node_ids;
-  const bool use_parallel_search = thread_pool_ && (query_embeddings.size() > 1);
+  const bool use_parallel_search =
+      thread_pool_ && (query_embeddings.size() > 1);
 
   if (use_parallel_search) {
-    std::vector<std::future<std::vector<std::pair<std::string, float>>>> search_futures;
+    std::vector<std::future<std::vector<std::pair<std::string, float>>>>
+        search_futures;
     search_futures.reserve(query_embeddings.size());
 
     for (const auto &embedding : query_embeddings) {
-      search_futures.push_back(thread_pool_->submit([this, embedding, vector_top_k]() {
-        return SearchSimilarNodes(embedding, vector_top_k);
-      }));
+      search_futures.push_back(
+          thread_pool_->submit([this, embedding, vector_top_k]() {
+            return SearchSimilarNodes(embedding, vector_top_k);
+          }));
     }
 
     for (auto &fut : search_futures) {
@@ -753,7 +768,8 @@ std::vector<Node> GraphStore::GraphRAGQuery(
   }
 
   // Phase 2: 并发 K-hop 扩展
-  std::unordered_set<std::string> all_node_ids = all_entry_node_ids; // 包含所有入口节点
+  std::unordered_set<std::string> all_node_ids =
+      all_entry_node_ids; // 包含所有入口节点
   const bool use_parallel_bfs =
       thread_pool_ && (all_entry_node_ids.size() > 1) && (hop_depth >= 1);
 
@@ -761,8 +777,9 @@ std::vector<Node> GraphStore::GraphRAGQuery(
     std::vector<std::future<std::unordered_map<std::string, int>>> bfs_futures;
     bfs_futures.reserve(all_entry_node_ids.size());
     for (const auto &entry_id : all_entry_node_ids) {
-      bfs_futures.push_back(thread_pool_->submit(
-          [this, entry_id, hop_depth]() { return KHopNeighbors(entry_id, hop_depth); }));
+      bfs_futures.push_back(thread_pool_->submit([this, entry_id, hop_depth]() {
+        return KHopNeighbors(entry_id, hop_depth);
+      }));
     }
 
     for (auto &fut : bfs_futures) {

@@ -46,7 +46,8 @@ public:
    * 3. 如果获取成功，随机采样指定数量的 key
    * 4. 检查并删除过期的 key，返回删除数量（可以为 0）
    */
-  using ExpirationCallback = std::function<size_t(size_t shard_id, size_t sample_size)>;
+  using ExpirationCallback =
+      std::function<size_t(size_t shard_id, size_t sample_size)>;
 
   /**
    * @brief 构造定期删除管理器
@@ -62,8 +63,7 @@ public:
    * @note 回调函数在构造时验证，如果为空则抛出异常
    */
   explicit ExpirationManager(
-      ExpirationCallback callback,
-      size_t shard_count,
+      ExpirationCallback callback, size_t shard_count,
       std::chrono::milliseconds check_interval = std::chrono::milliseconds(100),
       size_t sample_size = 20);
 
@@ -83,10 +83,10 @@ public:
    * @brief 性能统计信息结构体
    */
   struct Stats {
-    uint64_t total_checks;                    ///< 总检查次数
-    uint64_t total_expired;                   ///< 总过期删除数
-    uint64_t total_skipped;                   ///< 总跳过次数（锁竞争）
-    double avg_expired_ratio;                 ///< 平均过期比例
+    uint64_t total_checks;    ///< 总检查次数
+    uint64_t total_expired;   ///< 总过期删除数
+    uint64_t total_skipped;   ///< 总跳过次数（锁竞争）
+    double avg_expired_ratio; ///< 平均过期比例
     std::chrono::milliseconds avg_check_time; ///< 平均检查耗时
   };
 

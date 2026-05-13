@@ -26,9 +26,9 @@ struct WALBenchmarkResult {
 
 class WALPerformanceBenchmark {
 private:
-  std::atomic<bool> stop_flag_ {false};
-  std::atomic<size_t> total_ops_ {0};
-  std::atomic<size_t> total_hits_ {0};
+  std::atomic<bool> stop_flag_{false};
+  std::atomic<size_t> total_ops_{0};
+  std::atomic<size_t> total_hits_{0};
   std::vector<double> latencies_;
   std::mutex latencies_mutex_;
 
@@ -43,12 +43,14 @@ public:
 
     std::cout << "=== WAL Performance Impact Benchmark ===" << std::endl;
     std::cout << "Testing WAL ON vs WAL OFF performance..." << std::endl;
-    std::cout << "Duration: " << TEST_DURATION_SEC << " seconds per test" << std::endl;
+    std::cout << "Duration: " << TEST_DURATION_SEC << " seconds per test"
+              << std::endl;
     std::cout << std::endl;
 
     // 测试场景：不同线程数 × WAL开关
     std::vector<int> thread_counts = {1, 2, 4, 8};
-    std::vector<bool> wal_settings = {false, true}; // 先测试WAL关闭，再测试WAL开启
+    std::vector<bool> wal_settings = {false,
+                                      true}; // 先测试WAL关闭，再测试WAL开启
 
     for (int threads : thread_counts) {
       for (bool wal_enabled : wal_settings) {
@@ -106,7 +108,8 @@ private:
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    double duration = std::chrono::duration<double>(end_time - start_time).count();
+    double duration =
+        std::chrono::duration<double>(end_time - start_time).count();
 
     // 计算统计数据
     WALBenchmarkResult result;
@@ -162,7 +165,8 @@ private:
       }
 
       auto end = std::chrono::high_resolution_clock::now();
-      double latency_us = std::chrono::duration<double, std::micro>(end - start).count();
+      double latency_us =
+          std::chrono::duration<double, std::micro>(end - start).count();
 
       // 记录统计
       total_ops_.fetch_add(1);
@@ -227,10 +231,11 @@ void save_results_to_csv(const std::vector<WALBenchmarkResult> &results) {
 
   // 数据行
   for (const auto &result : results) {
-    csv << result.scenario << "," << (result.wal_enabled ? "true" : "false") << ","
-        << result.thread_count << "," << result.qps << "," << result.avg_latency_us << ","
-        << result.p99_latency_us << "," << result.hit_rate << "," << result.total_ops
-        << "," << result.duration_sec << "\n";
+    csv << result.scenario << "," << (result.wal_enabled ? "true" : "false")
+        << "," << result.thread_count << "," << result.qps << ","
+        << result.avg_latency_us << "," << result.p99_latency_us << ","
+        << result.hit_rate << "," << result.total_ops << ","
+        << result.duration_sec << "\n";
   }
 
   csv.close();
@@ -262,20 +267,18 @@ void print_summary_analysis(const std::vector<WALBenchmarkResult> &results) {
     const auto &wal_on = pair.second;
 
     double qps_drop = (wal_off.qps - wal_on.qps) / wal_off.qps * 100;
-    double latency_increase =
-        (wal_on.p99_latency_us - wal_off.p99_latency_us) / wal_off.p99_latency_us * 100;
+    double latency_increase = (wal_on.p99_latency_us - wal_off.p99_latency_us) /
+                              wal_off.p99_latency_us * 100;
 
-    printf("%7d | %11.0f | %11.0f | %15.1f%% | %13.1f%%\n",
-           threads,
-           wal_off.qps,
-           wal_on.qps,
-           qps_drop,
-           latency_increase);
+    printf("%7d | %11.0f | %11.0f | %15.1f%% | %13.1f%%\n", threads,
+           wal_off.qps, wal_on.qps, qps_drop, latency_increase);
   }
 
   std::cout << "\n🎯 Key Findings:" << std::endl;
-  std::cout << "• WAL provides ACID guarantees at the cost of performance" << std::endl;
-  std::cout << "• Performance drop is due to disk I/O and fsync() overhead" << std::endl;
+  std::cout << "• WAL provides ACID guarantees at the cost of performance"
+            << std::endl;
+  std::cout << "• Performance drop is due to disk I/O and fsync() overhead"
+            << std::endl;
   std::cout << "• In production, can be optimized with Group Commit batching"
             << std::endl;
   std::cout << "• Trade-off: Consistency vs Performance" << std::endl;

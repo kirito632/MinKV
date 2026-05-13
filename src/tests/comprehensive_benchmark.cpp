@@ -69,7 +69,8 @@ private:
   std::vector<std::vector<double>> thread_local_latencies_;
 
 public:
-  explicit LatencyStats(int thread_count) : thread_local_latencies_(thread_count) {
+  explicit LatencyStats(int thread_count)
+      : thread_local_latencies_(thread_count) {
     for (auto &vec : thread_local_latencies_) {
       vec.reserve(10000);
     }
@@ -129,8 +130,7 @@ std::string random_string(size_t length) {
 //   当 preload_count == key_range 时 ≈ 100% hit
 //   当 preload_count << key_range 时 ≈ miss-heavy
 // ============================================================
-BenchmarkResult benchmark_concurrent_rw(int thread_count,
-                                        int ops_per_thread,
+BenchmarkResult benchmark_concurrent_rw(int thread_count, int ops_per_thread,
                                         int read_ratio,
                                         int preload_count = 100000,
                                         int key_range = 1000000) {
@@ -211,15 +211,16 @@ BenchmarkResult benchmark_concurrent_rw(int thread_count,
   result.key_range = key_range;
 
   // 根据命中率标记 workload 类型
-  double expected_hit_rate = static_cast<double>(preload_count) / key_range * 100.0;
+  double expected_hit_rate =
+      static_cast<double>(preload_count) / key_range * 100.0;
   if (expected_hit_rate > 90.0) {
     result.workload_type = "hit-heavy";
   } else {
     result.workload_type = "miss-heavy";
   }
 
-  latency_stats.get_percentiles(
-      result.p50_latency_us, result.p95_latency_us, result.p99_latency_us);
+  latency_stats.get_percentiles(result.p50_latency_us, result.p95_latency_us,
+                                result.p99_latency_us);
 
   auto stats = cache.getStats();
   result.cache_hit_rate = (stats.hits * 100) / (stats.hits + stats.misses + 1);
@@ -230,7 +231,8 @@ BenchmarkResult benchmark_concurrent_rw(int thread_count,
 // ============================================================
 //  Benchmark 2: 向量检索
 // ============================================================
-BenchmarkResult benchmark_vector_search(int thread_count, int searches_per_thread) {
+BenchmarkResult benchmark_vector_search(int thread_count,
+                                        int searches_per_thread) {
   Cache cache(10000, 32);
 
   std::cout << "  预填充向量数据（10万条）..." << std::flush;
@@ -267,7 +269,8 @@ BenchmarkResult benchmark_vector_search(int thread_count, int searches_per_threa
       cache.vectorSearch(query, 10);
       auto end = std::chrono::steady_clock::now();
 
-      double latency_us = std::chrono::duration<double, std::micro>(end - start).count();
+      double latency_us =
+          std::chrono::duration<double, std::micro>(end - start).count();
       latency_stats.record(thread_id, latency_us);
 
       local_ops++;
@@ -307,8 +310,8 @@ BenchmarkResult benchmark_vector_search(int thread_count, int searches_per_threa
   result.preload_count = 100000;
   result.key_range = 0;
 
-  latency_stats.get_percentiles(
-      result.p50_latency_us, result.p95_latency_us, result.p99_latency_us);
+  latency_stats.get_percentiles(result.p50_latency_us, result.p95_latency_us,
+                                result.p99_latency_us);
   result.cache_hit_rate = 0;
 
   return result;
@@ -388,8 +391,8 @@ BenchmarkResult benchmark_noop(int thread_count, int ops_per_thread) {
   result.preload_count = 0;
   result.key_range = 1000000;
 
-  latency_stats.get_percentiles(
-      result.p50_latency_us, result.p95_latency_us, result.p99_latency_us);
+  latency_stats.get_percentiles(result.p50_latency_us, result.p95_latency_us,
+                                result.p99_latency_us);
   result.cache_hit_rate = 0;
 
   return result;
@@ -397,18 +400,16 @@ BenchmarkResult benchmark_noop(int thread_count, int ops_per_thread) {
 
 // 保存结果到CSV（带时间戳）
 void save_to_csv(const std::vector<BenchmarkResult> &results,
-                 const std::string &filename,
-                 const std::string &start_time,
-                 const std::string &end_time,
-                 double total_duration) {
+                 const std::string &filename, const std::string &start_time,
+                 const std::string &end_time, double total_duration) {
   std::ofstream file(filename);
 
   // 添加测试元数据
   file << "# MinKV Comprehensive Benchmark Report\n";
   file << "# Test Start Time: " << start_time << "\n";
   file << "# Test End Time: " << end_time << "\n";
-  file << "# Total Duration: " << format_duration(total_duration) << " (" << std::fixed
-       << std::setprecision(2) << total_duration << "s)\n";
+  file << "# Total Duration: " << format_duration(total_duration) << " ("
+       << std::fixed << std::setprecision(2) << total_duration << "s)\n";
   file << "# Optimization Version: v3.0\n";
   file << "# Key Improvements:\n";
   file << "#   - Removed global atomic total_ops (thread-local counters)\n";
@@ -423,14 +424,15 @@ void save_to_csv(const std::vector<BenchmarkResult> &results,
 
   // 数据行
   for (const auto &r : results) {
-    file << r.test_name << "," << r.workload_type << "," << r.thread_count << ","
-         << r.total_ops << "," << std::fixed << std::setprecision(2) << r.duration_ms
-         << "," << std::fixed << std::setprecision(0) << r.qps << "," << std::fixed
-         << std::setprecision(2) << r.avg_latency_us << "," << std::fixed
-         << std::setprecision(2) << r.p50_latency_us << "," << std::fixed
-         << std::setprecision(2) << r.p95_latency_us << "," << std::fixed
-         << std::setprecision(2) << r.p99_latency_us << "," << r.cache_hit_rate << ","
-         << r.preload_count << "," << r.key_range << "\n";
+    file << r.test_name << "," << r.workload_type << "," << r.thread_count
+         << "," << r.total_ops << "," << std::fixed << std::setprecision(2)
+         << r.duration_ms << "," << std::fixed << std::setprecision(0) << r.qps
+         << "," << std::fixed << std::setprecision(2) << r.avg_latency_us << ","
+         << std::fixed << std::setprecision(2) << r.p50_latency_us << ","
+         << std::fixed << std::setprecision(2) << r.p95_latency_us << ","
+         << std::fixed << std::setprecision(2) << r.p99_latency_us << ","
+         << r.cache_hit_rate << "," << r.preload_count << "," << r.key_range
+         << "\n";
   }
 
   file.close();
@@ -446,20 +448,22 @@ void print_results(const std::vector<BenchmarkResult> &results) {
   std::cout << "╚══════════════════════════════════════════════════════════════"
                "══════════════════════════════════════════╝\n\n";
 
-  std::cout << std::left << std::setw(22) << "测试场景" << std::left << std::setw(14)
-            << "Workload" << std::right << std::setw(8) << "线程数" << std::setw(12)
-            << "QPS" << std::setw(12) << "P50(us)" << std::setw(12) << "P95(us)"
-            << std::setw(12) << "P99(us)" << std::setw(10) << "命中率" << "\n";
+  std::cout << std::left << std::setw(22) << "测试场景" << std::left
+            << std::setw(14) << "Workload" << std::right << std::setw(8)
+            << "线程数" << std::setw(12) << "QPS" << std::setw(12) << "P50(us)"
+            << std::setw(12) << "P95(us)" << std::setw(12) << "P99(us)"
+            << std::setw(10) << "命中率" << "\n";
   std::cout << std::string(102, '-') << "\n";
 
   for (const auto &r : results) {
-    std::cout << std::left << std::setw(22) << r.test_name << std::left << std::setw(14)
-              << r.workload_type << std::right << std::setw(8) << r.thread_count
-              << std::setw(12) << std::fixed << std::setprecision(0) << r.qps
-              << std::setw(12) << std::fixed << std::setprecision(2) << r.p50_latency_us
-              << std::setw(12) << std::fixed << std::setprecision(2) << r.p95_latency_us
-              << std::setw(12) << std::fixed << std::setprecision(2) << r.p99_latency_us
-              << std::setw(9) << r.cache_hit_rate << "%\n";
+    std::cout << std::left << std::setw(22) << r.test_name << std::left
+              << std::setw(14) << r.workload_type << std::right << std::setw(8)
+              << r.thread_count << std::setw(12) << std::fixed
+              << std::setprecision(0) << r.qps << std::setw(12) << std::fixed
+              << std::setprecision(2) << r.p50_latency_us << std::setw(12)
+              << std::fixed << std::setprecision(2) << r.p95_latency_us
+              << std::setw(12) << std::fixed << std::setprecision(2)
+              << r.p99_latency_us << std::setw(9) << r.cache_hit_rate << "%\n";
   }
   std::cout << "\n";
 }
@@ -474,8 +478,9 @@ int main() {
                "══════════════════════════════════════╗\n";
   std::cout << "║              MinKV 综合压力测试套件 v3.0                     "
                "                                  ║\n";
-  std::cout << "║        Comprehensive Benchmark Suite (Methodology Cleanup)    "
-               "                                  ║\n";
+  std::cout
+      << "║        Comprehensive Benchmark Suite (Methodology Cleanup)    "
+         "                                  ║\n";
   std::cout << "║                                                              "
                "                                  ║\n";
   std::cout << "║  本次改进：                                                  "
@@ -510,8 +515,8 @@ int main() {
     auto result = benchmark_noop(threads, 100000);
     results.push_back(result);
     std::cout << "    QPS: " << std::fixed << std::setprecision(0) << result.qps
-              << ", P99: " << std::fixed << std::setprecision(2) << result.p99_latency_us
-              << "μs\n";
+              << ", P99: " << std::fixed << std::setprecision(2)
+              << result.p99_latency_us << "μs\n";
   }
 
   // ================================================================
@@ -522,15 +527,15 @@ int main() {
   std::cout << "  配置: preload=100K, key_range=100K\n";
   for (int threads : {1, 2, 4, 8, 16}) {
     std::cout << "  - " << threads << " 线程:\n";
-    auto result = benchmark_concurrent_rw(threads,
-                                          100000,
-                                          90,
-                                          100000,  // preload_count
-                                          100000); // key_range == preload → 100% hit
+    auto result =
+        benchmark_concurrent_rw(threads, 100000, 90,
+                                100000,  // preload_count
+                                100000); // key_range == preload → 100% hit
     results.push_back(result);
     std::cout << "    QPS: " << std::fixed << std::setprecision(0) << result.qps
-              << ", P99: " << std::fixed << std::setprecision(2) << result.p99_latency_us
-              << "μs" << ", 命中率: " << result.cache_hit_rate << "%\n";
+              << ", P99: " << std::fixed << std::setprecision(2)
+              << result.p99_latency_us << "μs"
+              << ", 命中率: " << result.cache_hit_rate << "%\n";
   }
 
   // ================================================================
@@ -541,15 +546,15 @@ int main() {
   std::cout << "  配置: preload=100K, key_range=1M\n";
   for (int threads : {1, 2, 4, 8, 16}) {
     std::cout << "  - " << threads << " 线程:\n";
-    auto result = benchmark_concurrent_rw(threads,
-                                          100000,
-                                          90,
-                                          100000,   // preload_count
-                                          1000000); // key_range >> preload → 10% hit
+    auto result =
+        benchmark_concurrent_rw(threads, 100000, 90,
+                                100000,   // preload_count
+                                1000000); // key_range >> preload → 10% hit
     results.push_back(result);
     std::cout << "    QPS: " << std::fixed << std::setprecision(0) << result.qps
-              << ", P99: " << std::fixed << std::setprecision(2) << result.p99_latency_us
-              << "μs" << ", 命中率: " << result.cache_hit_rate << "%\n";
+              << ", P99: " << std::fixed << std::setprecision(2)
+              << result.p99_latency_us << "μs"
+              << ", 命中率: " << result.cache_hit_rate << "%\n";
   }
 
   // ================================================================
@@ -558,11 +563,12 @@ int main() {
   std::cout << "\n[实验 D] 不同读写比例（8线程，miss-heavy）\n";
   for (int read_ratio : {50, 70, 90, 95, 99}) {
     std::cout << "  - R" << read_ratio << "/W" << (100 - read_ratio) << ":\n";
-    auto result = benchmark_concurrent_rw(8, 100000, read_ratio, 100000, 1000000);
+    auto result =
+        benchmark_concurrent_rw(8, 100000, read_ratio, 100000, 1000000);
     results.push_back(result);
     std::cout << "    QPS: " << std::fixed << std::setprecision(0) << result.qps
-              << ", P99: " << std::fixed << std::setprecision(2) << result.p99_latency_us
-              << "μs\n";
+              << ", P99: " << std::fixed << std::setprecision(2)
+              << result.p99_latency_us << "μs\n";
   }
 
   // ================================================================
@@ -574,8 +580,8 @@ int main() {
     auto result = benchmark_vector_search(threads, 500);
     results.push_back(result);
     std::cout << "    QPS: " << std::fixed << std::setprecision(0) << result.qps
-              << ", P99: " << std::fixed << std::setprecision(2) << result.p99_latency_us
-              << "μs\n";
+              << ", P99: " << std::fixed << std::setprecision(2)
+              << result.p99_latency_us << "μs\n";
   }
 
   auto test_end_time = std::chrono::system_clock::now();
@@ -589,8 +595,8 @@ int main() {
 
   // 保存到CSV
   std::cout << "保存数据文件...\n";
-  save_to_csv(
-      results, "benchmark_results.csv", start_time_str, end_time_str, total_duration);
+  save_to_csv(results, "benchmark_results.csv", start_time_str, end_time_str,
+              total_duration);
 
   std::cout << "\n╔════════════════════════════════════════════════════════════"
                "══════════════════════════════════════════╗\n";
@@ -602,8 +608,8 @@ int main() {
   std::cout << "⏰ 测试时间统计:\n";
   std::cout << "  开始时间: " << start_time_str << "\n";
   std::cout << "  结束时间: " << end_time_str << "\n";
-  std::cout << "  总耗时:   " << format_duration(total_duration) << " (" << std::fixed
-            << std::setprecision(2) << total_duration << "s)\n\n";
+  std::cout << "  总耗时:   " << format_duration(total_duration) << " ("
+            << std::fixed << std::setprecision(2) << total_duration << "s)\n\n";
 
   std::cout << "📊 数据文件:\n";
   std::cout << "  - 查看详细数据: benchmark_results.csv\n";

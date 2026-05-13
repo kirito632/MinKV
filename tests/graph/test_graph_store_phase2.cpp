@@ -39,17 +39,17 @@ using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
 // ── 辅助
 // ──────────────────────────────────────────────────────────────────────
 
-#define CHECK(cond, msg)                     \
-  do {                                       \
-    if (!(cond)) {                           \
-      std::cerr << "[FAIL] " << msg << "\n"; \
-      return false;                          \
-    }                                        \
+#define CHECK(cond, msg)                                                       \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::cerr << "[FAIL] " << msg << "\n";                                   \
+      return false;                                                            \
+    }                                                                          \
   } while (0)
 
-#define PASS(name)                          \
-  do {                                      \
-    std::cout << "[PASS] " << name << "\n"; \
+#define PASS(name)                                                             \
+  do {                                                                         \
+    std::cout << "[PASS] " << name << "\n";                                    \
   } while (0)
 
 static std::shared_ptr<GraphKVStore> make_kv() {
@@ -116,8 +116,9 @@ bool test_adj_multi_label_dedup() {
   gs.DeleteEdge("a", "b", "LIKES");
   CHECK(!contains(gs.GetOutNeighbors("a"), "b"),
         "Multi-label: b removed after all labels deleted");
-  CHECK(!contains(gs.GetInNeighbors("b"), "a"),
-        "Multi-label: a removed from b's in-neighbors after all labels deleted");
+  CHECK(
+      !contains(gs.GetInNeighbors("b"), "a"),
+      "Multi-label: a removed from b's in-neighbors after all labels deleted");
   PASS("Multi-label edge deduplication in adjacency list");
   return true;
 }
@@ -129,8 +130,10 @@ bool test_adj_empty_neighbors() {
 
   gs.AddNode({"isolated", "{}"});
 
-  CHECK(gs.GetOutNeighbors("isolated").empty(), "Isolated node: out-neighbors is empty");
-  CHECK(gs.GetInNeighbors("isolated").empty(), "Isolated node: in-neighbors is empty");
+  CHECK(gs.GetOutNeighbors("isolated").empty(),
+        "Isolated node: out-neighbors is empty");
+  CHECK(gs.GetInNeighbors("isolated").empty(),
+        "Isolated node: in-neighbors is empty");
   PASS("Isolated node returns empty neighbor lists");
   return true;
 }
@@ -180,8 +183,7 @@ bool test_delete_node_removes_embedding() {
 
 namespace rc {
 
-template <>
-struct Arbitrary<Node> {
+template <> struct Arbitrary<Node> {
   static Gen<Node> arbitrary() {
     return gen::build<Node>(
         gen::set(&Node::node_id, gen::arbitrary<std::string>()),
@@ -189,14 +191,14 @@ struct Arbitrary<Node> {
   }
 };
 
-template <>
-struct Arbitrary<Edge> {
+template <> struct Arbitrary<Edge> {
   static Gen<Edge> arbitrary() {
-    return gen::build<Edge>(gen::set(&Edge::src_id, gen::arbitrary<std::string>()),
-                            gen::set(&Edge::dst_id, gen::arbitrary<std::string>()),
-                            gen::set(&Edge::label, gen::arbitrary<std::string>()),
-                            gen::set(&Edge::weight, gen::just(1.0f)),
-                            gen::set(&Edge::properties_json, gen::just(std::string(""))));
+    return gen::build<Edge>(
+        gen::set(&Edge::src_id, gen::arbitrary<std::string>()),
+        gen::set(&Edge::dst_id, gen::arbitrary<std::string>()),
+        gen::set(&Edge::label, gen::arbitrary<std::string>()),
+        gen::set(&Edge::weight, gen::just(1.0f)),
+        gen::set(&Edge::properties_json, gen::just(std::string(""))));
   }
 };
 
@@ -217,21 +219,23 @@ struct Arbitrary<Edge> {
  */
 static bool run_property7() {
   // Feature: graph-on-kv, Property 7: 邻接表一致性不变量
-  bool p7a = rc::check("Property 7a: AddEdge 后邻接表包含对应条目", [](const Edge &e) {
-    auto kv = std::make_shared<GraphKVStore>(1024, 4);
-    GraphStore gs(kv);
-    gs.AddEdge(e);
+  bool p7a =
+      rc::check("Property 7a: AddEdge 后邻接表包含对应条目", [](const Edge &e) {
+        auto kv = std::make_shared<GraphKVStore>(1024, 4);
+        GraphStore gs(kv);
+        gs.AddEdge(e);
 
-    auto out = gs.GetOutNeighbors(e.src_id);
-    auto in = gs.GetInNeighbors(e.dst_id);
+        auto out = gs.GetOutNeighbors(e.src_id);
+        auto in = gs.GetInNeighbors(e.dst_id);
 
-    RC_ASSERT(std::find(out.begin(), out.end(), e.dst_id) != out.end());
-    RC_ASSERT(std::find(in.begin(), in.end(), e.src_id) != in.end());
-  });
+        RC_ASSERT(std::find(out.begin(), out.end(), e.dst_id) != out.end());
+        RC_ASSERT(std::find(in.begin(), in.end(), e.src_id) != in.end());
+      });
 
   // DeleteEdge 后（单条边），邻接表条目消失
   bool p7b = rc::check(
-      "Property 7b: DeleteEdge 后（无其他边）邻接表条目消失", [](const Edge &e) {
+      "Property 7b: DeleteEdge 后（无其他边）邻接表条目消失",
+      [](const Edge &e) {
         auto kv = std::make_shared<GraphKVStore>(1024, 4);
         GraphStore gs(kv);
         gs.AddEdge(e);
@@ -245,30 +249,30 @@ static bool run_property7() {
       });
 
   // 多条边：只要 (src,dst) 间还有其他 label 的边，邻接表条目保留
-  bool p7c =
-      rc::check("Property 7c: 多 label 边删一条后邻接表条目保留",
-                [](const Edge &e, const std::string &other_label) {
-                  RC_PRE(other_label != e.label); // 确保两条边 label 不同
+  bool p7c = rc::check(
+      "Property 7c: 多 label 边删一条后邻接表条目保留",
+      [](const Edge &e, const std::string &other_label) {
+        RC_PRE(other_label != e.label); // 确保两条边 label 不同
 
-                  auto kv = std::make_shared<GraphKVStore>(1024, 4);
-                  GraphStore gs(kv);
+        auto kv = std::make_shared<GraphKVStore>(1024, 4);
+        GraphStore gs(kv);
 
-                  Edge e2 = e;
-                  e2.label = other_label;
+        Edge e2 = e;
+        e2.label = other_label;
 
-                  gs.AddEdge(e);
-                  gs.AddEdge(e2);
+        gs.AddEdge(e);
+        gs.AddEdge(e2);
 
-                  // 删除其中一条
-                  gs.DeleteEdge(e.src_id, e.dst_id, e.label);
+        // 删除其中一条
+        gs.DeleteEdge(e.src_id, e.dst_id, e.label);
 
-                  // 另一条还在，邻接表应保留
-                  auto out = gs.GetOutNeighbors(e.src_id);
-                  auto in = gs.GetInNeighbors(e.dst_id);
+        // 另一条还在，邻接表应保留
+        auto out = gs.GetOutNeighbors(e.src_id);
+        auto in = gs.GetInNeighbors(e.dst_id);
 
-                  RC_ASSERT(std::find(out.begin(), out.end(), e.dst_id) != out.end());
-                  RC_ASSERT(std::find(in.begin(), in.end(), e.src_id) != in.end());
-                });
+        RC_ASSERT(std::find(out.begin(), out.end(), e.dst_id) != out.end());
+        RC_ASSERT(std::find(in.begin(), in.end(), e.src_id) != in.end());
+      });
 
   return p7a && p7b && p7c;
 }
@@ -286,24 +290,24 @@ static bool run_property7() {
  */
 static bool run_property8() {
   // Feature: graph-on-kv, Property 8: DeleteNode 完整性
-  bool p8a =
-      rc::check("Property 8a: DeleteNode 后 GetNode 返回 nullopt", [](const Node &n) {
-        auto kv = std::make_shared<GraphKVStore>(1024, 4);
-        GraphStore gs(kv);
-        gs.AddNode(n);
-        gs.DeleteNode(n.node_id);
-        RC_ASSERT(!gs.GetNode(n.node_id).has_value());
-      });
+  bool p8a = rc::check("Property 8a: DeleteNode 后 GetNode 返回 nullopt",
+                       [](const Node &n) {
+                         auto kv = std::make_shared<GraphKVStore>(1024, 4);
+                         GraphStore gs(kv);
+                         gs.AddNode(n);
+                         gs.DeleteNode(n.node_id);
+                         RC_ASSERT(!gs.GetNode(n.node_id).has_value());
+                       });
 
-  bool p8b =
-      rc::check("Property 8b: DeleteNode 后 GetNodeEmbedding 返回空", [](const Node &n) {
-        auto kv = std::make_shared<GraphKVStore>(1024, 4);
-        GraphStore gs(kv);
-        gs.AddNode(n);
-        gs.SetNodeEmbedding(n.node_id, {1.0f, 2.0f, 3.0f});
-        gs.DeleteNode(n.node_id);
-        RC_ASSERT(gs.GetNodeEmbedding(n.node_id).empty());
-      });
+  bool p8b = rc::check("Property 8b: DeleteNode 后 GetNodeEmbedding 返回空",
+                       [](const Node &n) {
+                         auto kv = std::make_shared<GraphKVStore>(1024, 4);
+                         GraphStore gs(kv);
+                         gs.AddNode(n);
+                         gs.SetNodeEmbedding(n.node_id, {1.0f, 2.0f, 3.0f});
+                         gs.DeleteNode(n.node_id);
+                         RC_ASSERT(gs.GetNodeEmbedding(n.node_id).empty());
+                       });
 
   bool p8c = rc::check(
       "Property 8c: DeleteNode 后 GetOutNeighbors/GetInNeighbors 返回空",
@@ -328,10 +332,10 @@ static bool run_property8() {
         // 邻居的邻接表中也不再包含被删节点
         auto neighbor_out = gs.GetOutNeighbors(neighbor_id);
         auto neighbor_in = gs.GetInNeighbors(neighbor_id);
-        RC_ASSERT(std::find(neighbor_out.begin(), neighbor_out.end(), n.node_id) ==
-                  neighbor_out.end());
-        RC_ASSERT(std::find(neighbor_in.begin(), neighbor_in.end(), n.node_id) ==
-                  neighbor_in.end());
+        RC_ASSERT(std::find(neighbor_out.begin(), neighbor_out.end(),
+                            n.node_id) == neighbor_out.end());
+        RC_ASSERT(std::find(neighbor_in.begin(), neighbor_in.end(),
+                            n.node_id) == neighbor_in.end());
       });
 
   return p8a && p8b && p8c;
@@ -355,7 +359,8 @@ static bool run_property14() {
   // Validates: Requirement 10.4
   return rc::check(
       "Property 14: RebuildAdjacencyList 后 Property 7 重新成立",
-      [](const std::vector<Edge> &edges, const std::vector<bool> &corrupt_flags) {
+      [](const std::vector<Edge> &edges,
+         const std::vector<bool> &corrupt_flags) {
         RC_PRE(!edges.empty());
 
         auto kv = std::make_shared<GraphKVStore>(1024, 4);
@@ -375,13 +380,14 @@ static bool run_property14() {
         }
         // 去重
         std::sort(node_ids.begin(), node_ids.end());
-        node_ids.erase(std::unique(node_ids.begin(), node_ids.end()), node_ids.end());
+        node_ids.erase(std::unique(node_ids.begin(), node_ids.end()),
+                       node_ids.end());
 
         // 通过共享的 kv 指针直接删除 adj:out: 和 adj:in: 键来模拟崩溃后的不一致
         for (size_t i = 0; i < node_ids.size(); ++i) {
           bool should_corrupt = corrupt_flags.empty()
-                                  ? (i % 2 == 0)
-                                  : corrupt_flags[i % corrupt_flags.size()];
+                                    ? (i % 2 == 0)
+                                    : corrupt_flags[i % corrupt_flags.size()];
 
           if (should_corrupt) {
             // 直接通过 kv 删除邻接表键，模拟崩溃导致的邻接表丢失
@@ -459,11 +465,12 @@ int main() {
   if (pbt_failed == 0) {
     std::cout << "\n[PASS] All property-based tests passed.\n";
   } else {
-    std::cerr << "\n[FAIL] " << pbt_failed << " property test suite(s) failed.\n";
+    std::cerr << "\n[FAIL] " << pbt_failed
+              << " property test suite(s) failed.\n";
   }
 
   int total_failed = failed + pbt_failed;
-  std::cout << "\n=== Total: " << passed << " unit tests passed, " << (3 - pbt_failed)
-            << "/3 PBT suites passed ===\n";
+  std::cout << "\n=== Total: " << passed << " unit tests passed, "
+            << (3 - pbt_failed) << "/3 PBT suites passed ===\n";
   return total_failed == 0 ? 0 : 1;
 }

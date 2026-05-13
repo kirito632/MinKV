@@ -45,9 +45,10 @@ public:
    * 封装单个提交请求的所有信息，包括数据、回调和时间戳
    */
   struct CommitRequest {
-    std::string data;                                ///< 要提交的数据
-    CommitCallback callback;                         ///< 完成回调函数
-    std::chrono::steady_clock::time_point timestamp; ///< 请求时间戳，用于延迟统计
+    std::string data;        ///< 要提交的数据
+    CommitCallback callback; ///< 完成回调函数
+    std::chrono::steady_clock::time_point
+        timestamp; ///< 请求时间戳，用于延迟统计
 
     /**
      * @brief 构造提交请求
@@ -57,8 +58,7 @@ public:
      * [性能优化] 使用move语义避免不必要的数据拷贝
      */
     CommitRequest(std::string d, CommitCallback cb)
-        : data(std::move(d)),
-          callback(std::move(cb)),
+        : data(std::move(d)), callback(std::move(cb)),
           timestamp(std::chrono::steady_clock::now()) {}
   };
 
@@ -72,10 +72,11 @@ public:
    * - 当累积数据达到batchSize时立即提交（保证吞吐量）
    * - 当距离上次提交超过syncInterval时强制提交（控制延迟）
    */
-  explicit GroupCommitManager(const std::string &filename,
-                              size_t batchSize = 4096, ///< 4KB批量大小，平衡内存和I/O效率
-                              std::chrono::milliseconds syncInterval =
-                                  std::chrono::milliseconds(10)); ///< 10ms最大延迟
+  explicit GroupCommitManager(
+      const std::string &filename,
+      size_t batchSize = 4096, ///< 4KB批量大小，平衡内存和I/O效率
+      std::chrono::milliseconds syncInterval =
+          std::chrono::milliseconds(10)); ///< 10ms最大延迟
 
   /**
    * @brief 析构函数，确保资源正确释放
@@ -174,27 +175,27 @@ private:
    */
   bool shouldSync() const;
 
-  std::unique_ptr<AppendFile> file_;             ///< 文件写入器，封装系统调用
-  const size_t batchSize_;                       ///< 批量大小阈值
+  std::unique_ptr<AppendFile> file_; ///< 文件写入器，封装系统调用
+  const size_t batchSize_;           ///< 批量大小阈值
   const std::chrono::milliseconds syncInterval_; ///< 同步时间间隔阈值
 
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证线程安全
-  std::thread syncThread_;    ///< 后台同步线程
+  std::thread syncThread_; ///< 后台同步线程
 
   // [分片锁] 保护共享数据的同步原语
-  mutable std::mutex mutex_;                  ///< 保护请求队列的互斥锁
-  std::condition_variable cond_;              ///< 条件变量，用于线程间通信
+  mutable std::mutex mutex_;     ///< 保护请求队列的互斥锁
+  std::condition_variable cond_; ///< 条件变量，用于线程间通信
   std::queue<CommitRequest> pendingRequests_; ///< 待处理请求队列
 
   // 性能统计数据，使用独立的锁避免影响主路径性能
-  mutable std::mutex statsMutex_;                      ///< 保护统计数据的互斥锁
-  uint64_t totalCommits_;                              ///< 总提交数统计
-  uint64_t totalBatches_;                              ///< 总批次数统计
-  uint64_t totalBytes_;                                ///< 总字节数统计
+  mutable std::mutex statsMutex_; ///< 保护统计数据的互斥锁
+  uint64_t totalCommits_;         ///< 总提交数统计
+  uint64_t totalBatches_;         ///< 总批次数统计
+  uint64_t totalBytes_;           ///< 总字节数统计
   std::chrono::steady_clock::time_point lastSyncTime_; ///< 上次同步时间
 
   // 当前批次状态信息
-  size_t currentBatchSize_;                              ///< 当前批次累积大小
+  size_t currentBatchSize_; ///< 当前批次累积大小
   std::chrono::steady_clock::time_point batchStartTime_; ///< 当前批次开始时间
 };
 

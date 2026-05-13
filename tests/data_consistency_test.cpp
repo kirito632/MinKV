@@ -37,9 +37,7 @@ public:
   DataConsistencyTester()
       : cache_(1000, 4) // 4个分片，每个分片1000容量
         ,
-        checkpoint_mgr_(&cache_),
-        stop_flag_(false),
-        total_writes_(0),
+        checkpoint_mgr_(&cache_), stop_flag_(false), total_writes_(0),
         successful_writes_(0) {
     // 启用持久化
     cache_.enable_persistence("test_data_consistency", 100);
@@ -61,8 +59,10 @@ public:
    * - 验证所有数据都能正确恢复
    */
   void run_consistency_test() {
-    std::cout << "\n🎯 [DataConsistencyTest] Starting comprehensive test..." << std::endl;
-    std::cout << "========================================================" << std::endl;
+    std::cout << "\n🎯 [DataConsistencyTest] Starting comprehensive test..."
+              << std::endl;
+    std::cout << "========================================================"
+              << std::endl;
 
     // 1. 启动多个写入线程
     std::vector<std::thread> writer_threads;
@@ -70,12 +70,14 @@ public:
     const int writes_per_thread = 1000;
 
     for (int i = 0; i < num_writers; ++i) {
-      writer_threads.emplace_back(
-          [this, i, writes_per_thread]() { this->writer_thread(i, writes_per_thread); });
+      writer_threads.emplace_back([this, i, writes_per_thread]() {
+        this->writer_thread(i, writes_per_thread);
+      });
     }
 
     // 2. 启动checkpoint压力线程
-    std::thread checkpoint_thread([this]() { this->checkpoint_pressure_thread(); });
+    std::thread checkpoint_thread(
+        [this]() { this->checkpoint_pressure_thread(); });
 
     // 3. 让测试运行一段时间
     std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -95,7 +97,8 @@ public:
     // 6. 验证数据一致性
     verify_data_consistency();
 
-    std::cout << "\n✅ [DataConsistencyTest] Test completed successfully!" << std::endl;
+    std::cout << "\n✅ [DataConsistencyTest] Test completed successfully!"
+              << std::endl;
     print_test_summary();
   }
 
@@ -120,7 +123,8 @@ private:
     std::uniform_int_distribution<> dis(1, 10000);
 
     for (int i = 0; i < num_writes && !stop_flag_.load(); ++i) {
-      std::string key = "thread" + std::to_string(thread_id) + "_key" + std::to_string(i);
+      std::string key =
+          "thread" + std::to_string(thread_id) + "_key" + std::to_string(i);
       std::string value = "value_" + std::to_string(dis(gen));
 
       try {
@@ -136,18 +140,20 @@ private:
 
         // 随机延迟，模拟真实负载
         if (i % 100 == 0) {
-          std::this_thread::sleep_for(std::chrono::microseconds(dis(gen) % 1000));
+          std::this_thread::sleep_for(
+              std::chrono::microseconds(dis(gen) % 1000));
         }
 
       } catch (const std::exception &e) {
-        std::cerr << "[Writer" << thread_id << "] Error: " << e.what() << std::endl;
+        std::cerr << "[Writer" << thread_id << "] Error: " << e.what()
+                  << std::endl;
       }
 
       total_writes_.fetch_add(1);
     }
 
-    std::cout << "[Writer" << thread_id << "] Completed " << num_writes << " writes"
-              << std::endl;
+    std::cout << "[Writer" << thread_id << "] Completed " << num_writes
+              << " writes" << std::endl;
   }
 
   /**
@@ -171,37 +177,40 @@ private:
             std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
         if (success) {
-          std::cout << "[CheckpointPressure] ✅ Checkpoint #" << (checkpoint_count + 1)
-                    << " completed in " << duration.count() << "ms" << std::endl;
+          std::cout << "[CheckpointPressure] ✅ Checkpoint #"
+                    << (checkpoint_count + 1) << " completed in "
+                    << duration.count() << "ms" << std::endl;
         } else {
-          std::cout << "[CheckpointPressure] ❌ Checkpoint #" << (checkpoint_count + 1)
-                    << " failed!" << std::endl;
+          std::cout << "[CheckpointPressure] ❌ Checkpoint #"
+                    << (checkpoint_count + 1) << " failed!" << std::endl;
         }
 
         checkpoint_count++;
       }
     }
 
-    std::cout << "[CheckpointPressure] Completed " << checkpoint_count << " checkpoints"
-              << std::endl;
+    std::cout << "[CheckpointPressure] Completed " << checkpoint_count
+              << " checkpoints" << std::endl;
   }
 
   /**
    * @brief 数据一致性验证：确保所有写入的数据都能恢复
    */
   void verify_data_consistency() {
-    std::cout << "\n🔍 [Verification] Starting data consistency check..." << std::endl;
+    std::cout << "\n🔍 [Verification] Starting data consistency check..."
+              << std::endl;
 
     // 1. 记录当前缓存状态
     size_t cache_size_before = cache_.size();
-    std::cout << "[Verification] Cache size before recovery: " << cache_size_before
-              << std::endl;
+    std::cout << "[Verification] Cache size before recovery: "
+              << cache_size_before << std::endl;
 
     // 2. 创建新的缓存实例进行恢复测试
     ShardedCache<std::string, std::string> recovery_cache(1000, 4);
     recovery_cache.enable_persistence("test_data_consistency", 100);
 
-    SimpleCheckpointManager<std::string, std::string> recovery_mgr(&recovery_cache);
+    SimpleCheckpointManager<std::string, std::string> recovery_mgr(
+        &recovery_cache);
 
     // 3. 从磁盘恢复数据
     std::cout << "[Verification] Recovering data from disk..." << std::endl;
@@ -214,7 +223,8 @@ private:
 
     // 4. 验证恢复后的数据
     size_t recovered_size = recovery_cache.size();
-    std::cout << "[Verification] Recovered cache size: " << recovered_size << std::endl;
+    std::cout << "[Verification] Recovered cache size: " << recovered_size
+              << std::endl;
 
     // 5. 检查关键数据是否存在
     int found_keys = 0;
@@ -240,20 +250,27 @@ private:
 
     // 6. 输出验证结果
     std::cout << "\n📊 [Verification] Data Consistency Report:" << std::endl;
-    std::cout << "  - Total writes attempted: " << total_writes_.load() << std::endl;
-    std::cout << "  - Successful writes: " << successful_writes_.load() << std::endl;
+    std::cout << "  - Total writes attempted: " << total_writes_.load()
+              << std::endl;
+    std::cout << "  - Successful writes: " << successful_writes_.load()
+              << std::endl;
     std::cout << "  - Keys found after recovery: " << found_keys << std::endl;
-    std::cout << "  - Keys missing after recovery: " << missing_keys << std::endl;
+    std::cout << "  - Keys missing after recovery: " << missing_keys
+              << std::endl;
 
-    double consistency_rate = (double)found_keys / successful_writes_.load() * 100.0;
-    std::cout << "  - Data consistency rate: " << std::fixed << std::setprecision(2)
-              << consistency_rate << "%" << std::endl;
+    double consistency_rate =
+        (double)found_keys / successful_writes_.load() * 100.0;
+    std::cout << "  - Data consistency rate: " << std::fixed
+              << std::setprecision(2) << consistency_rate << "%" << std::endl;
 
     // 7. 判断测试结果
-    if (consistency_rate >= 95.0) { // 允许5%的数据丢失（由于测试环境的并发复杂性）
-      std::cout << "✅ [Verification] Data consistency test PASSED!" << std::endl;
+    if (consistency_rate >=
+        95.0) { // 允许5%的数据丢失（由于测试环境的并发复杂性）
+      std::cout << "✅ [Verification] Data consistency test PASSED!"
+                << std::endl;
     } else {
-      std::cout << "❌ [Verification] Data consistency test FAILED!" << std::endl;
+      std::cout << "❌ [Verification] Data consistency test FAILED!"
+                << std::endl;
       std::cout << "   Too many keys were lost during checkpoint operations."
                 << std::endl;
     }
@@ -269,11 +286,12 @@ private:
 
     std::cout << "\n📈 [Summary] Test Statistics:" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "  - Total checkpoints: " << stats.total_checkpoints << std::endl;
+    std::cout << "  - Total checkpoints: " << stats.total_checkpoints
+              << std::endl;
     std::cout << "  - Average checkpoint duration: "
               << stats.avg_checkpoint_duration.count() << "ms" << std::endl;
-    std::cout << "  - Last checkpoint records: " << stats.last_checkpoint_records
-              << std::endl;
+    std::cout << "  - Last checkpoint records: "
+              << stats.last_checkpoint_records << std::endl;
     std::cout << "  - Final cache size: " << cache_.size() << std::endl;
 
     auto cache_stats = cache_.getStats();
@@ -297,10 +315,12 @@ private:
 int main() {
   std::cout << "🚀 MinKV Data Consistency Test" << std::endl;
   std::cout << "==============================" << std::endl;
-  std::cout << "Testing atomic checkpoint mechanism with global read-write locks."
-            << std::endl;
-  std::cout << "This test verifies that no data is lost during checkpoint operations."
-            << std::endl;
+  std::cout
+      << "Testing atomic checkpoint mechanism with global read-write locks."
+      << std::endl;
+  std::cout
+      << "This test verifies that no data is lost during checkpoint operations."
+      << std::endl;
 
   try {
     DataConsistencyTester tester;

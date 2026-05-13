@@ -40,9 +40,10 @@ public:
     }
   };
 
-  MockCacheShard() : rng_(std::random_device {}()) {}
+  MockCacheShard() : rng_(std::random_device{}()) {}
 
-  void put(const std::string &key, const std::string &value, int64_t ttl_ms = 0) {
+  void put(const std::string &key, const std::string &value,
+           int64_t ttl_ms = 0) {
     std::lock_guard<std::mutex> lock(mutex_);
     int64_t expire_time = 0;
     if (ttl_ms > 0) {
@@ -125,13 +126,14 @@ class MockShardedCache {
 public:
   MockShardedCache(size_t shard_count) : shards_(shard_count) {}
 
-  void put(const std::string &key, const std::string &value, int64_t ttl_ms = 0) {
-    size_t shard_id = std::hash<std::string> {}(key) % shards_.size();
+  void put(const std::string &key, const std::string &value,
+           int64_t ttl_ms = 0) {
+    size_t shard_id = std::hash<std::string>{}(key) % shards_.size();
     shards_[shard_id].put(key, value, ttl_ms);
   }
 
   std::optional<std::string> get(const std::string &key) {
-    size_t shard_id = std::hash<std::string> {}(key) % shards_.size();
+    size_t shard_id = std::hash<std::string>{}(key) % shards_.size();
     return shards_[shard_id].get(key);
   }
 
@@ -161,7 +163,7 @@ public:
       MockCacheShard *shard_;
 
       ~LockGuard() { shard_->unlock(); }
-    } guard {&shard};
+    } guard{&shard};
 
     // [随机采样] 随机选择指定数量的key进行检查
     auto keys = shard.randomSample(sample_size);
@@ -270,8 +272,8 @@ void testNonBlockingBehavior() {
   MockShardedCache cache(2); // 2个分片
   base::ExpirationManager expiration_mgr(2, std::chrono::milliseconds(10), 5);
 
-  std::atomic<int> business_operations {0};
-  std::atomic<int> expiration_skips {0};
+  std::atomic<int> business_operations{0};
+  std::atomic<int> expiration_skips{0};
 
   // 业务线程回调
   auto callback = [&cache, &expiration_skips](size_t shard_id,
@@ -324,7 +326,8 @@ void benchmarkExpiration() {
   const size_t KEY_COUNT = 10000;
 
   MockShardedCache cache(SHARD_COUNT);
-  base::ExpirationManager expiration_mgr(SHARD_COUNT, std::chrono::milliseconds(100), 20);
+  base::ExpirationManager expiration_mgr(SHARD_COUNT,
+                                         std::chrono::milliseconds(100), 20);
 
   // 插入大量测试数据
   std::cout << "插入 " << KEY_COUNT << " 个测试key..." << std::endl;
@@ -340,11 +343,12 @@ void benchmarkExpiration() {
   }
 
   auto insert_time = std::chrono::steady_clock::now();
-  auto insert_duration =
-      std::chrono::duration_cast<std::chrono::milliseconds>(insert_time - start_time);
+  auto insert_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      insert_time - start_time);
 
   std::cout << "插入耗时: " << insert_duration.count() << "ms" << std::endl;
-  std::cout << "插入QPS: " << (KEY_COUNT * 1000 / insert_duration.count()) << std::endl;
+  std::cout << "插入QPS: " << (KEY_COUNT * 1000 / insert_duration.count())
+            << std::endl;
 
   // 启动定期删除
   auto callback = [&cache](size_t shard_id, size_t sample_size) -> size_t {
@@ -365,11 +369,12 @@ void benchmarkExpiration() {
   std::cout << "  检查轮次: " << stats.total_checks << std::endl;
   std::cout << "  删除过期key: " << stats.total_expired << std::endl;
   std::cout << "  跳过次数: " << stats.total_skipped << std::endl;
-  std::cout << "  平均过期比例: " << (stats.avg_expired_ratio * 100) << "%" << std::endl;
+  std::cout << "  平均过期比例: " << (stats.avg_expired_ratio * 100) << "%"
+            << std::endl;
 
   size_t final_size = cache.size();
-  std::cout << "最终缓存大小: " << final_size << " (预期约 " << (KEY_COUNT / 2) << ")"
-            << std::endl;
+  std::cout << "最终缓存大小: " << final_size << " (预期约 " << (KEY_COUNT / 2)
+            << ")" << std::endl;
 
   std::cout << "✅ 性能基准测试完成!" << std::endl;
 }

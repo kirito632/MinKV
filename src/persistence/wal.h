@@ -40,7 +40,8 @@ struct LogEntry {
   std::string key;      // 键
   std::string value;    // 值（DELETE 时为空）
   int64_t timestamp_ms; // 时间戳（毫秒，保留用于调试/审计）
-  uint64_t lsn {0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
+  uint64_t lsn{
+      0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
 
   // 计算校验和（key + value，lsn 不参与）
   uint32_t compute_checksum() const;
@@ -185,11 +186,11 @@ private:
 
   std::ofstream wal_stream_; // WAL 文件输出流（仅构造时打开，实际读取由
                              // read_all() 内部独立 ifstream 完成）
-  int wal_fd_ {-1};          // WAL 文件描述符（用于 write + fsync）
+  int wal_fd_{-1}; // WAL 文件描述符（用于 write + fsync）
 
   // 后台 fsync 线程
   std::thread fsync_thread_;
-  mutable std::atomic<bool> fsync_running_ {false};
+  mutable std::atomic<bool> fsync_running_{false};
   std::condition_variable fsync_cv_;
   std::mutex fsync_cv_mutex_;
 
@@ -202,7 +203,8 @@ private:
   // 序列化/反序列化
   static std::vector<uint8_t> serialize_entry(const LogEntry &entry);
   // 返回 nullopt 表示校验和不匹配（条目损坏）
-  static std::optional<LogEntry> deserialize_entry(const uint8_t *data, size_t size);
+  static std::optional<LogEntry> deserialize_entry(const uint8_t *data,
+                                                   size_t size);
 };
 
 // ============ 模板实现 ============
@@ -269,7 +271,8 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
     iov[3].iov_base = const_cast<char *>(value_str.data());
     iov[3].iov_len = value_len;
 
-    ssize_t expected = key_len + value_len + sizeof(key_len) + sizeof(value_len);
+    ssize_t expected =
+        key_len + value_len + sizeof(key_len) + sizeof(value_len);
     if (::writev(fd, iov, 4) != expected) {
       close_fd();
       std::filesystem::remove(snapshot_file);
@@ -294,8 +297,8 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
       if (!entry.is_regular_file())
         continue;
       std::string name = entry.path().filename().string();
-      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" && name.size() > 4 &&
-          name.substr(name.size() - 4) == ".bin") {
+      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" &&
+          name.size() > 4 && name.substr(name.size() - 4) == ".bin") {
         files.push_back(name);
       }
     }
@@ -321,7 +324,7 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   };
 
   // 2. 读取并校验 SnapshotHeader
-  WalSnapshotHeader header {};
+  WalSnapshotHeader header{};
   struct iovec header_iov;
   header_iov.iov_base = &header;
   header_iov.iov_len = sizeof(header);
@@ -349,7 +352,8 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   calc ^= static_cast<uint32_t>(header.timestamp);
   calc ^= static_cast<uint32_t>(header.timestamp >> 32);
   for (int i = 0; i < 4; ++i)
-    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i])) << (i * 8);
+    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i]))
+            << (i * 8);
   if (stored != calc) {
     close_fd();
     return 0;

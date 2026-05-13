@@ -28,7 +28,8 @@ namespace graph {
  *   vec:{node_id}            -> embedding raw bytes (float[])
  *   ec:{src}:{dst}           -> 边计数器（uint64_t 十进制字符串）
  *                              记录 (src, dst) 之间的边数量，
- *                              用于 DeleteEdge O(1) 判断是否还有同对节点的其他边
+ *                              用于 DeleteEdge O(1)
+ * 判断是否还有同对节点的其他边
  */
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
 
@@ -96,8 +97,7 @@ public:
    * 删除边
    * Phase 1 只删边数据；Phase 2 补全邻接表清理
    */
-  void DeleteEdge(const std::string &src_id,
-                  const std::string &dst_id,
+  void DeleteEdge(const std::string &src_id, const std::string &dst_id,
                   const std::string &label);
 
   // ── Phase 2: Adjacency ────────────────────────────────────────────────────
@@ -117,8 +117,8 @@ public:
    * 返回值：{node_id -> hop_distance}，不含起始节点自身。
    * k=0 时返回空 map。
    */
-  std::unordered_map<std::string, int> KHopNeighbors(const std::string &start_id,
-                                                     int k) const;
+  std::unordered_map<std::string, int>
+  KHopNeighbors(const std::string &start_id, int k) const;
 
   /**
    * 最短路径查询（BFS）
@@ -137,7 +137,8 @@ public:
    * 存储节点的 embedding 向量
    * 格式：float[] 的 raw bytes，与 VectorOps::Serialize 兼容
    */
-  void SetNodeEmbedding(const std::string &node_id, const std::vector<float> &embedding);
+  void SetNodeEmbedding(const std::string &node_id,
+                        const std::vector<float> &embedding);
 
   /**
    * 读取节点的 embedding 向量
@@ -152,8 +153,9 @@ public:
    * 返回值：{node_id, cosine_similarity}，按相似度降序排列。
    * 维度不匹配的节点会被跳过。
    */
-  std::vector<std::pair<std::string, float>> SearchSimilarNodes(
-      const std::vector<float> &query_embedding, int top_k) const;
+  std::vector<std::pair<std::string, float>>
+  SearchSimilarNodes(const std::vector<float> &query_embedding,
+                     int top_k) const;
 
   // ── Phase 4: GraphRAG ─────────────────────────────────────────────────────
 
@@ -167,8 +169,7 @@ public:
    * 用途：把图结构知识注入 LLM 的 prompt，提升回答质量
    */
   std::vector<Node> GraphRAGQuery(const std::vector<float> &query_embedding,
-                                  int vector_top_k,
-                                  int hop_depth) const;
+                                  int vector_top_k, int hop_depth) const;
 
   /**
    * GraphRAG 两阶段查询 (批量并发版)
@@ -183,9 +184,9 @@ public:
    *  2. 结果合并: 使用 std::unordered_set 去重所有入口节点
    *  3. 并发图遍历: 对所有入口节点并发执行 KHopNeighbors
    */
-  std::vector<Node> GraphRAGQuery(const std::vector<std::vector<float>> &query_embeddings,
-                                  int vector_top_k,
-                                  int hop_depth) const;
+  std::vector<Node>
+  GraphRAGQuery(const std::vector<std::vector<float>> &query_embeddings,
+                int vector_top_k, int hop_depth) const;
 
   // ── 一致性修复 ────────────────────────────────────────────────────────────
 
@@ -216,8 +217,7 @@ private:
   static std::string NodeKey(const std::string &node_id);
 
   /** 边数据 Key：e:{src}:{dst}:{label} */
-  static std::string EdgeKey(const std::string &src,
-                             const std::string &dst,
+  static std::string EdgeKey(const std::string &src, const std::string &dst,
                              const std::string &label);
 
   /** 出边邻接表 Key：adj:out:{node_id} */
@@ -236,7 +236,8 @@ private:
    * 避免 DeleteEdge 全表扫描。
    * Value 是 uint64_t 的十进制字符串，通过 update_in_place 原子增减。
    */
-  static std::string EdgeCountKey(const std::string &src, const std::string &dst);
+  static std::string EdgeCountKey(const std::string &src,
+                                  const std::string &dst);
 
   // ── 邻接表内部辅助 ────────────────────────────────────────────────────────
 
@@ -244,7 +245,8 @@ private:
   std::vector<std::string> LoadAdjList(const std::string &kv_key) const;
 
   /** 将邻接表序列化后写入 KV */
-  void SaveAdjList(const std::string &kv_key, const std::vector<std::string> &list);
+  void SaveAdjList(const std::string &kv_key,
+                   const std::vector<std::string> &list);
 
   /** 向邻接表追加一个 id（自动去重） */
   void AdjListAdd(const std::string &kv_key, const std::string &id);

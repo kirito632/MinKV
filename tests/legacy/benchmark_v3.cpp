@@ -30,8 +30,9 @@ struct BenchmarkResult {
 
 void print_result(const BenchmarkResult &result) {
   std::cout << std::left << std::setw(35) << result.name << std::setw(15)
-            << (result.qps / 1000000.0) << " M ops/s" << std::setw(15) << std::fixed
-            << std::setprecision(2) << result.latency_us << " us" << std::endl;
+            << (result.qps / 1000000.0) << " M ops/s" << std::setw(15)
+            << std::fixed << std::setprecision(2) << result.latency_us << " us"
+            << std::endl;
 }
 
 // 基础版本：LruCache（单机大锁）
@@ -65,7 +66,8 @@ BenchmarkResult benchmark_lru() {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
   double latency_us = (double)duration_ms * 1000 / total_ops;
@@ -79,7 +81,8 @@ BenchmarkResult benchmark_lru() {
 
 // 分片锁版本：ShardedCache
 BenchmarkResult benchmark_sharded(int shard_count) {
-  ShardedCache<std::string, std::string> cache(CACHE_SIZE / shard_count, shard_count);
+  ShardedCache<std::string, std::string> cache(CACHE_SIZE / shard_count,
+                                               shard_count);
 
   auto start = std::chrono::high_resolution_clock::now();
 
@@ -107,7 +110,8 @@ BenchmarkResult benchmark_sharded(int shard_count) {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
   double latency_us = (double)duration_ms * 1000 / total_ops;
@@ -121,8 +125,8 @@ BenchmarkResult benchmark_sharded(int shard_count) {
 
 // 优化版本：OptimizedShardedCache（缓存行对齐）
 BenchmarkResult benchmark_optimized_sharded(int shard_count) {
-  OptimizedShardedCache<std::string, std::string> cache(CACHE_SIZE / shard_count,
-                                                        shard_count);
+  OptimizedShardedCache<std::string, std::string> cache(
+      CACHE_SIZE / shard_count, shard_count);
 
   auto start = std::chrono::high_resolution_clock::now();
 
@@ -150,7 +154,8 @@ BenchmarkResult benchmark_optimized_sharded(int shard_count) {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
   double latency_us = (double)duration_ms * 1000 / total_ops;
@@ -192,7 +197,8 @@ BenchmarkResult benchmark_lazy_lru() {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
   double latency_us = (double)duration_ms * 1000 / total_ops;
@@ -207,7 +213,8 @@ BenchmarkResult benchmark_lazy_lru() {
 int main() {
   std::cout << "\n╔════════════════════════════════════════════════════════════"
                "════╗\n";
-  std::cout << "║         FlashCache 性能压测 v3 (改进版)                       ║\n";
+  std::cout
+      << "║         FlashCache 性能压测 v3 (改进版)                       ║\n";
   std::cout << "╚══════════════════════════════════════════════════════════════"
                "══╝\n\n";
 
@@ -221,8 +228,8 @@ int main() {
             << "% 写\n\n";
 
   std::cout << std::string(70, '=') << "\n";
-  std::cout << std::left << std::setw(35) << "缓存实现" << std::setw(15) << "吞吐量"
-            << std::setw(15) << "延迟" << std::endl;
+  std::cout << std::left << std::setw(35) << "缓存实现" << std::setw(15)
+            << "吞吐量" << std::setw(15) << "延迟" << std::endl;
   std::cout << std::string(70, '=') << "\n";
 
   // 运行压测
@@ -248,7 +255,8 @@ int main() {
   std::cout << "性能提升倍数（相对于 LruCache）:\n";
   std::cout << "  - ShardedCache(32): " << std::fixed << std::setprecision(2)
             << speedup_sharded << "x\n";
-  std::cout << "  - OptimizedShardedCache(32): " << speedup_optimized << "x ✨\n";
+  std::cout << "  - OptimizedShardedCache(32): " << speedup_optimized
+            << "x ✨\n";
   std::cout << "  - LazyLruCache: " << speedup_lazy << "x\n\n";
 
   // 总结
