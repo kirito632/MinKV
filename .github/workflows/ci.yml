@@ -222,12 +222,13 @@ jobs:
         run: |
           find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 -i
       - name: Commit clang-format fixes (if any)
+        if: github.event_name == 'pull_request'
         run: |
           if ! git diff --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add -A
-            git commit -m "style: auto-apply clang-format fixes [skip ci]"
+            git commit -m "style: auto-apply clang-format fixes"
             git push origin HEAD:"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           fi
       - name: Verify clang-format (idempotent check)
