@@ -224,8 +224,8 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add -A
-            git commit -m "style: auto-apply clang-format fixes"
-            git push origin HEAD:"$GITHUB_REF_NAME"
+            git commit -m "style: auto-apply clang-format fixes [skip ci]"
+            git push origin HEAD:"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           fi
       - name: Verify clang-format (idempotent check)
         run: |
