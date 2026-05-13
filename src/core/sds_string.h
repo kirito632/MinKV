@@ -94,17 +94,18 @@ public:
   // ==========================================
 
   size_t size() const { return header_ ? header_->len : 0; }
+
   size_t length() const { return size(); }
+
   bool empty() const { return size() == 0; }
+
   size_t capacity() const { return header_ ? header_->alloc : 0; }
 
   const char *data() const {
     return header_ ? reinterpret_cast<const char *>(header_ + 1) : nullptr;
   }
 
-  char *data() {
-    return header_ ? reinterpret_cast<char *>(header_ + 1) : nullptr;
-  }
+  char *data() { return header_ ? reinterpret_cast<char *>(header_ + 1) : nullptr; }
 
   const char *c_str() const {
     if (!header_)
@@ -117,12 +118,12 @@ public:
 
   // 零拷贝视图
   std::string_view view() const {
-    return header_ ? std::string_view(data(), size()) : std::string_view{};
+    return header_ ? std::string_view(data(), size()) : std::string_view {};
   }
 
   // 转换为std::string (需要拷贝)
   std::string to_string() const {
-    return header_ ? std::string(data(), size()) : std::string{};
+    return header_ ? std::string(data(), size()) : std::string {};
   }
 
   // ==========================================
@@ -216,7 +217,9 @@ public:
   }
 
   bool operator!=(const SdsString &other) const { return !(*this == other); }
+
   bool operator!=(const std::string &str) const { return !(*this == str); }
+
   bool operator!=(std::string_view sv) const { return !(*this == sv); }
 
   // ==========================================
@@ -224,8 +227,7 @@ public:
   // ==========================================
 
   size_t memory_usage() const {
-    return header_ ? (sizeof(Header) + capacity() + 1)
-                   : 0; // +1 for null terminator
+    return header_ ? (sizeof(Header) + capacity() + 1) : 0; // +1 for null terminator
   }
 
   // 获取内存利用率
@@ -286,8 +288,7 @@ private:
     size_t old_len = header_->len;
     size_t alloc_size = sizeof(Header) + new_capacity + 1;
 
-    Header *new_header =
-        static_cast<Header *>(std::realloc(header_, alloc_size));
+    Header *new_header = static_cast<Header *>(std::realloc(header_, alloc_size));
     if (!new_header) {
       throw std::bad_alloc();
     }
@@ -318,11 +319,12 @@ inline bool operator==(std::string_view sv, const SdsString &sds) {
 // ==========================================
 
 namespace std {
-template <> struct hash<minkv::db::SdsString> {
+template <>
+struct hash<minkv::db::SdsString> {
   size_t operator()(const minkv::db::SdsString &sds) const noexcept {
     // 使用高性能的字符串哈希算法
     auto sv = sds.view();
-    return std::hash<std::string_view>{}(sv);
+    return std::hash<std::string_view> {}(sv);
   }
 };
 } // namespace std

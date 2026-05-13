@@ -1,4 +1,5 @@
 #include "group_commit.h"
+
 #include <future>
 #include <iostream>
 
@@ -8,9 +9,13 @@ namespace base {
 GroupCommitManager::GroupCommitManager(const std::string &filename,
                                        size_t batchSize,
                                        std::chrono::milliseconds syncInterval)
-    : batchSize_(batchSize), syncInterval_(syncInterval), running_(false),
-      totalCommits_(0), totalBatches_(0), totalBytes_(0), currentBatchSize_(0) {
-
+    : batchSize_(batchSize),
+      syncInterval_(syncInterval),
+      running_(false),
+      totalCommits_(0),
+      totalBatches_(0),
+      totalBytes_(0),
+      currentBatchSize_(0) {
   try {
     // [系统调用优化] 创建高性能文件写入器，封装open/write/fsync系统调用
     // AppendFile使用O_APPEND模式，确保多进程写入的原子性
@@ -67,8 +72,7 @@ void GroupCommitManager::stop() {
   flush();
 }
 
-void GroupCommitManager::commitAsync(const std::string &data,
-                                     CommitCallback callback) {
+void GroupCommitManager::commitAsync(const std::string &data, CommitCallback callback) {
   // [快速失败] 如果管理器已停止，立即调用回调通知失败，避免阻塞
   if (!running_) {
     if (callback) {
@@ -247,8 +251,8 @@ bool GroupCommitManager::shouldSync() const {
   // 即使数据量不够，也要在规定时间内强制同步
   // 这样可以保证写入延迟不会无限增长
   auto now = std::chrono::steady_clock::now();
-  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-      now - batchStartTime_);
+  auto elapsed =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - batchStartTime_);
 
   return elapsed >= syncInterval_;
 }

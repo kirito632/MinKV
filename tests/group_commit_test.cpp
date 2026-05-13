@@ -1,11 +1,12 @@
-#include "base/append_file.h"
-#include "persistence/group_commit.h"
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "base/append_file.h"
+#include "persistence/group_commit.h"
 
 using namespace minkv::base;
 
@@ -24,7 +25,7 @@ void test_basic_group_commit() {
             << std::endl;
 
   // 测试异步提交
-  std::atomic<int> asyncResults{0};
+  std::atomic<int> asyncResults {0};
 
   for (int i = 0; i < 10; ++i) {
     std::string data = "Async data " + std::to_string(i) + "\n";
@@ -54,8 +55,7 @@ void test_performance_comparison() {
   std::cout << "=== 性能对比测试 ===" << std::endl;
 
   const int test_count = 1000;
-  const std::string test_data =
-      "Performance test data line with some content\n";
+  const std::string test_data = "Performance test data line with some content\n";
 
   // 测试直接写入性能
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -84,16 +84,14 @@ void test_performance_comparison() {
 
   auto group_time = std::chrono::high_resolution_clock::now();
 
-  auto direct_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      direct_time - start_time);
-  auto group_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      group_time - direct_time);
+  auto direct_duration =
+      std::chrono::duration_cast<std::chrono::milliseconds>(direct_time - start_time);
+  auto group_duration =
+      std::chrono::duration_cast<std::chrono::milliseconds>(group_time - direct_time);
 
   std::cout << "性能对比结果 (" << test_count << " 次写入):" << std::endl;
-  std::cout << "  直接写入耗时: " << direct_duration.count() << "ms"
-            << std::endl;
-  std::cout << "  Group Commit耗时: " << group_duration.count() << "ms"
-            << std::endl;
+  std::cout << "  直接写入耗时: " << direct_duration.count() << "ms" << std::endl;
+  std::cout << "  Group Commit耗时: " << group_duration.count() << "ms" << std::endl;
 
   if (group_duration.count() > 0) {
     double speedup =
@@ -112,7 +110,7 @@ void test_concurrent_group_commit() {
   manager.start();
 
   std::vector<std::thread> threads;
-  std::atomic<int> total_success{0};
+  std::atomic<int> total_success {0};
 
   auto start_time = std::chrono::high_resolution_clock::now();
 
@@ -121,8 +119,8 @@ void test_concurrent_group_commit() {
       int local_success = 0;
 
       for (int j = 0; j < commits_per_thread; ++j) {
-        std::string data = "Thread-" + std::to_string(i) + " Commit-" +
-                           std::to_string(j) + "\n";
+        std::string data =
+            "Thread-" + std::to_string(i) + " Commit-" + std::to_string(j) + "\n";
 
         manager.commitAsync(data, [&local_success](bool success) {
           if (success) {
@@ -145,8 +143,8 @@ void test_concurrent_group_commit() {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
+  auto duration =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
   manager.stop();
 
@@ -174,9 +172,9 @@ void test_batch_optimization() {
   const std::string test_data = "Batch optimization test data\n";
 
   for (size_t batch_size : batch_sizes) {
-    GroupCommitManager manager("test_batch_" + std::to_string(batch_size) +
-                                   ".log",
-                               batch_size, std::chrono::milliseconds(50));
+    GroupCommitManager manager("test_batch_" + std::to_string(batch_size) + ".log",
+                               batch_size,
+                               std::chrono::milliseconds(50));
     manager.start();
 
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -186,8 +184,8 @@ void test_batch_optimization() {
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
+    auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
     manager.stop();
 

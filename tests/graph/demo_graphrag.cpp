@@ -13,10 +13,6 @@
  *   ./bin/demo_graphrag
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_serializer.h"
-#include "graph/graph_store.h"
-
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -26,6 +22,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_serializer.h"
+#include "graph/graph_store.h"
 
 using namespace minkv::graph;
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
@@ -54,7 +54,8 @@ static std::vector<float> random_unit_vec(size_t dim, unsigned seed = 42) {
 }
 
 // 在 base 向量上加小扰动，模拟"语义相近"的 embedding
-static std::vector<float> perturb(const std::vector<float> &base, float noise,
+static std::vector<float> perturb(const std::vector<float> &base,
+                                  float noise,
                                   unsigned seed) {
   std::mt19937 rng(seed);
   std::normal_distribution<float> dist(0.0f, noise);
@@ -71,7 +72,8 @@ static std::vector<float> perturb(const std::vector<float> &base, float noise,
 }
 
 // 计时工具：返回 lambda 执行时间（微秒）
-template <typename F> static double time_us(F &&fn) {
+template <typename F>
+static double time_us(F &&fn) {
   auto t0 = std::chrono::high_resolution_clock::now();
   fn();
   auto t1 = std::chrono::high_resolution_clock::now();
@@ -105,12 +107,9 @@ static bool test_graphrag_association() {
   auto emb_starship = random_unit_vec(DIM, 3);
 
   // 插入节点
-  gs.AddNode(
-      {"Elon_Musk", R"({"role":"CEO","desc":"Tesla & SpaceX founder"})"});
-  gs.AddNode(
-      {"SpaceX", R"({"type":"company","desc":"aerospace manufacturer"})"});
-  gs.AddNode({"Starship",
-              R"({"type":"rocket","desc":"fully reusable launch vehicle"})"});
+  gs.AddNode({"Elon_Musk", R"({"role":"CEO","desc":"Tesla & SpaceX founder"})"});
+  gs.AddNode({"SpaceX", R"({"type":"company","desc":"aerospace manufacturer"})"});
+  gs.AddNode({"Starship", R"({"type":"rocket","desc":"fully reusable launch vehicle"})"});
 
   // 设置 embedding
   gs.SetNodeEmbedding("Elon_Musk", emb_musk);
@@ -133,8 +132,8 @@ static bool test_graphrag_association() {
   auto vec_results = gs.SearchSimilarNodes(query, 1);
   std::cout << "\n[纯向量检索 top-1]\n";
   for (auto &[id, sim] : vec_results) {
-    std::cout << "  → " << id << "  (cosine=" << std::fixed
-              << std::setprecision(4) << sim << ")\n";
+    std::cout << "  → " << id << "  (cosine=" << std::fixed << std::setprecision(4) << sim
+              << ")\n";
   }
 
   // ── 1-hop GraphRAG ────────────────────────────────────────────────────────
@@ -161,14 +160,13 @@ static bool test_graphrag_association() {
   }
 
   // 验证：纯向量检索应该找到 Elon_Musk（最相似）
-  bool vec_found_musk =
-      !vec_results.empty() && vec_results[0].first == "Elon_Musk";
+  bool vec_found_musk = !vec_results.empty() && vec_results[0].first == "Elon_Musk";
 
   std::cout << "\n[验证结果]\n";
-  std::cout << "  纯向量检索定位到 Elon_Musk: "
-            << (vec_found_musk ? "✓ PASS" : "✗ FAIL") << "\n";
-  std::cout << "  2-hop 联想到 Starship:       "
-            << (found_starship ? "✓ PASS" : "✗ FAIL") << "\n";
+  std::cout << "  纯向量检索定位到 Elon_Musk: " << (vec_found_musk ? "✓ PASS" : "✗ FAIL")
+            << "\n";
+  std::cout << "  2-hop 联想到 Starship:       " << (found_starship ? "✓ PASS" : "✗ FAIL")
+            << "\n";
 
   std::cout << "\n[面试亮点]\n";
   std::cout << "  传统 RAG：只能找到 Elon_Musk（向量相似）\n";
@@ -209,8 +207,11 @@ static void test_performance() {
     int src = node_dist(rng);
     int dst = node_dist(rng);
     if (src != dst) {
-      gs.AddEdge({"node_" + std::to_string(src), "node_" + std::to_string(dst),
-                  "link", 1.0f, ""});
+      gs.AddEdge({"node_" + std::to_string(src),
+                  "node_" + std::to_string(dst),
+                  "link",
+                  1.0f,
+                  ""});
     }
   }
 
@@ -252,19 +253,19 @@ static void test_performance() {
   auto [rag1_avg, rag1_p99] = stats(rag1_times);
   auto [rag2_avg, rag2_p99] = stats(rag2_times);
 
-  std::cout << "\n[测试配置] " << N_NODES << " 节点, " << N_EDGES << " 边, "
-            << DIM << " 维 embedding, 重复 " << N_RUNS << " 次\n\n";
+  std::cout << "\n[测试配置] " << N_NODES << " 节点, " << N_EDGES << " 边, " << DIM
+            << " 维 embedding, 重复 " << N_RUNS << " 次\n\n";
   std::cout << std::fixed << std::setprecision(1);
   std::cout << "  操作                      avg(μs)   P99(μs)\n";
   std::cout << "  ─────────────────────────────────────────────\n";
-  std::cout << "  SearchSimilarNodes         " << std::setw(7) << vec_avg
-            << "   " << std::setw(7) << vec_p99 << "\n";
-  std::cout << "  GraphRAGQuery (1-hop)      " << std::setw(7) << rag1_avg
-            << "   " << std::setw(7) << rag1_p99 << "\n";
-  std::cout << "  GraphRAGQuery (2-hop)      " << std::setw(7) << rag2_avg
-            << "   " << std::setw(7) << rag2_p99 << "\n";
-  std::cout << "\n  1-hop 额外开销: +" << std::setprecision(1)
-            << (rag1_avg - vec_avg) << " μs\n";
+  std::cout << "  SearchSimilarNodes         " << std::setw(7) << vec_avg << "   "
+            << std::setw(7) << vec_p99 << "\n";
+  std::cout << "  GraphRAGQuery (1-hop)      " << std::setw(7) << rag1_avg << "   "
+            << std::setw(7) << rag1_p99 << "\n";
+  std::cout << "  GraphRAGQuery (2-hop)      " << std::setw(7) << rag2_avg << "   "
+            << std::setw(7) << rag2_p99 << "\n";
+  std::cout << "\n  1-hop 额外开销: +" << std::setprecision(1) << (rag1_avg - vec_avg)
+            << " μs\n";
   std::cout << "  2-hop 额外开销: +" << (rag2_avg - vec_avg) << " μs\n";
 
   std::cout << "\n[优化说明]\n";
@@ -307,8 +308,11 @@ static bool test_consistency() {
       for (int i = 0; i < EDGES_PER_THREAD; ++i) {
         int src = d(rng), dst = d(rng);
         if (src != dst) {
-          gs.AddEdge({"n" + std::to_string(src), "n" + std::to_string(dst),
-                      "t" + std::to_string(t), 1.0f, ""});
+          gs.AddEdge({"n" + std::to_string(src),
+                      "n" + std::to_string(dst),
+                      "t" + std::to_string(t),
+                      1.0f,
+                      ""});
         }
       }
     });
@@ -326,8 +330,7 @@ static bool test_consistency() {
     if (k.size() > 4 && k.substr(0, 4) == "adj:")
       ++adj_count;
   }
-  std::cout << "  写入后：" << edge_count << " 条边，" << adj_count
-            << " 个邻接表 Key\n";
+  std::cout << "  写入后：" << edge_count << " 条边，" << adj_count << " 个邻接表 Key\n";
 
   // 模拟"邻接表损坏"：手动删除所有 adj: Key
   std::cout << "\n[模拟损坏] 删除所有邻接表 Key（模拟崩溃后邻接表丢失）\n";
@@ -339,14 +342,13 @@ static bool test_consistency() {
 
   // 验证损坏后邻接表为空
   auto sample_out = gs.GetOutNeighbors("n0");
-  std::cout << "  损坏后 n0 的出边邻居数: " << sample_out.size()
-            << " (期望 0)\n";
+  std::cout << "  损坏后 n0 的出边邻居数: " << sample_out.size() << " (期望 0)\n";
 
   // 执行 RebuildAdjacencyList
   std::cout << "\n[重建] 执行 RebuildAdjacencyList()...\n";
   double rebuild_us = time_us([&] { gs.RebuildAdjacencyList(); });
-  std::cout << "  重建耗时: " << std::fixed << std::setprecision(1)
-            << rebuild_us << " μs\n";
+  std::cout << "  重建耗时: " << std::fixed << std::setprecision(1) << rebuild_us
+            << " μs\n";
 
   // 验证一致性：对每条边，检查邻接表是否包含对应条目
   auto all_data2 = kv->export_all_data();
@@ -358,8 +360,7 @@ static bool test_consistency() {
       Edge e = minkv::graph::GraphSerializer::DeserializeEdge(v);
       auto out = gs.GetOutNeighbors(e.src_id);
       auto in = gs.GetInNeighbors(e.dst_id);
-      bool dst_in_out =
-          std::find(out.begin(), out.end(), e.dst_id) != out.end();
+      bool dst_in_out = std::find(out.begin(), out.end(), e.dst_id) != out.end();
       bool src_in_in = std::find(in.begin(), in.end(), e.src_id) != in.end();
       if (dst_in_out && src_in_in)
         ++ok;
@@ -400,10 +401,8 @@ int main() {
   std::cout << "\n══════════════════════════════════════════\n";
   std::cout << "最终结果\n";
   std::cout << "══════════════════════════════════════════\n";
-  std::cout << "  功能测试（GraphRAG 联想）: " << (t1 ? "✓ PASS" : "✗ FAIL")
-            << "\n";
-  std::cout << "  一致性测试（重建邻接表）:  " << (t3 ? "✓ PASS" : "✗ FAIL")
-            << "\n";
+  std::cout << "  功能测试（GraphRAG 联想）: " << (t1 ? "✓ PASS" : "✗ FAIL") << "\n";
+  std::cout << "  一致性测试（重建邻接表）:  " << (t3 ? "✓ PASS" : "✗ FAIL") << "\n";
 
   return (t1 && t3) ? 0 : 1;
 }

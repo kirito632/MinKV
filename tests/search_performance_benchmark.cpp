@@ -19,9 +19,6 @@
  *       -I.. -o search_benchmark
  */
 
-#include "../vector/vector_index.h"
-#include "../vector/vector_ops.h"
-#include "../vector/vector_search.h"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -31,6 +28,10 @@
 #include <numeric>
 #include <random>
 #include <vector>
+
+#include "../vector/vector_index.h"
+#include "../vector/vector_ops.h"
+#include "../vector/vector_search.h"
 
 using namespace std;
 using namespace std::chrono;
@@ -108,8 +109,7 @@ public:
   /**
    * 计算延迟统计
    */
-  static LatencyStats calculate_stats(vector<double> &latencies_ms,
-                                      double total_time_s) {
+  static LatencyStats calculate_stats(vector<double> &latencies_ms, double total_time_s) {
     sort(latencies_ms.begin(), latencies_ms.end());
 
     size_t n = latencies_ms.size();
@@ -118,8 +118,7 @@ public:
     stats.p50_ms = latencies_ms[n * 50 / 100];
     stats.p95_ms = latencies_ms[n * 95 / 100];
     stats.p99_ms = latencies_ms[n * 99 / 100];
-    stats.avg_ms =
-        accumulate(latencies_ms.begin(), latencies_ms.end(), 0.0) / n;
+    stats.avg_ms = accumulate(latencies_ms.begin(), latencies_ms.end(), 0.0) / n;
     stats.min_ms = latencies_ms.front();
     stats.max_ms = latencies_ms.back();
     stats.qps = n / total_time_s;
@@ -171,13 +170,11 @@ public:
       auto results = search.search(queries[i], config.k, config.metric);
       auto end = high_resolution_clock::now();
 
-      double latency_ms =
-          duration_cast<microseconds>(end - start).count() / 1000.0;
+      double latency_ms = duration_cast<microseconds>(end - start).count() / 1000.0;
       latencies_ms.push_back(latency_ms);
 
       // 进度显示
-      if ((i + 1) % (config.num_queries / 10) == 0 ||
-          i == config.num_queries - 1) {
+      if ((i + 1) % (config.num_queries / 10) == 0 || i == config.num_queries - 1) {
         cout << "." << flush;
       }
     }
@@ -200,9 +197,8 @@ public:
       meets_requirement = false;
     }
 
-    return BenchmarkResult{.config = config,
-                           .stats = stats,
-                           .meets_requirement = meets_requirement};
+    return BenchmarkResult {
+        .config = config, .stats = stats, .meets_requirement = meets_requirement};
   }
 
   /**
@@ -213,18 +209,12 @@ public:
     const auto &stats = result.stats;
 
     cout << "\n结果:" << endl;
-    cout << "  P50延迟: " << fixed << setprecision(3) << stats.p50_ms << " ms"
-         << endl;
-    cout << "  P95延迟: " << fixed << setprecision(3) << stats.p95_ms << " ms"
-         << endl;
-    cout << "  P99延迟: " << fixed << setprecision(3) << stats.p99_ms << " ms"
-         << endl;
-    cout << "  平均延迟: " << fixed << setprecision(3) << stats.avg_ms << " ms"
-         << endl;
-    cout << "  最小延迟: " << fixed << setprecision(3) << stats.min_ms << " ms"
-         << endl;
-    cout << "  最大延迟: " << fixed << setprecision(3) << stats.max_ms << " ms"
-         << endl;
+    cout << "  P50延迟: " << fixed << setprecision(3) << stats.p50_ms << " ms" << endl;
+    cout << "  P95延迟: " << fixed << setprecision(3) << stats.p95_ms << " ms" << endl;
+    cout << "  P99延迟: " << fixed << setprecision(3) << stats.p99_ms << " ms" << endl;
+    cout << "  平均延迟: " << fixed << setprecision(3) << stats.avg_ms << " ms" << endl;
+    cout << "  最小延迟: " << fixed << setprecision(3) << stats.min_ms << " ms" << endl;
+    cout << "  最大延迟: " << fixed << setprecision(3) << stats.max_ms << " ms" << endl;
     cout << "  QPS: " << fixed << setprecision(0) << stats.qps << endl;
 
     // 性能要求检查
@@ -245,37 +235,35 @@ public:
     cout << "Top-K搜索性能基准测试报告" << endl;
     cout << "========================================\n" << endl;
 
-    cout << left << setw(12) << "向量数量" << setw(8) << "维度" << setw(6)
-         << "K值" << setw(12) << "P50(ms)" << setw(12) << "P95(ms)" << setw(12)
-         << "P99(ms)" << setw(12) << "QPS" << setw(8) << "状态" << endl;
+    cout << left << setw(12) << "向量数量" << setw(8) << "维度" << setw(6) << "K值"
+         << setw(12) << "P50(ms)" << setw(12) << "P95(ms)" << setw(12) << "P99(ms)"
+         << setw(12) << "QPS" << setw(8) << "状态" << endl;
     cout << string(90, '-') << endl;
 
     for (const auto &result : results) {
       const auto &cfg = result.config;
       const auto &stats = result.stats;
 
-      cout << left << setw(12) << cfg.vector_count << setw(8) << cfg.dimension
-           << setw(6) << cfg.k << setw(12) << fixed << setprecision(3)
-           << stats.p50_ms << setw(12) << fixed << setprecision(3)
-           << stats.p95_ms << setw(12) << fixed << setprecision(3)
-           << stats.p99_ms << setw(12) << fixed << setprecision(0) << stats.qps
-           << setw(8) << (result.meets_requirement ? "✓" : "✗") << endl;
+      cout << left << setw(12) << cfg.vector_count << setw(8) << cfg.dimension << setw(6)
+           << cfg.k << setw(12) << fixed << setprecision(3) << stats.p50_ms << setw(12)
+           << fixed << setprecision(3) << stats.p95_ms << setw(12) << fixed
+           << setprecision(3) << stats.p99_ms << setw(12) << fixed << setprecision(0)
+           << stats.qps << setw(8) << (result.meets_requirement ? "✓" : "✗") << endl;
     }
 
     // 统计通过率
     size_t passed =
-        count_if(results.begin(), results.end(),
-                 [](const BenchmarkResult &r) { return r.meets_requirement; });
+        count_if(results.begin(), results.end(), [](const BenchmarkResult &r) {
+          return r.meets_requirement;
+        });
     cout << "\n通过率: " << passed << "/" << results.size() << " (" << fixed
-         << setprecision(1) << (100.0 * passed / results.size()) << "%)"
-         << endl;
+         << setprecision(1) << (100.0 * passed / results.size()) << "%)" << endl;
   }
 
   /**
    * 导出CSV报告
    */
-  static void export_csv(const vector<BenchmarkResult> &results,
-                         const string &filename) {
+  static void export_csv(const vector<BenchmarkResult> &results, const string &filename) {
     ofstream file(filename);
     if (!file.is_open()) {
       cerr << "无法创建文件: " << filename << endl;
@@ -291,14 +279,13 @@ public:
       const auto &cfg = result.config;
       const auto &stats = result.stats;
 
-      file << cfg.vector_count << "," << cfg.dimension << "," << cfg.k << ","
-           << fixed << setprecision(3) << stats.p50_ms << "," << fixed
-           << setprecision(3) << stats.p95_ms << "," << fixed << setprecision(3)
-           << stats.p99_ms << "," << fixed << setprecision(3) << stats.avg_ms
-           << "," << fixed << setprecision(3) << stats.min_ms << "," << fixed
-           << setprecision(3) << stats.max_ms << "," << fixed << setprecision(0)
-           << stats.qps << "," << (result.meets_requirement ? "Yes" : "No")
-           << "\n";
+      file << cfg.vector_count << "," << cfg.dimension << "," << cfg.k << "," << fixed
+           << setprecision(3) << stats.p50_ms << "," << fixed << setprecision(3)
+           << stats.p95_ms << "," << fixed << setprecision(3) << stats.p99_ms << ","
+           << fixed << setprecision(3) << stats.avg_ms << "," << fixed << setprecision(3)
+           << stats.min_ms << "," << fixed << setprecision(3) << stats.max_ms << ","
+           << fixed << setprecision(0) << stats.qps << ","
+           << (result.meets_requirement ? "Yes" : "No") << "\n";
     }
 
     file.close();
@@ -336,7 +323,7 @@ int main(int argc, char *argv[]) {
   }
 
   for (size_t count : vector_counts) {
-    SearchBenchmark::BenchmarkConfig config{
+    SearchBenchmark::BenchmarkConfig config {
         .vector_count = count,
         .dimension = 768, // 标准维度
         .k = 10,          // 标准K值
@@ -359,11 +346,11 @@ int main(int argc, char *argv[]) {
   vector<size_t> k_values = {1, 5, 10, 20, 50};
 
   for (size_t k : k_values) {
-    SearchBenchmark::BenchmarkConfig config{.vector_count = 1000,
-                                            .dimension = 768,
-                                            .k = k,
-                                            .metric = DistanceMetric::COSINE,
-                                            .num_queries = 100};
+    SearchBenchmark::BenchmarkConfig config {.vector_count = 1000,
+                                             .dimension = 768,
+                                             .k = k,
+                                             .metric = DistanceMetric::COSINE,
+                                             .num_queries = 100};
 
     auto result = SearchBenchmark::run_benchmark(config);
     SearchBenchmark::print_result(result);
@@ -380,11 +367,11 @@ int main(int argc, char *argv[]) {
   vector<size_t> dimensions = {128, 256, 512, 768, 1536};
 
   for (size_t dim : dimensions) {
-    SearchBenchmark::BenchmarkConfig config{.vector_count = 1000,
-                                            .dimension = dim,
-                                            .k = 10,
-                                            .metric = DistanceMetric::COSINE,
-                                            .num_queries = 100};
+    SearchBenchmark::BenchmarkConfig config {.vector_count = 1000,
+                                             .dimension = dim,
+                                             .k = 10,
+                                             .metric = DistanceMetric::COSINE,
+                                             .num_queries = 100};
 
     auto result = SearchBenchmark::run_benchmark(config);
     SearchBenchmark::print_result(result);
@@ -411,7 +398,8 @@ int main(int argc, char *argv[]) {
   bool all_passed = true;
 
   // 检查1K向量的P99延迟
-  auto it_1k = find_if(all_results.begin(), all_results.end(),
+  auto it_1k = find_if(all_results.begin(),
+                       all_results.end(),
                        [](const SearchBenchmark::BenchmarkResult &r) {
                          return r.config.vector_count == 1000 &&
                                 r.config.dimension == 768 && r.config.k == 10;
@@ -419,16 +407,16 @@ int main(int argc, char *argv[]) {
 
   if (it_1k != all_results.end()) {
     cout << "1K向量搜索 (768维, K=10):" << endl;
-    cout << "  P99延迟: " << fixed << setprecision(3) << it_1k->stats.p99_ms
-         << " ms" << endl;
-    cout << "  要求: < 10 ms" << endl;
-    cout << "  结果: " << (it_1k->meets_requirement ? "✓ 通过" : "✗ 未通过")
+    cout << "  P99延迟: " << fixed << setprecision(3) << it_1k->stats.p99_ms << " ms"
          << endl;
+    cout << "  要求: < 10 ms" << endl;
+    cout << "  结果: " << (it_1k->meets_requirement ? "✓ 通过" : "✗ 未通过") << endl;
     all_passed &= it_1k->meets_requirement;
   }
 
   // 检查10K向量的P99延迟
-  auto it_10k = find_if(all_results.begin(), all_results.end(),
+  auto it_10k = find_if(all_results.begin(),
+                        all_results.end(),
                         [](const SearchBenchmark::BenchmarkResult &r) {
                           return r.config.vector_count == 10000 &&
                                  r.config.dimension == 768 && r.config.k == 10;
@@ -436,16 +424,14 @@ int main(int argc, char *argv[]) {
 
   if (it_10k != all_results.end()) {
     cout << "\n10K向量搜索 (768维, K=10):" << endl;
-    cout << "  P99延迟: " << fixed << setprecision(3) << it_10k->stats.p99_ms
-         << " ms" << endl;
-    cout << "  要求: < 100 ms" << endl;
-    cout << "  结果: " << (it_10k->meets_requirement ? "✓ 通过" : "✗ 未通过")
+    cout << "  P99延迟: " << fixed << setprecision(3) << it_10k->stats.p99_ms << " ms"
          << endl;
+    cout << "  要求: < 100 ms" << endl;
+    cout << "  结果: " << (it_10k->meets_requirement ? "✓ 通过" : "✗ 未通过") << endl;
     all_passed &= it_10k->meets_requirement;
   }
 
-  cout << "\n总体结果: "
-       << (all_passed ? "✓ 所有性能要求已满足" : "✗ 部分性能要求未满足")
+  cout << "\n总体结果: " << (all_passed ? "✓ 所有性能要求已满足" : "✗ 部分性能要求未满足")
        << endl;
 
   cout << "\n测试完成!" << endl;

@@ -14,15 +14,15 @@
  *   [12-15] 保留
  */
 
-#include "core/sharded_cache.h"
-#include "graph/graph_store.h"
-
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "core/sharded_cache.h"
+#include "graph/graph_store.h"
 
 using namespace minkv::graph;
 using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
@@ -59,57 +59,54 @@ static void build_knowledge_graph(GraphStore &gs) {
   gs.AddNode(
       {"Elon_Musk",
        R"({"type":"person","desc":"CEO of Tesla and SpaceX, serial entrepreneur"})"});
-  gs.SetNodeEmbedding(
-      "Elon_Musk", vec({0.3f, 0.3f, 0.1f, 0.0f, 0.9f, 0.2f, 0.0f, 0.0f, 0.8f}));
+  gs.SetNodeEmbedding("Elon_Musk",
+                      vec({0.3f, 0.3f, 0.1f, 0.0f, 0.9f, 0.2f, 0.0f, 0.0f, 0.8f}));
 
-  gs.AddNode(
-      {"Sam_Altman",
-       R"({"type":"person","desc":"CEO of OpenAI, AI researcher and investor"})"});
-  gs.SetNodeEmbedding("Sam_Altman", vec({0.0f, 0.0f, 0.9f, 0.1f, 0.9f, 0.2f,
-                                         0.0f, 0.0f, 0.8f}));
+  gs.AddNode({"Sam_Altman",
+              R"({"type":"person","desc":"CEO of OpenAI, AI researcher and investor"})"});
+  gs.SetNodeEmbedding("Sam_Altman",
+                      vec({0.0f, 0.0f, 0.9f, 0.1f, 0.9f, 0.2f, 0.0f, 0.0f, 0.8f}));
 
   gs.AddNode(
       {"Jeff_Bezos",
        R"({"type":"person","desc":"founder of Amazon, cloud computing pioneer"})"});
-  gs.SetNodeEmbedding("Jeff_Bezos", vec({0.0f, 0.0f, 0.1f, 0.7f, 0.9f, 0.2f,
-                                         0.0f, 0.0f, 0.8f}));
+  gs.SetNodeEmbedding("Jeff_Bezos",
+                      vec({0.0f, 0.0f, 0.1f, 0.7f, 0.9f, 0.2f, 0.0f, 0.0f, 0.8f}));
 
-  gs.AddNode(
-      {"Jensen_Huang",
-       R"({"type":"person","desc":"CEO of NVIDIA, GPU and AI chip pioneer"})"});
-  gs.SetNodeEmbedding("Jensen_Huang", vec({0.1f, 0.0f, 0.7f, 0.3f, 0.9f, 0.2f,
-                                           0.5f, 0.0f, 0.8f}));
+  gs.AddNode({"Jensen_Huang",
+              R"({"type":"person","desc":"CEO of NVIDIA, GPU and AI chip pioneer"})"});
+  gs.SetNodeEmbedding("Jensen_Huang",
+                      vec({0.1f, 0.0f, 0.7f, 0.3f, 0.9f, 0.2f, 0.5f, 0.0f, 0.8f}));
 
   // 公司节点
   gs.AddNode(
       {"SpaceX",
        R"({"type":"company","desc":"aerospace manufacturer, rocket launch services"})"});
-  gs.SetNodeEmbedding(
-      "SpaceX", vec({0.9f, 0.0f, 0.0f, 0.0f, 0.0f, 0.9f, 0.5f, 0.0f, 0.8f}));
+  gs.SetNodeEmbedding("SpaceX",
+                      vec({0.9f, 0.0f, 0.0f, 0.0f, 0.0f, 0.9f, 0.5f, 0.0f, 0.8f}));
 
   gs.AddNode(
       {"Tesla",
        R"({"type":"company","desc":"electric vehicle and clean energy company"})"});
-  gs.SetNodeEmbedding(
-      "Tesla", vec({0.0f, 0.9f, 0.1f, 0.0f, 0.0f, 0.9f, 0.5f, 0.0f, 0.8f}));
+  gs.SetNodeEmbedding("Tesla",
+                      vec({0.0f, 0.9f, 0.1f, 0.0f, 0.0f, 0.9f, 0.5f, 0.0f, 0.8f}));
 
   gs.AddNode(
       {"OpenAI",
        R"({"type":"company","desc":"AI research lab, creator of GPT and ChatGPT"})"});
-  gs.SetNodeEmbedding(
-      "OpenAI", vec({0.0f, 0.0f, 0.9f, 0.1f, 0.0f, 0.9f, 0.0f, 0.7f, 0.8f}));
+  gs.SetNodeEmbedding("OpenAI",
+                      vec({0.0f, 0.0f, 0.9f, 0.1f, 0.0f, 0.9f, 0.0f, 0.7f, 0.8f}));
 
   gs.AddNode(
-      {"Amazon",
-       R"({"type":"company","desc":"e-commerce and cloud computing giant"})"});
-  gs.SetNodeEmbedding(
-      "Amazon", vec({0.0f, 0.0f, 0.1f, 0.7f, 0.0f, 0.9f, 0.3f, 0.5f, 0.8f}));
+      {"Amazon", R"({"type":"company","desc":"e-commerce and cloud computing giant"})"});
+  gs.SetNodeEmbedding("Amazon",
+                      vec({0.0f, 0.0f, 0.1f, 0.7f, 0.0f, 0.9f, 0.3f, 0.5f, 0.8f}));
 
   gs.AddNode(
       {"NVIDIA",
        R"({"type":"company","desc":"GPU manufacturer, AI computing infrastructure"})"});
-  gs.SetNodeEmbedding(
-      "NVIDIA", vec({0.1f, 0.0f, 0.7f, 0.3f, 0.0f, 0.9f, 0.8f, 0.2f, 0.8f}));
+  gs.SetNodeEmbedding("NVIDIA",
+                      vec({0.1f, 0.0f, 0.7f, 0.3f, 0.0f, 0.9f, 0.8f, 0.2f, 0.8f}));
 
   // 产品节点（无 embedding，只能通过图遍历找到）
   gs.AddNode(
@@ -118,24 +115,18 @@ static void build_knowledge_graph(GraphStore &gs) {
   gs.AddNode(
       {"Falcon9",
        R"({"type":"rocket","desc":"reusable orbital rocket, workhorse of SpaceX"})"});
+  gs.AddNode({"Model_S", R"({"type":"car","desc":"Tesla flagship electric sedan"})"});
+  gs.AddNode({"Cybertruck", R"({"type":"car","desc":"Tesla electric pickup truck"})"});
   gs.AddNode(
-      {"Model_S", R"({"type":"car","desc":"Tesla flagship electric sedan"})"});
+      {"GPT4", R"({"type":"model","desc":"OpenAI large language model, multimodal"})"});
   gs.AddNode(
-      {"Cybertruck", R"({"type":"car","desc":"Tesla electric pickup truck"})"});
-  gs.AddNode(
-      {"GPT4",
-       R"({"type":"model","desc":"OpenAI large language model, multimodal"})"});
-  gs.AddNode(
-      {"ChatGPT",
-       R"({"type":"product","desc":"OpenAI conversational AI assistant"})"});
+      {"ChatGPT", R"({"type":"product","desc":"OpenAI conversational AI assistant"})"});
   gs.AddNode(
       {"AWS",
        R"({"type":"service","desc":"Amazon Web Services, cloud computing platform"})"});
   gs.AddNode(
-      {"H100",
-       R"({"type":"chip","desc":"NVIDIA Hopper GPU, AI training accelerator"})"});
-  gs.AddNode(
-      {"A100", R"({"type":"chip","desc":"NVIDIA Ampere GPU, AI computing"})"});
+      {"H100", R"({"type":"chip","desc":"NVIDIA Hopper GPU, AI training accelerator"})"});
+  gs.AddNode({"A100", R"({"type":"chip","desc":"NVIDIA Ampere GPU, AI computing"})"});
 
   // ── 边（关系）──────────────────────────────────────────────────────────────
   gs.AddEdge({"Elon_Musk", "SpaceX", "founded", 1.0f, ""});
@@ -208,10 +199,8 @@ int main() {
   // 构建知识图谱
   std::cout << "[构建知识图谱]\n";
   build_knowledge_graph(gs);
-  std::cout
-      << "  节点：9 个人物/公司（带 embedding）+ 9 个产品（无 embedding）\n";
-  std::cout
-      << "  边：14 条关系（founded/leads/product/created/subsidiary）\n\n";
+  std::cout << "  节点：9 个人物/公司（带 embedding）+ 9 个产品（无 embedding）\n";
+  std::cout << "  边：14 条关系（founded/leads/product/created/subsidiary）\n\n";
 
   auto test_cases = make_test_cases();
   int total = 0, passed = 0;
@@ -238,8 +227,8 @@ int main() {
     std::cout << "  验证：\n";
     int case_pass = 0, case_total = 0;
     for (auto &exp : tc.expected) {
-      bool found = std::find(result_ids.begin(), result_ids.end(), exp) !=
-                   result_ids.end();
+      bool found =
+          std::find(result_ids.begin(), result_ids.end(), exp) != result_ids.end();
       std::cout << "    " << (found ? "✓" : "✗") << " " << exp;
       if (!found)
         std::cout << "  ← 未找到";
@@ -253,24 +242,29 @@ int main() {
     }
 
     float recall = case_total > 0 ? 100.0f * case_pass / case_total : 0.0f;
-    std::cout << "\n  召回率：" << case_pass << "/" << case_total << " = "
-              << std::fixed << std::setprecision(0) << recall << "%\n";
+    std::cout << "\n  召回率：" << case_pass << "/" << case_total << " = " << std::fixed
+              << std::setprecision(0) << recall << "%\n";
   }
 
   std::cout << "\n══════════════════════════════════════════════════════\n";
   std::cout << "总体结果：" << passed << "/" << total << " 个期望节点被召回\n";
   float overall = total > 0 ? 100.0f * passed / total : 0.0f;
-  std::cout << "总体召回率：" << std::fixed << std::setprecision(1) << overall
-            << "%\n\n";
+  std::cout << "总体召回率：" << std::fixed << std::setprecision(1) << overall << "%\n\n";
 
   // ── 对比：纯向量检索 vs GraphRAG ─────────────────────────────────────────
   std::cout << "══════════════════════════════════════════════════════\n";
   std::cout << "[对比] 纯向量检索 vs GraphRAG（2-hop）\n\n";
 
   // 产品节点（无 embedding，纯向量检索永远找不到）
-  std::vector<std::string> product_nodes = {"Starship",   "Falcon9", "Model_S",
-                                            "Cybertruck", "GPT4",    "ChatGPT",
-                                            "AWS",        "H100",    "A100"};
+  std::vector<std::string> product_nodes = {"Starship",
+                                            "Falcon9",
+                                            "Model_S",
+                                            "Cybertruck",
+                                            "GPT4",
+                                            "ChatGPT",
+                                            "AWS",
+                                            "H100",
+                                            "A100"};
 
   int vec_found = 0, rag_found = 0;
   for (auto &tc : test_cases) {
@@ -285,10 +279,8 @@ int main() {
 
     // 统计产品节点的召回
     for (auto &prod : product_nodes) {
-      bool in_vec =
-          std::find(vec_ids.begin(), vec_ids.end(), prod) != vec_ids.end();
-      bool in_rag =
-          std::find(rag_ids.begin(), rag_ids.end(), prod) != rag_ids.end();
+      bool in_vec = std::find(vec_ids.begin(), vec_ids.end(), prod) != vec_ids.end();
+      bool in_rag = std::find(rag_ids.begin(), rag_ids.end(), prod) != rag_ids.end();
       if (in_vec)
         ++vec_found;
       if (in_rag)
@@ -297,19 +289,16 @@ int main() {
   }
 
   int total_product_checks = test_cases.size() * product_nodes.size();
-  std::cout << "  产品节点（无 embedding，共 " << product_nodes.size()
-            << " 个）检查 " << test_cases.size() << " 次查询：\n\n";
-  std::cout << "  纯向量检索召回产品节点：" << vec_found << "/"
-            << total_product_checks << " = " << std::fixed
-            << std::setprecision(1)
+  std::cout << "  产品节点（无 embedding，共 " << product_nodes.size() << " 个）检查 "
+            << test_cases.size() << " 次查询：\n\n";
+  std::cout << "  纯向量检索召回产品节点：" << vec_found << "/" << total_product_checks
+            << " = " << std::fixed << std::setprecision(1)
             << (100.0f * vec_found / total_product_checks) << "%\n";
-  std::cout << "  GraphRAG   召回产品节点：" << rag_found << "/"
-            << total_product_checks << " = " << std::fixed
-            << std::setprecision(1)
+  std::cout << "  GraphRAG   召回产品节点：" << rag_found << "/" << total_product_checks
+            << " = " << std::fixed << std::setprecision(1)
             << (100.0f * rag_found / total_product_checks) << "%\n\n";
 
-  std::cout
-      << "  结论：GraphRAG 通过图遍历额外召回了纯向量检索无法找到的产品节点\n";
+  std::cout << "  结论：GraphRAG 通过图遍历额外召回了纯向量检索无法找到的产品节点\n";
   std::cout << "        Starship/GPT4/AWS 等节点没有 embedding，\n";
   std::cout << "        纯向量检索召回率 = 0%，GraphRAG 通过关系链找到它们\n";
 

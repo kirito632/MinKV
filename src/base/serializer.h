@@ -19,13 +19,13 @@ namespace minkv {
  * - 使用了模板特化和SFINAE技术
  * - 体现了开闭原则（对扩展开放，对修改关闭）
  */
-template <typename T> struct Serializer {
+template <typename T>
+struct Serializer {
   // 编译时友好的错误信息
-  static_assert(
-      sizeof(T) == 0,
-      "Unsupported type for WAL serialization! "
-      "Supported types: int, long, float, double, string. "
-      "To add support for custom types, specialize Serializer<YourType>.");
+  static_assert(sizeof(T) == 0,
+                "Unsupported type for WAL serialization! "
+                "Supported types: int, long, float, double, string. "
+                "To add support for custom types, specialize Serializer<YourType>.");
 
   static std::string serialize(const T &obj);
   static T deserialize(const std::string &data);
@@ -38,7 +38,8 @@ template <typename T> struct Serializer {
 /**
  * @brief int类型序列化特化
  */
-template <> struct Serializer<int> {
+template <>
+struct Serializer<int> {
   static std::string serialize(const int &obj) { return std::to_string(obj); }
 
   static int deserialize(const std::string &data) {
@@ -53,7 +54,8 @@ template <> struct Serializer<int> {
 /**
  * @brief long类型序列化特化
  */
-template <> struct Serializer<long> {
+template <>
+struct Serializer<long> {
   static std::string serialize(const long &obj) { return std::to_string(obj); }
 
   static long deserialize(const std::string &data) {
@@ -68,7 +70,8 @@ template <> struct Serializer<long> {
 /**
  * @brief float类型序列化特化
  */
-template <> struct Serializer<float> {
+template <>
+struct Serializer<float> {
   static std::string serialize(const float &obj) { return std::to_string(obj); }
 
   static float deserialize(const std::string &data) {
@@ -83,10 +86,9 @@ template <> struct Serializer<float> {
 /**
  * @brief double类型序列化特化
  */
-template <> struct Serializer<double> {
-  static std::string serialize(const double &obj) {
-    return std::to_string(obj);
-  }
+template <>
+struct Serializer<double> {
+  static std::string serialize(const double &obj) { return std::to_string(obj); }
 
   static double deserialize(const std::string &data) {
     try {
@@ -100,7 +102,8 @@ template <> struct Serializer<double> {
 /**
  * @brief string类型序列化特化
  */
-template <> struct Serializer<std::string> {
+template <>
+struct Serializer<std::string> {
   static std::string serialize(const std::string &obj) { return obj; }
 
   static std::string deserialize(const std::string &data) { return data; }
@@ -115,14 +118,14 @@ template <> struct Serializer<std::string> {
  */
 template <typename T>
 constexpr bool is_serializable_v =
-    std::is_same_v<T, int> || std::is_same_v<T, long> ||
-    std::is_same_v<T, float> || std::is_same_v<T, double> ||
-    std::is_same_v<T, std::string>;
+    std::is_same_v<T, int> || std::is_same_v<T, long> || std::is_same_v<T, float> ||
+    std::is_same_v<T, double> || std::is_same_v<T, std::string>;
 
 /**
  * @brief 便利函数：序列化任意支持的类型
  */
-template <typename T> std::string serialize(const T &obj) {
+template <typename T>
+std::string serialize(const T &obj) {
   static_assert(is_serializable_v<T>,
                 "Type is not serializable. Check supported types in Serializer "
                 "documentation.");
@@ -132,7 +135,8 @@ template <typename T> std::string serialize(const T &obj) {
 /**
  * @brief 便利函数：反序列化任意支持的类型
  */
-template <typename T> T deserialize(const std::string &data) {
+template <typename T>
+T deserialize(const std::string &data) {
   static_assert(is_serializable_v<T>,
                 "Type is not serializable. Check supported types in Serializer "
                 "documentation.");

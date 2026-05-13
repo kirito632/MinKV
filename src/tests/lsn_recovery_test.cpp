@@ -11,8 +11,6 @@
  * 6. stop_background_fsync 快速退出（条件变量）
  */
 
-#include "../core/sharded_cache.h"
-#include "../persistence/checkpoint_manager.h"
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -20,14 +18,18 @@
 #include <string>
 #include <thread>
 
+#include "../core/sharded_cache.h"
+#include "../persistence/checkpoint_manager.h"
+
 namespace fs = std::filesystem;
 using Cache = minkv::db::ShardedCache<std::string, std::string>;
-using CheckpointMgr =
-    minkv::db::SimpleCheckpointManager<std::string, std::string>;
+using CheckpointMgr = minkv::db::SimpleCheckpointManager<std::string, std::string>;
 
 // ─── 工具 ────────────────────────────────────────────────────────────────────
 
-static void cleanup_dir(const std::string &dir) { fs::remove_all(dir); }
+static void cleanup_dir(const std::string &dir) {
+  fs::remove_all(dir);
+}
 
 static void pass(const std::string &name) {
   std::cout << "  [PASS] " << name << "\n";
@@ -54,8 +56,9 @@ void test_lsn_monotonic() {
     cache.put("k" + std::to_string(i), "v" + std::to_string(i));
     uint64_t cur = cache.current_lsn();
     if (cur <= prev && i > 0) {
-      fail("lsn_monotonic", "LSN 未单调递增: prev=" + std::to_string(prev) +
-                                " cur=" + std::to_string(cur));
+      fail(
+          "lsn_monotonic",
+          "LSN 未单调递增: prev=" + std::to_string(prev) + " cur=" + std::to_string(cur));
     }
     prev = cur;
   }
@@ -95,8 +98,7 @@ void test_serialization_roundtrip() {
 
   auto entries = cache.read_wal_after_lsn(0);
   if (entries.size() != 4)
-    fail("serialization_roundtrip",
-         "条目数不对: " + std::to_string(entries.size()));
+    fail("serialization_roundtrip", "条目数不对: " + std::to_string(entries.size()));
 
   // 验证 lsn 字段被正确读回
   for (const auto &e : entries) {
@@ -277,8 +279,7 @@ void test_fast_stop() {
                      .count();
 
   if (elapsed > 500)
-    fail("fast_stop",
-         "stop 耗时过长: " + std::to_string(elapsed) + "ms (应 < 500ms)");
+    fail("fast_stop", "stop 耗时过长: " + std::to_string(elapsed) + "ms (应 < 500ms)");
 
   cleanup_dir(dir);
   pass("stop_background_fsync 快速退出（" + std::to_string(elapsed) + "ms）");

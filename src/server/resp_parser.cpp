@@ -1,4 +1,5 @@
 #include "resp_parser.h"
+
 #include <algorithm>
 #include <charconv>
 
@@ -7,13 +8,14 @@ namespace server {
 
 // 辅助函数：查找下一个 CRLF (\r\n) 的位置
 // 返回值是相对于 view 开头的偏移量
-static size_t find_crlf(std::string_view view) { return view.find("\r\n"); }
+static size_t find_crlf(std::string_view view) {
+  return view.find("\r\n");
+}
 
 // 辅助函数：将 string_view 转为整数 (比 atoi 快且安全)
 static std::optional<int> parse_int(std::string_view view) {
   int result;
-  auto [ptr, ec] =
-      std::from_chars(view.data(), view.data() + view.size(), result);
+  auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), result);
   if (ec == std::errc()) {
     return result;
   }

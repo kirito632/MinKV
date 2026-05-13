@@ -208,8 +208,8 @@ private:
   const size_t rollSize_;      ///< 日志文件滚动大小
 
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证线程安全
-  std::atomic<bool> syncRequested_{false}; ///< ERROR/FATAL 触发的 fsync 请求
-  std::thread thread_;                     ///< 后台I/O线程
+  std::atomic<bool> syncRequested_ {false}; ///< ERROR/FATAL 触发的 fsync 请求
+  std::thread thread_;                      ///< 后台I/O线程
 
   // [分片锁] 使用mutex保护共享数据，condition_variable实现高效等待
   std::mutex mutex_;             ///< 保护缓冲区的互斥锁
@@ -294,15 +294,15 @@ private:
 /**
  * @brief INFO级别日志宏
  */
-#define LOG_INFO                                                               \
-  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::INFO)  \
+#define LOG_INFO                                                              \
+  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::INFO) \
   minkv::base::LogStream(minkv::base::LogLevel::INFO, __FILE__, __LINE__)
 
 /**
  * @brief WARN级别日志宏
  */
-#define LOG_WARN                                                               \
-  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::WARN)  \
+#define LOG_WARN                                                              \
+  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::WARN) \
   minkv::base::LogStream(minkv::base::LogLevel::WARN, __FILE__, __LINE__)
 
 /**
@@ -317,8 +317,7 @@ private:
  *
  * FATAL级别总是输出，不做级别检查
  */
-#define LOG_FATAL                                                              \
-  minkv::base::LogStream(minkv::base::LogLevel::FATAL, __FILE__, __LINE__)
+#define LOG_FATAL minkv::base::LogStream(minkv::base::LogLevel::FATAL, __FILE__, __LINE__)
 
 } // namespace base
 } // namespace minkv

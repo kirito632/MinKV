@@ -1,8 +1,9 @@
-#include "../../core/lru_cache.h"
 #include <cassert>
 #include <chrono>
 #include <iostream>
 #include <thread>
+
+#include "../../core/lru_cache.h"
 
 using namespace minkv::db;
 

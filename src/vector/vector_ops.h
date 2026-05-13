@@ -1,7 +1,8 @@
 #pragma once
 
-#include <cmath>
 #include <immintrin.h> // AVX/AVX2
+
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -42,8 +43,7 @@ public:
    * 注意：这里返回的是指针，没有内存拷贝 (Zero-Copy)
    * 安全性：调用者必须确保 rawData 的生命周期
    */
-  static const float *DeserializeView(const std::string &rawData,
-                                      size_t &outDim) {
+  static const float *DeserializeView(const std::string &rawData, size_t &outDim) {
     if (rawData.size() % sizeof(float) != 0) {
       return nullptr; // 大小不对，不是合法的向量数据
     }
@@ -73,8 +73,7 @@ public:
    * 参考实现：普通 C++ 循环计算欧式距离平方
    * 用来做 Benchmark 的基准 (Baseline)
    */
-  static float L2DistanceSquare_Ref(const float *a, const float *b,
-                                    size_t dim) {
+  static float L2DistanceSquare_Ref(const float *a, const float *b, size_t dim) {
     float sum = 0.0f;
     for (size_t i = 0; i < dim; ++i) {
       float diff = a[i] - b[i];
@@ -91,8 +90,7 @@ public:
    * 3. Loop Unrolling: 一次循环处理 8 个 float
    * 4. Tail Handling: 处理剩余的维度
    */
-  static float L2DistanceSquare_AVX2(const float *a, const float *b,
-                                     size_t dim) {
+  static float L2DistanceSquare_AVX2(const float *a, const float *b, size_t dim) {
     // 参数验证：防止空指针和无效维度
     if (!a || !b || dim == 0) {
       return 0.0f;
@@ -178,8 +176,7 @@ public:
    * - 问答系统的语义匹配
    * - 推荐系统的用户/物品相似度
    */
-  static float CosineSimilarity_AVX2(const float *a, const float *b,
-                                     size_t dim) {
+  static float CosineSimilarity_AVX2(const float *a, const float *b, size_t dim) {
     if (!a || !b || dim == 0) {
       return 0.0f;
     }
@@ -245,11 +242,8 @@ public:
    * @param dim 向量维度
    * @return 相似度分数数组
    */
-  static std::vector<float>
-  BatchCosineSimilarity(const float *query,
-                        const std::vector<const float *> &candidates,
-                        size_t dim) {
-
+  static std::vector<float> BatchCosineSimilarity(
+      const float *query, const std::vector<const float *> &candidates, size_t dim) {
     std::vector<float> similarities;
     similarities.reserve(candidates.size());
 

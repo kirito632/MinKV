@@ -1,7 +1,3 @@
-#include "../db/lru_cache.h"
-#include "../db/lru_cache_lazy.h"
-#include "../db/sharded_cache.h"
-#include "../db/sharded_cache_v2.h"
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -11,13 +7,18 @@
 #include <thread>
 #include <vector>
 
+#include "../db/lru_cache.h"
+#include "../db/lru_cache_lazy.h"
+#include "../db/sharded_cache.h"
+#include "../db/sharded_cache_v2.h"
+
 using namespace minkv::db;
 
 // ==========================================
 // 终极压测参数
 // ==========================================
 const int NUM_THREADS = 16;
-const int OPS_PER_THREAD = 200000; // 每个线程 20 万次操作
+const int OPS_PER_THREAD = 200000;                  // 每个线程 20 万次操作
 const int TOTAL_OPS = NUM_THREADS * OPS_PER_THREAD; // 总操作 320 万次
 const int KEY_RANGE = 100000;                       // Key 范围 10 万
 const int CACHE_SIZE = 50000;                       // 缓存容量 5 万
@@ -29,8 +30,7 @@ std::string g_value;
 
 // 准备数据函数
 void prepare_data() {
-  std::cout << "正在预生成测试数据 (Key数量: " << KEY_RANGE << ")..."
-            << std::flush;
+  std::cout << "正在预生成测试数据 (Key数量: " << KEY_RANGE << ")..." << std::flush;
   g_keys.reserve(KEY_RANGE);
   for (int i = 0; i < KEY_RANGE; ++i) {
     // 使用较短的 Key，减少哈希计算开销，让锁竞争成为主要瓶颈
@@ -48,10 +48,9 @@ struct BenchmarkResult {
 };
 
 void print_result(const BenchmarkResult &result) {
-  std::cout << std::left << std::setw(35) << result.name << std::setw(15)
-            << std::fixed << std::setprecision(2) << (result.qps / 1000000.0)
-            << " M ops/s" << std::setw(15) << result.latency_us << " us"
-            << std::endl;
+  std::cout << std::left << std::setw(35) << result.name << std::setw(15) << std::fixed
+            << std::setprecision(2) << (result.qps / 1000000.0) << " M ops/s"
+            << std::setw(15) << result.latency_us << " us" << std::endl;
 }
 
 // 通用的压测模板函数
@@ -63,7 +62,7 @@ BenchmarkResult run_benchmark(const std::string &name, CacheType &cache) {
     cache.put(g_keys[i], g_value);
   }
 
-  std::atomic<long long> total_duration_ms{0};
+  std::atomic<long long> total_duration_ms {0};
 
   auto start_global = std::chrono::high_resolution_clock::now();
 
@@ -99,9 +98,9 @@ BenchmarkResult run_benchmark(const std::string &name, CacheType &cache) {
   }
 
   auto end_global = std::chrono::high_resolution_clock::now();
-  long long duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              end_global - start_global)
-                              .count();
+  long long duration_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end_global - start_global)
+          .count();
 
   double qps = (double)TOTAL_OPS / duration_ms * 1000.0;
   double latency = (double)duration_ms * 1000.0 / TOTAL_OPS;
@@ -112,10 +111,8 @@ BenchmarkResult run_benchmark(const std::string &name, CacheType &cache) {
 int main() {
   std::cout << "\n╔════════════════════════════════════════════════════════════"
                "════╗\n";
-  std::cout
-      << "║      FlashCache 终极性能压测 (预生成数据 + 真实字符串)        ║\n";
-  std::cout
-      << "╚════════════════════════════════════════════════════════════════╝\n";
+  std::cout << "║      FlashCache 终极性能压测 (预生成数据 + 真实字符串)        ║\n";
+  std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
 
   // 1. 准备数据
   prepare_data();
@@ -129,8 +126,8 @@ int main() {
   std::cout << "  - 缓存对齐: alignas(64)\n\n";
 
   std::cout << std::string(70, '=') << "\n";
-  std::cout << std::left << std::setw(35) << "缓存实现" << std::setw(15)
-            << "吞吐量" << std::setw(15) << "平均延迟" << std::endl;
+  std::cout << std::left << std::setw(35) << "缓存实现" << std::setw(15) << "吞吐量"
+            << std::setw(15) << "平均延迟" << std::endl;
   std::cout << std::string(70, '=') << "\n";
 
   // 2. 运行各版本压测

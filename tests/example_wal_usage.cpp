@@ -1,8 +1,9 @@
-#include "core/sharded_cache.h"
-#include "persistence/wal.h"
 #include <chrono>
 #include <iostream>
 #include <thread>
+
+#include "core/sharded_cache.h"
+#include "persistence/wal.h"
 
 /**
  * 示例：如何在 MinKV 中使用 WAL 持久化
@@ -64,8 +65,7 @@ int main() {
   cache.clear();
 
   auto stats_after_clear = cache.getStats();
-  std::cout << "清空后的缓存大小: " << stats_after_clear.current_size
-            << std::endl;
+  std::cout << "清空后的缓存大小: " << stats_after_clear.current_size << std::endl;
 
   // ========== 第三阶段：恢复数据 ==========
   std::cout << "\n【第三阶段】从磁盘恢复数据" << std::endl;
@@ -78,8 +78,7 @@ int main() {
   // cache_recovered.recover_from_disk("./data");
 
   auto stats_recovered = cache_recovered.getStats();
-  std::cout << "恢复后的缓存大小: " << stats_recovered.current_size
-            << std::endl;
+  std::cout << "恢复后的缓存大小: " << stats_recovered.current_size << std::endl;
 
   // 验证恢复的数据
   std::cout << "\n验证恢复的数据：" << std::endl;
@@ -111,11 +110,9 @@ int main() {
   }
   auto end = std::chrono::high_resolution_clock::now();
   auto duration_no_wal =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-          .count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-  std::cout << "  插入 100,000 条数据耗时: " << duration_no_wal << " ms"
-            << std::endl;
+  std::cout << "  插入 100,000 条数据耗时: " << duration_no_wal << " ms" << std::endl;
   std::cout << "  吞吐量: " << (100000.0 / duration_no_wal * 1000) << " ops/sec"
             << std::endl;
 
@@ -133,20 +130,18 @@ int main() {
   }
   end = std::chrono::high_resolution_clock::now();
   auto duration_with_wal =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-          .count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-  std::cout << "  插入 100,000 条数据耗时: " << duration_with_wal << " ms"
+  std::cout << "  插入 100,000 条数据耗时: " << duration_with_wal << " ms" << std::endl;
+  std::cout << "  吞吐量: " << (100000.0 / duration_with_wal * 1000) << " ops/sec"
             << std::endl;
-  std::cout << "  吞吐量: " << (100000.0 / duration_with_wal * 1000)
-            << " ops/sec" << std::endl;
 
   // 性能对比
   std::cout << "\n性能对比：" << std::endl;
   std::cout << "  无 WAL: " << duration_no_wal << " ms" << std::endl;
   std::cout << "  有 WAL: " << duration_with_wal << " ms" << std::endl;
-  double overhead = (duration_with_wal - duration_no_wal) /
-                    static_cast<double>(duration_no_wal) * 100;
+  double overhead =
+      (duration_with_wal - duration_no_wal) / static_cast<double>(duration_no_wal) * 100;
   std::cout << "  开销: " << overhead << "%" << std::endl;
 
   std::cout << "\n========== 示例完成 ==========" << std::endl;

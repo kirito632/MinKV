@@ -9,7 +9,6 @@
  * Requirements: FR-1.3
  */
 
-#include "../vector/vector_ops.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -17,6 +16,8 @@
 #include <iostream>
 #include <random>
 #include <vector>
+
+#include "../vector/vector_ops.h"
 
 // Test configuration
 const size_t TEST_DIMENSIONS[] = {128, 256, 512, 768, 1536};
@@ -36,7 +37,8 @@ struct TestResult {
 
 std::vector<TestResult> test_results;
 
-void add_test_result(const std::string &name, bool passed,
+void add_test_result(const std::string &name,
+                     bool passed,
                      const std::string &message = "") {
   test_results.push_back({name, passed, message});
   if (passed) {
@@ -126,12 +128,12 @@ bool test_avx2_correctness() {
       }
     }
 
-    float accuracy = 100.0f * (NUM_CORRECTNESS_TESTS * 3 - failures) /
-                     (NUM_CORRECTNESS_TESTS * 3);
+    float accuracy =
+        100.0f * (NUM_CORRECTNESS_TESTS * 3 - failures) / (NUM_CORRECTNESS_TESTS * 3);
 
     std::stringstream ss;
-    ss << "Dim " << dim << ": " << std::fixed << std::setprecision(2)
-       << accuracy << "% accuracy, max error: " << std::scientific << max_error;
+    ss << "Dim " << dim << ": " << std::fixed << std::setprecision(2) << accuracy
+       << "% accuracy, max error: " << std::scientific << max_error;
 
     bool passed = (failures == 0);
     add_test_result(ss.str(), passed);
@@ -160,8 +162,7 @@ bool test_performance_improvement() {
 
   std::cout << "\n| Dimension | Scalar (μs) | AVX2 (μs) | Speedup | Status |"
             << std::endl;
-  std::cout << "|-----------|-------------|-----------|---------|--------|"
-            << std::endl;
+  std::cout << "|-----------|-------------|-----------|---------|--------|" << std::endl;
 
   for (size_t dim_idx = 0; dim_idx < NUM_TEST_DIMS; ++dim_idx) {
     size_t dim = TEST_DIMENSIONS[dim_idx];
@@ -180,8 +181,7 @@ bool test_performance_improvement() {
     }
     auto end_scalar = std::chrono::high_resolution_clock::now();
     auto duration_scalar =
-        std::chrono::duration_cast<std::chrono::microseconds>(end_scalar -
-                                                              start_scalar)
+        std::chrono::duration_cast<std::chrono::microseconds>(end_scalar - start_scalar)
             .count();
 
     // Benchmark AVX2 version
@@ -191,29 +191,26 @@ bool test_performance_improvement() {
       result_avx2 = VectorOps::cosine_similarity_avx2(a, b, dim);
     }
     auto end_avx2 = std::chrono::high_resolution_clock::now();
-    auto duration_avx2 = std::chrono::duration_cast<std::chrono::microseconds>(
-                             end_avx2 - start_avx2)
-                             .count();
+    auto duration_avx2 =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_avx2 - start_avx2)
+            .count();
 
     // Calculate speedup
-    double avg_scalar =
-        static_cast<double>(duration_scalar) / NUM_PERFORMANCE_TESTS;
-    double avg_avx2 =
-        static_cast<double>(duration_avx2) / NUM_PERFORMANCE_TESTS;
+    double avg_scalar = static_cast<double>(duration_scalar) / NUM_PERFORMANCE_TESTS;
+    double avg_avx2 = static_cast<double>(duration_avx2) / NUM_PERFORMANCE_TESTS;
     double speedup = avg_scalar / avg_avx2;
 
     bool passed = (speedup >= 3.0);
     std::string status = passed ? "✅ PASS" : "❌ FAIL";
 
-    std::cout << "| " << std::setw(9) << dim << " | " << std::setw(11)
-              << std::fixed << std::setprecision(3) << avg_scalar << " | "
-              << std::setw(9) << avg_avx2 << " | " << std::setw(7)
-              << std::setprecision(2) << speedup << "x" << " | " << status
-              << " |" << std::endl;
+    std::cout << "| " << std::setw(9) << dim << " | " << std::setw(11) << std::fixed
+              << std::setprecision(3) << avg_scalar << " | " << std::setw(9) << avg_avx2
+              << " | " << std::setw(7) << std::setprecision(2) << speedup << "x" << " | "
+              << status << " |" << std::endl;
 
     std::stringstream ss;
-    ss << "Dim " << dim << " speedup: " << std::fixed << std::setprecision(2)
-       << speedup << "x";
+    ss << "Dim " << dim << " speedup: " << std::fixed << std::setprecision(2) << speedup
+       << "x";
     add_test_result(ss.str(), passed, passed ? "" : "Speedup < 3x");
 
     if (!passed) {
@@ -235,8 +232,7 @@ bool test_fallback_mechanism() {
 
   // Check CPU AVX2 support
   bool has_avx2 = VectorOps::has_avx2();
-  std::cout << "\nCPU AVX2 Support: " << (has_avx2 ? "YES ✅" : "NO ❌")
-            << std::endl;
+  std::cout << "\nCPU AVX2 Support: " << (has_avx2 ? "YES ✅" : "NO ❌") << std::endl;
 
   if (!has_avx2) {
     std::cout << "\n⚠️  AVX2 not supported on this CPU" << std::endl;
@@ -271,17 +267,14 @@ bool test_fallback_mechanism() {
   add_test_result("Dot product auto-selection", dot_valid);
 
   // Verify results match expected implementation
-  float cos_expected = has_avx2
-                           ? VectorOps::cosine_similarity_avx2(a, b, dim)
-                           : VectorOps::cosine_similarity_scalar(a, b, dim);
+  float cos_expected = has_avx2 ? VectorOps::cosine_similarity_avx2(a, b, dim)
+                                : VectorOps::cosine_similarity_scalar(a, b, dim);
 
   bool cos_matches = approx_equal(cos_result, cos_expected);
-  add_test_result("Auto-selection matches expected implementation",
-                  cos_matches);
+  add_test_result("Auto-selection matches expected implementation", cos_matches);
 
   if (has_avx2) {
-    std::cout << "\n✅ AVX2 supported: Using optimized implementation"
-              << std::endl;
+    std::cout << "\n✅ AVX2 supported: Using optimized implementation" << std::endl;
   } else {
     std::cout << "\n✅ AVX2 not supported: Fallback to scalar implementation"
               << std::endl;
@@ -328,12 +321,12 @@ int main() {
   std::cout << "Checkpoint Status" << std::endl;
   std::cout << "========================================" << std::endl;
 
-  std::cout << "\n1. AVX2 Correctness: "
-            << (test1_passed ? "✅ PASS" : "❌ FAIL") << std::endl;
+  std::cout << "\n1. AVX2 Correctness: " << (test1_passed ? "✅ PASS" : "❌ FAIL")
+            << std::endl;
   std::cout << "2. Performance > 3x: " << (test2_passed ? "✅ PASS" : "❌ FAIL")
             << std::endl;
-  std::cout << "3. Fallback Mechanism: "
-            << (test3_passed ? "✅ PASS" : "❌ FAIL") << std::endl;
+  std::cout << "3. Fallback Mechanism: " << (test3_passed ? "✅ PASS" : "❌ FAIL")
+            << std::endl;
 
   bool all_passed = test1_passed && test2_passed && test3_passed;
 

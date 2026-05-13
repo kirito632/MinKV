@@ -1,8 +1,10 @@
 #include "expiration_manager.h"
-#include "async_logger.h"
+
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
+
+#include "async_logger.h"
 
 namespace minkv {
 namespace base {
@@ -11,16 +13,20 @@ ExpirationManager::ExpirationManager(ExpirationCallback callback,
                                      size_t shard_count,
                                      std::chrono::milliseconds check_interval,
                                      size_t sample_size)
-    : shard_count_(shard_count), check_interval_(check_interval),
-      sample_size_(sample_size), callback_(std::move(callback)),
+    : shard_count_(shard_count),
+      check_interval_(check_interval),
+      sample_size_(sample_size),
+      callback_(std::move(callback)),
       running_(false),
       // stats_mutex_ is default-constructed (no initialization needed)
-      total_checks_(0), total_expired_(0), total_skipped_(0),
+      total_checks_(0),
+      total_expired_(0),
+      total_skipped_(0),
       // expired_ratios_ is default-constructed (empty vector)
-      rng_(std::random_device{}()), shard_dist_(0, shard_count - 1)
+      rng_(std::random_device {}()),
+      shard_dist_(0, shard_count - 1)
 // cron_thread_ is NOT initialized here - will be started in constructor body
 {
-
   // [参数验证] 在线程启动前验证所有参数，确保强异常安全保证
   if (!callback_) {
     throw std::invalid_argument("ExpirationManager: callback cannot be null");
@@ -29,8 +35,7 @@ ExpirationManager::ExpirationManager(ExpirationCallback callback,
     throw std::invalid_argument("ExpirationManager: shard_count must be > 0");
   }
   if (check_interval.count() <= 0) {
-    throw std::invalid_argument(
-        "ExpirationManager: check_interval must be > 0");
+    throw std::invalid_argument("ExpirationManager: check_interval must be > 0");
   }
   if (sample_size == 0) {
     throw std::invalid_argument("ExpirationManager: sample_size must be > 0");
@@ -117,22 +122,21 @@ void ExpirationManager::cronThreadFunc() {
 
       // [自适应频率] 记录过期比例，用于动态调整检查频率
       if (total_expired_this_round > 0) {
-        double expired_ratio = static_cast<double>(total_expired_this_round) /
-                               (shard_count_ * sample_size_);
+        double expired_ratio =
+            static_cast<double>(total_expired_this_round) / (shard_count_ * sample_size_);
         expired_ratios_.push_back(expired_ratio);
 
         // [内存管理] 限制历史记录大小，避免内存无限增长
         if (expired_ratios_.size() > 1000) {
-          expired_ratios_.erase(expired_ratios_.begin(),
-                                expired_ratios_.begin() + 500);
+          expired_ratios_.erase(expired_ratios_.begin(), expired_ratios_.begin() + 500);
         }
       }
     }
 
     // [性能监控] 记录本轮检查耗时
     auto end_time = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
+    auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
     // [日志记录] 定期输出统计信息（每100轮输出一次）
     if (total_checks_ % 100 == 0) {
@@ -192,8 +196,7 @@ ExpirationManager::Stats ExpirationManager::getStats() const {
 
   // [性能指标] 计算平均过期比例
   if (!expired_ratios_.empty()) {
-    double sum =
-        std::accumulate(expired_ratios_.begin(), expired_ratios_.end(), 0.0);
+    double sum = std::accumulate(expired_ratios_.begin(), expired_ratios_.end(), 0.0);
     stats.avg_expired_ratio = sum / expired_ratios_.size();
   } else {
     stats.avg_expired_ratio = 0.0;

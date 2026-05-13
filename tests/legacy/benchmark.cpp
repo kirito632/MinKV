@@ -1,11 +1,12 @@
-#include "../db/lru_cache.h"
-#include "../db/sharded_cache.h"
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "../db/lru_cache.h"
+#include "../db/sharded_cache.h"
 
 using namespace minkv::db;
 
@@ -57,8 +58,7 @@ BenchmarkResult benchmark_single_lock() {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-          .count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -104,8 +104,7 @@ BenchmarkResult benchmark_sharded_lock(int shard_count) {
 
   auto end = std::chrono::high_resolution_clock::now();
   long long duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-          .count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
   long long total_ops = (long long)NUM_THREADS * OPS_PER_THREAD;
   double qps = (double)total_ops / duration_ms * 1000;
 
@@ -165,12 +164,9 @@ int main() {
   double improvement_32 = result_sharded_32.qps / result_single.qps;
   double improvement_64 = result_sharded_64.qps / result_single.qps;
 
-  std::cout << "Sharded (16) vs Single: " << improvement_16 << "x faster"
-            << std::endl;
-  std::cout << "Sharded (32) vs Single: " << improvement_32 << "x faster"
-            << std::endl;
-  std::cout << "Sharded (64) vs Single: " << improvement_64 << "x faster"
-            << std::endl;
+  std::cout << "Sharded (16) vs Single: " << improvement_16 << "x faster" << std::endl;
+  std::cout << "Sharded (32) vs Single: " << improvement_32 << "x faster" << std::endl;
+  std::cout << "Sharded (64) vs Single: " << improvement_64 << "x faster" << std::endl;
 
   return 0;
 }

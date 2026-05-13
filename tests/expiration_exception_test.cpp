@@ -8,7 +8,6 @@
  * 3. 多次异常后线程仍然正常工作
  */
 
-#include "base/expiration_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -16,16 +15,18 @@
 #include <stdexcept>
 #include <thread>
 
+#include "base/expiration_manager.h"
+
 using namespace minkv::base;
 using namespace std::chrono_literals;
 
 // 简单的测试框架
-#define TEST_ASSERT(condition, message)                                        \
-  do {                                                                         \
-    if (!(condition)) {                                                        \
-      std::cerr << "❌ FAILED: " << message << std::endl;                      \
-      return false;                                                            \
-    }                                                                          \
+#define TEST_ASSERT(condition, message)                   \
+  do {                                                    \
+    if (!(condition)) {                                   \
+      std::cerr << "❌ FAILED: " << message << std::endl; \
+      return false;                                       \
+    }                                                     \
   } while (0)
 
 #define TEST_PASS(message) std::cout << "✅ PASSED: " << message << std::endl
@@ -45,7 +46,9 @@ bool test_constructor_validation() {
   }
 
   // 测试无效分片数
-  auto callback = [](size_t, size_t) { return 0; };
+  auto callback = [](size_t, size_t) {
+    return 0;
+  };
   try {
     ExpirationManager mgr(callback, 0, 100ms, 20);
     TEST_ASSERT(false, "Should throw for zero shard_count");
@@ -78,8 +81,8 @@ bool test_constructor_validation() {
 bool test_callback_std_exception() {
   std::cout << "\n=== Test: Callback std::exception Safety ===" << std::endl;
 
-  std::atomic<int> call_count{0};
-  std::atomic<int> exception_count{0};
+  std::atomic<int> call_count {0};
+  std::atomic<int> exception_count {0};
 
   auto callback = [&](size_t shard_id, size_t sample_size) -> size_t {
     call_count++;
@@ -87,8 +90,7 @@ bool test_callback_std_exception() {
     // 偶数分片抛出异常
     if (shard_id % 2 == 0) {
       exception_count++;
-      throw std::runtime_error("Test exception from shard " +
-                               std::to_string(shard_id));
+      throw std::runtime_error("Test exception from shard " + std::to_string(shard_id));
     }
 
     // 奇数分片正常返回
@@ -123,8 +125,8 @@ bool test_callback_std_exception() {
 bool test_callback_unknown_exception() {
   std::cout << "\n=== Test: Callback Unknown Exception Safety ===" << std::endl;
 
-  std::atomic<int> call_count{0};
-  std::atomic<int> exception_count{0};
+  std::atomic<int> call_count {0};
+  std::atomic<int> exception_count {0};
 
   auto callback = [&](size_t shard_id, size_t sample_size) -> size_t {
     call_count++;
@@ -146,8 +148,7 @@ bool test_callback_unknown_exception() {
 
   // 验证：线程仍在运行
   TEST_ASSERT(call_count.load() > 0, "Callback should have been called");
-  TEST_ASSERT(exception_count.load() > 0,
-              "Unknown exceptions should have been thrown");
+  TEST_ASSERT(exception_count.load() > 0, "Unknown exceptions should have been thrown");
 
   // 验证：未知异常没有导致线程崩溃
   int count_before = call_count.load();
@@ -167,32 +168,32 @@ bool test_callback_unknown_exception() {
 bool test_mixed_exceptions() {
   std::cout << "\n=== Test: Mixed Exceptions ===" << std::endl;
 
-  std::atomic<int> call_count{0};
-  std::atomic<int> std_exception_count{0};
-  std::atomic<int> unknown_exception_count{0};
-  std::atomic<int> success_count{0};
+  std::atomic<int> call_count {0};
+  std::atomic<int> std_exception_count {0};
+  std::atomic<int> unknown_exception_count {0};
+  std::atomic<int> success_count {0};
 
   auto callback = [&](size_t shard_id, size_t sample_size) -> size_t {
     call_count++;
 
     // 根据分片ID决定行为
     switch (shard_id % 4) {
-    case 0:
-      // 正常返回
-      success_count++;
-      return 1;
-    case 1:
-      // 抛出 std::exception
-      std_exception_count++;
-      throw std::runtime_error("std::exception");
-    case 2:
-      // 抛出未知异常
-      unknown_exception_count++;
-      throw 42;
-    case 3:
-      // 正常返回
-      success_count++;
-      return 2;
+      case 0:
+        // 正常返回
+        success_count++;
+        return 1;
+      case 1:
+        // 抛出 std::exception
+        std_exception_count++;
+        throw std::runtime_error("std::exception");
+      case 2:
+        // 抛出未知异常
+        unknown_exception_count++;
+        throw 42;
+      case 3:
+        // 正常返回
+        success_count++;
+        return 2;
     }
     return 0;
   };
@@ -205,8 +206,7 @@ bool test_mixed_exceptions() {
 
   // 验证：所有类型的调用都发生了
   TEST_ASSERT(call_count.load() > 0, "Callback should have been called");
-  TEST_ASSERT(std_exception_count.load() > 0,
-              "std::exception should have been thrown");
+  TEST_ASSERT(std_exception_count.load() > 0, "std::exception should have been thrown");
   TEST_ASSERT(unknown_exception_count.load() > 0,
               "Unknown exception should have been thrown");
   TEST_ASSERT(success_count.load() > 0, "Some calls should succeed");
@@ -229,7 +229,7 @@ bool test_mixed_exceptions() {
 bool test_all_shards_throw() {
   std::cout << "\n=== Test: All Shards Throw Exception ===" << std::endl;
 
-  std::atomic<int> call_count{0};
+  std::atomic<int> call_count {0};
 
   auto callback = [&](size_t shard_id, size_t sample_size) -> size_t {
     call_count++;
@@ -264,7 +264,7 @@ bool test_all_shards_throw() {
 bool test_stats_with_exceptions() {
   std::cout << "\n=== Test: Stats With Exceptions ===" << std::endl;
 
-  std::atomic<int> exception_count{0};
+  std::atomic<int> exception_count {0};
 
   auto callback = [&](size_t shard_id, size_t sample_size) -> size_t {
     // 一半分片抛出异常
@@ -287,8 +287,7 @@ bool test_stats_with_exceptions() {
 
   // 验证：统计信息正常更新
   TEST_ASSERT(stats.total_checks > 0, "Should have completed some checks");
-  TEST_ASSERT(stats.total_skipped > 0,
-              "Exception shards should be counted as skipped");
+  TEST_ASSERT(stats.total_skipped > 0, "Exception shards should be counted as skipped");
   TEST_ASSERT(stats.total_expired > 0,
               "Successful shards should contribute to expired count");
 

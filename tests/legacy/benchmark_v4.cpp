@@ -28,9 +28,9 @@ struct BenchmarkResult {
 };
 
 void print_result(const BenchmarkResult &result) {
-  cout << left << setw(35) << result.name << setw(15) << fixed
-       << setprecision(2) << (result.qps / 1000000.0) << " M ops/s" << setw(15)
-       << result.latency_us << " us" << endl;
+  cout << left << setw(35) << result.name << setw(15) << fixed << setprecision(2)
+       << (result.qps / 1000000.0) << " M ops/s" << setw(15) << result.latency_us << " us"
+       << endl;
 }
 
 // ============ 简单的整数 key 缓存实现 ============
@@ -71,10 +71,12 @@ public:
 
 private:
   size_t capacity_;
+
   struct Node {
     int key;
     int value;
   };
+
   list<Node> list_;
   unordered_map<int, list<Node>::iterator> map_;
   mutex mutex_;
@@ -276,12 +278,11 @@ int main() {
        << (NUM_THREADS * OPS_PER_THREAD / 1000000) << "M 次)\n";
   cout << "  - Key 范围: " << KEY_RANGE << " (整数 key，无字符串开销)\n";
   cout << "  - 缓存容量: " << CACHE_SIZE << "\n";
-  cout << "  - 读写比: " << READ_RATIO << "% 读, " << (100 - READ_RATIO)
-       << "% 写\n\n";
+  cout << "  - 读写比: " << READ_RATIO << "% 读, " << (100 - READ_RATIO) << "% 写\n\n";
 
   cout << string(70, '=') << "\n";
-  cout << left << setw(35) << "缓存实现" << setw(15) << "吞吐量" << setw(15)
-       << "延迟" << endl;
+  cout << left << setw(35) << "缓存实现" << setw(15) << "吞吐量" << setw(15) << "延迟"
+       << endl;
   cout << string(70, '=') << "\n";
 
   // 运行压测
@@ -301,8 +302,8 @@ int main() {
   double speedup_aligned = result_aligned.qps / result_simple.qps;
 
   cout << "性能提升倍数（相对于 SimpleLruCache）:\n";
-  cout << "  - ShardedLruCache(32): " << fixed << setprecision(2)
-       << speedup_sharded << "x\n";
+  cout << "  - ShardedLruCache(32): " << fixed << setprecision(2) << speedup_sharded
+       << "x\n";
   cout << "  - AlignedShardedLruCache(32): " << speedup_aligned << "x ✨\n\n";
 
   // 总结

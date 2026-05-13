@@ -8,13 +8,14 @@
  * 3. 验证析构后线程已终止
  */
 
-#include "../base/async_logger.h"
-#include "../base/expiration_manager.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
 #include <thread>
+
+#include "../base/async_logger.h"
+#include "../base/expiration_manager.h"
 
 using namespace minkv;
 
@@ -24,8 +25,8 @@ using namespace minkv;
 void testThreadJoin() {
   std::cout << "\n=== 测试1: 验证线程正确join ===" << std::endl;
 
-  std::atomic<bool> thread_running{false};
-  std::atomic<bool> thread_finished{false};
+  std::atomic<bool> thread_running {false};
+  std::atomic<bool> thread_finished {false};
 
   auto callback = [&](size_t, size_t) -> size_t {
     thread_running = true;
@@ -57,14 +58,15 @@ void testThreadJoin() {
 void testFastShutdown() {
   std::cout << "\n=== 测试2: 验证快速停止 ===" << std::endl;
 
-  auto callback = [](size_t, size_t) -> size_t { return 0; };
+  auto callback = [](size_t, size_t) -> size_t {
+    return 0;
+  };
 
   auto start = std::chrono::steady_clock::now();
 
   {
     // 使用较长的check_interval
-    base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(5000),
-                                10);
+    base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(5000), 10);
 
     // 只等待很短时间就析构
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -77,8 +79,7 @@ void testFastShutdown() {
 
   // 如果没有快速唤醒机制，析构会等待5000ms
   // 有快速唤醒机制，应该在几百毫秒内完成
-  assert(elapsed.count() < 1000 &&
-         "析构应该快速完成，不等待完整的check_interval");
+  assert(elapsed.count() < 1000 && "析构应该快速完成，不等待完整的check_interval");
 
   std::cout << "✅ 快速停止验证通过" << std::endl;
 }
@@ -89,12 +90,13 @@ void testFastShutdown() {
 void testMultipleDestructions() {
   std::cout << "\n=== 测试3: 验证多次析构不会崩溃 ===" << std::endl;
 
-  auto callback = [](size_t, size_t) -> size_t { return 0; };
+  auto callback = [](size_t, size_t) -> size_t {
+    return 0;
+  };
 
   for (int i = 0; i < 10; ++i) {
     {
-      base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(50),
-                                  10);
+      base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(50), 10);
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     // 每次析构都应该正确join线程
@@ -109,7 +111,9 @@ void testMultipleDestructions() {
 void testMultipleStopCalls() {
   std::cout << "\n=== 测试4: 验证stop()可以安全调用多次 ===" << std::endl;
 
-  auto callback = [](size_t, size_t) -> size_t { return 0; };
+  auto callback = [](size_t, size_t) -> size_t {
+    return 0;
+  };
 
   base::ExpirationManager mgr(callback, 4, std::chrono::milliseconds(50), 10);
 

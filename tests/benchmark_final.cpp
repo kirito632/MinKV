@@ -1,4 +1,3 @@
-#include "core/minkv.h"
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
@@ -9,6 +8,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "core/minkv.h"
 
 // 测试配置
 const int NUM_OPERATIONS = 1000000;
@@ -30,8 +31,8 @@ struct LatencyStats {
 
     std::sort(latencies.begin(), latencies.end());
 
-    double avg = std::accumulate(latencies.begin(), latencies.end(), 0.0) /
-                 latencies.size();
+    double avg =
+        std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
 
     // Safe index: clamp to [0, size-1] to prevent out-of-bounds when
     // fraction * size rounds up to size (e.g., 0.999 * 1000 -> 999.0).
@@ -44,8 +45,8 @@ struct LatencyStats {
     double p99 = latencies[safe_idx(0.99, latencies.size())];
     double p999 = latencies[safe_idx(0.999, latencies.size())];
 
-    std::cout << prefix << "Avg: " << std::fixed << std::setprecision(2) << avg
-              << "μs" << std::endl;
+    std::cout << prefix << "Avg: " << std::fixed << std::setprecision(2) << avg << "μs"
+              << std::endl;
     std::cout << prefix << "P50: " << p50 << "μs" << std::endl;
     std::cout << prefix << "P95: " << p95 << "μs" << std::endl;
     std::cout << prefix << "P99: " << p99 << "μs ⭐" << std::endl;
@@ -114,15 +115,14 @@ void benchmark_basic_rw(DB &db, const std::string &name, int num_threads) {
 
   auto end = std::chrono::high_resolution_clock::now();
   auto duration_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-          .count();
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
   double qps = NUM_OPERATIONS * 1000.0 / duration_ms;
 
   std::cout << "总操作数: " << NUM_OPERATIONS << std::endl;
   std::cout << "耗时: " << duration_ms << " ms" << std::endl;
-  std::cout << "QPS: " << std::fixed << std::setprecision(0) << qps << " ("
-            << qps / 10000 << "万)" << std::endl;
+  std::cout << "QPS: " << std::fixed << std::setprecision(0) << qps << " (" << qps / 10000
+            << "万)" << std::endl;
 }
 
 // 2. 并发扩展性测试
@@ -130,8 +130,7 @@ template <typename DB>
 void benchmark_scalability(DB &db, const std::string &name) {
   std::cout << "\n=== " << name << " - 并发扩展性测试 ===" << std::endl;
   std::cout << std::left << std::setw(8) << "线程数" << std::setw(15) << "QPS"
-            << std::setw(15) << "QPS(万)" << std::setw(12) << "扩展效率"
-            << std::endl;
+            << std::setw(15) << "QPS(万)" << std::setw(12) << "扩展效率" << std::endl;
   std::cout << std::string(50, '-') << std::endl;
 
   std::vector<int> thread_counts = {1, 2, 4, 8, 16};
@@ -166,8 +165,7 @@ void benchmark_scalability(DB &db, const std::string &name) {
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-            .count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
     double qps = NUM_OPERATIONS * 1000.0 / duration_ms;
 
@@ -175,10 +173,10 @@ void benchmark_scalability(DB &db, const std::string &name) {
       baseline_qps = qps;
     double efficiency = (qps / baseline_qps) / num_threads * 100;
 
-    std::cout << std::left << std::setw(8) << num_threads << std::setw(15)
-              << std::fixed << std::setprecision(0) << qps << std::setw(15)
-              << std::setprecision(1) << (qps / 10000) << std::setw(12)
-              << std::setprecision(1) << efficiency << "%" << std::endl;
+    std::cout << std::left << std::setw(8) << num_threads << std::setw(15) << std::fixed
+              << std::setprecision(0) << qps << std::setw(15) << std::setprecision(1)
+              << (qps / 10000) << std::setw(12) << std::setprecision(1) << efficiency
+              << "%" << std::endl;
   }
 }
 
@@ -208,8 +206,7 @@ void benchmark_latency(DB &db, const std::string &name, int num_threads) {
 
       auto end = std::chrono::high_resolution_clock::now();
       auto latency_us =
-          std::chrono::duration_cast<std::chrono::microseconds>(end - start)
-              .count();
+          std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
 
       combined.record(latency_us);
     }
@@ -237,10 +234,9 @@ void generate_comparison_report() {
   std::cout << "【总操作数】1,000,000 次操作" << std::endl;
 
   std::cout << "\n"
-            << std::left << std::setw(12) << "线程数" << std::setw(18)
-            << "StdMap QPS(万)" << std::setw(18) << "MinKV QPS(万)"
-            << std::setw(15) << "提升倍数" << std::setw(15) << "MinKV P99"
-            << std::endl;
+            << std::left << std::setw(12) << "线程数" << std::setw(18) << "StdMap QPS(万)"
+            << std::setw(18) << "MinKV QPS(万)" << std::setw(15) << "提升倍数"
+            << std::setw(15) << "MinKV P99" << std::endl;
   std::cout << std::string(80, '-') << std::endl;
 
   // 这里需要实际运行测试后填入数据

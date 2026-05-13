@@ -1,4 +1,3 @@
-#include "../core/sharded_cache.h"
 #include <atomic>
 #include <chrono>
 #include <iomanip>
@@ -6,6 +5,8 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "../core/sharded_cache.h"
 
 using namespace minkv::db;
 
@@ -20,8 +21,7 @@ struct TestResult {
   double relative_to_best;
 };
 
-TestResult test_shard_count(size_t shard_count, int thread_count,
-                            int ops_per_thread) {
+TestResult test_shard_count(size_t shard_count, int thread_count, int ops_per_thread) {
   // 创建指定分片数的缓存
   ShardedCache<std::string, std::string> cache(10000, shard_count);
 
@@ -30,7 +30,7 @@ TestResult test_shard_count(size_t shard_count, int thread_count,
     cache.put("key_" + std::to_string(i), "value");
   }
 
-  std::atomic<int64_t> total_ops{0};
+  std::atomic<int64_t> total_ops {0};
 
   auto worker = [&](int thread_id) {
     std::mt19937 gen(thread_id);
@@ -65,8 +65,7 @@ TestResult test_shard_count(size_t shard_count, int thread_count,
   }
 
   auto end = std::chrono::high_resolution_clock::now();
-  double duration_ms =
-      std::chrono::duration<double, std::milli>(end - start).count();
+  double duration_ms = std::chrono::duration<double, std::milli>(end - start).count();
 
   TestResult result;
   result.shard_count = shard_count;
@@ -99,19 +98,17 @@ void print_results(std::vector<TestResult> &results) {
   std::cout << "╚══════════════════════════════════════════════════════════════"
                "══════════════╝\n\n";
 
-  std::cout << std::left << std::setw(12) << "分片数" << std::right
-            << std::setw(12) << "线程数" << std::setw(15) << "QPS"
-            << std::setw(15) << "耗时(ms)" << std::setw(15) << "相对性能"
-            << std::setw(10) << "评价" << "\n";
+  std::cout << std::left << std::setw(12) << "分片数" << std::right << std::setw(12)
+            << "线程数" << std::setw(15) << "QPS" << std::setw(15) << "耗时(ms)"
+            << std::setw(15) << "相对性能" << std::setw(10) << "评价" << "\n";
   std::cout << std::string(78, '-') << "\n";
 
   for (const auto &r : results) {
     std::cout << std::left << std::setw(12) << r.shard_count << std::right
               << std::setw(12) << r.thread_count << std::setw(15) << std::fixed
               << std::setprecision(0) << r.qps << std::setw(15) << std::fixed
-              << std::setprecision(2) << r.duration_ms << std::setw(14)
-              << std::fixed << std::setprecision(2) << r.relative_to_best
-              << "x";
+              << std::setprecision(2) << r.duration_ms << std::setw(14) << std::fixed
+              << std::setprecision(2) << r.relative_to_best << "x";
 
     if (r.relative_to_best >= 0.98) {
       std::cout << std::setw(10) << "✅ 最优";
@@ -177,12 +174,10 @@ int main() {
   for (size_t shard_count : shard_counts) {
     std::cout << "  测试 " << shard_count << " 分片..." << std::flush;
 
-    auto result =
-        test_shard_count(shard_count, test_thread_count, ops_per_thread);
+    auto result = test_shard_count(shard_count, test_thread_count, ops_per_thread);
     results.push_back(result);
 
-    std::cout << " QPS: " << std::fixed << std::setprecision(0) << result.qps
-              << "\n";
+    std::cout << " QPS: " << std::fixed << std::setprecision(0) << result.qps << "\n";
   }
 
   // 打印结果
@@ -193,9 +188,9 @@ int main() {
   csv << "ShardCount,ThreadCount,QPS,Duration(ms),RelativeToBest\n";
   for (const auto &r : results) {
     csv << r.shard_count << "," << r.thread_count << "," << std::fixed
-        << std::setprecision(0) << r.qps << "," << std::fixed
-        << std::setprecision(2) << r.duration_ms << "," << std::fixed
-        << std::setprecision(3) << r.relative_to_best << "\n";
+        << std::setprecision(0) << r.qps << "," << std::fixed << std::setprecision(2)
+        << r.duration_ms << "," << std::fixed << std::setprecision(3)
+        << r.relative_to_best << "\n";
   }
   csv.close();
 

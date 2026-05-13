@@ -19,7 +19,8 @@ namespace base {
  *
  * @note 适用于高频访问的单例对象，如日志器、缓存管理器等
  */
-template <typename T> class Singleton {
+template <typename T>
+class Singleton {
 public:
   /**
    * @brief 获取单例实例
@@ -41,7 +42,8 @@ public:
    *
    * [灵活性] 支持带参数的单例初始化，只在第一次调用时使用参数
    */
-  template <typename... Args> static T &GetInstance(Args &&...args) {
+  template <typename... Args>
+  static T &GetInstance(Args &&...args) {
     static T instance(std::forward<Args>(args)...);
     return instance;
   }
@@ -78,7 +80,8 @@ protected:
  *
  * @tparam T 派生类类型
  */
-template <typename T> class LazySingleton {
+template <typename T>
+class LazySingleton {
 public:
   /**
    * @brief 获取单例实例
@@ -87,7 +90,8 @@ public:
    *
    * [线程安全] 使用std::call_once确保初始化函数只被调用一次
    */
-  template <typename InitFunc> static T &GetInstance(InitFunc &&init_func) {
+  template <typename InitFunc>
+  static T &GetInstance(InitFunc &&init_func) {
     std::call_once(init_flag_, [&]() {
       instance_ = std::make_unique<T>();
       init_func(*instance_);
@@ -116,9 +120,11 @@ private:
 };
 
 // 静态成员定义
-template <typename T> std::unique_ptr<T> LazySingleton<T>::instance_ = nullptr;
+template <typename T>
+std::unique_ptr<T> LazySingleton<T>::instance_ = nullptr;
 
-template <typename T> std::once_flag LazySingleton<T>::init_flag_;
+template <typename T>
+std::once_flag LazySingleton<T>::init_flag_;
 
 } // namespace base
 } // namespace minkv
