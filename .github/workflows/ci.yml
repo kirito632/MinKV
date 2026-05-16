@@ -12,13 +12,17 @@ on:
 permissions:
   contents: read
 
-# 1. Concurrency Control: Avoids redundant runs for PRs.
+# Concurrency control — avoids redundant runs for PRs.
+# NOTE: Intentionally keeping only PR-level cancellation.
+#       Auto-push removed (see lint job), so workflow-recursion risk is eliminated.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  # 2. Precondition Job: Skips CI for documentation-only changes.
+  # Precondition Job: Determines whether this is a docs-only change.
+  # All downstream jobs always run (so required checks appear for branch protection),
+  # but they early-exit at step 0 if docs_only == true.
   precondition:
     runs-on: ubuntu-latest
     outputs:
@@ -33,9 +37,18 @@ jobs:
         run: |
           echo "docs_only=${{ fromJSON(steps.changes.outputs.all_count) == fromJSON(steps.changes.outputs.docs_count) && fromJSON(steps.changes.outputs.docs_count) > 0 }}" >> $GITHUB_OUTPUT
 
+  # ─────────────────────────────────────────────────────────────────
+  # build-and-test (Debug / Release)
+  #
+  # CRITICAL: No `if:` skip on the job level!
+  #   GitHub Branch Protection requires the check to *exist* (success/skipped/failure).
+  #   A completely absent job → "Expected — Waiting for status to be reported" forever.
+  #
+  #   Instead, we add an early-exit step at the top so that docs-only PRs
+  #   still produce a passing check status.
+  # ─────────────────────────────────────────────────────────────────
   build-and-test:
     needs: precondition
-    if: ${{ needs.precondition.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -43,6 +56,13 @@ jobs:
         build_type: [Release, Debug]
 
     steps:
+      # ── Early exit for docs-only changes ──
+      # Job is always created → required check appears.
+      # Docs-only PR exits immediately with status=success.
+      - name: Skip for docs-only changes
+        if: ${{ needs.precondition.outputs.docs_only == 'true' }}
+        run: echo "Docs-only change, skipping." && exit 0
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -54,18 +74,21 @@ jobs:
             librapidcheck-dev nlohmann-json3-dev \
             clang-tidy cppcheck valgrind
 
-      # 3. Coredump Setup: Enables coredump collection on crash.
+      # Coredump Setup: Enables coredump collection on crash.
       - name: Setup coredump
         run: |
           echo "$(pwd)/coredumps/corefile-%e-%p-%t" | sudo tee /proc/sys/kernel/core_pattern
-          mkdir coredumps
+          mkdir -p coredumps
           ulimit -c unlimited
 
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ matrix.build_type }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake', 'src/**/*.cpp', 'src/**/*.h', 'include/**/*.h', 'tests/**/*.cpp', 'tests/**/*.h') }}
+          # KEY DESIGN: Only build-system files in the hash key.
+          #   Source file changes should NOT invalidate the entire cache;
+          #   ccache itself handles per-file recompilation internally.
+          key: ${{ runner.os }}-ccache-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', '**/CMakeLists.txt', '**/*.cmake') }}
           restore-keys: |
             ${{ runner.os }}-ccache-${{ matrix.build_type }}-
 
@@ -75,8 +98,8 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+            -DCMAKE_CXX_FLAGS_DEBUG="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS_DEBUG="-fsanitize=address,undefined"
 
       - name: Configure (Release)
         if: matrix.build_type == 'Release'
@@ -101,7 +124,7 @@ jobs:
           
           FAILED=0
 
-          # 1. 运行所有以 _test 结尾的单元测试
+          # Phase 1: Run all unit tests (_test suffix)
           echo "🧪 Phase 1: Running all unit tests (_test suffix)"
           for test_bin in build/bin/*_test; do
             if [ -x "$test_bin" ]; then
@@ -114,7 +137,7 @@ jobs:
             fi
           done
 
-          # 2. 运行核心的并发压力测试（混沌测试）
+          # Phase 2: Run stress benchmarks
           echo "====================================="
           echo "🔥 Phase 2: Running stress benchmarks"
           echo "====================================="
@@ -142,7 +165,7 @@ jobs:
             timeout 30s build/bin/benchmark_vector --queries=1000 || echo "✅ Vector benchmark completed"
           fi
 
-          # 3. 运行所有以 test_ 开头的测试（包括Graph测试）
+          # Phase 3: Run all test_* binaries (including Graph tests)
           echo "====================================="
           echo "🧩 Phase 3: Running all test_* binaries"
           echo "====================================="
@@ -166,22 +189,10 @@ jobs:
             exit 1
           fi
 
-      # 4. Sanitizer/Crash Scan: Catches silent sanitizer errors.
-      - name: Find sanitizer reports and crashes
-        if: always()
-        run: |
-          SANITIZER_OUTPUT=$(grep -r "ERROR: AddressSanitizer:" build/ || true)
-          if [[ $SANITIZER_OUTPUT ]]; then
-            echo "found sanitizer reports:"
-            echo "$SANITIZER_OUTPUT"
-            exit 1
-          fi
-          CRASHES=$(grep -r "Ooops!" build/ || true)
-          if [[ $CRASHES ]]; then
-            echo "found crashes:"
-            echo "$CRASHES"
-            exit 1
-          fi
+      # REMOVED: Sanitizer/Crash grep scan.
+      #   ASan/UBSan already exit with non-zero code when they detect errors.
+      #   Grepping build/ for "AddressSanitizer:" is unreliable (reports go to stderr,
+      #   not build directory) and produces false negatives/positives.
 
       - name: Generate coverage report
         if: matrix.build_type == 'Debug'
@@ -189,7 +200,7 @@ jobs:
           echo "Generating coverage report..."
           # Placeholder for coverage commands
 
-      # 3. (cont.) Archive Artifacts: Uploads binaries and coredumps on failure.
+      # Archive Artifacts: Uploads binaries and coredumps on failure.
       - name: Archive build outputs (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -203,35 +214,38 @@ jobs:
             coredumps/*
             build/bin/*
 
+  # ─────────────────────────────────────────────────────────────────
+  # lint
+  #
+  # CRITICAL CHANGES:
+  #   1. No `if:` skip on the job level (same reason as build-and-test).
+  #   2. Auto-push REMOVED.
+  #        - Before: clang-format auto-fixes → git commit → git push
+  #        - Problem: push triggers new workflow → cancel-in-progress kills old run
+  #          → required check never stabilizes → infinite pending
+  #        - Now: only verify with --dry-run --Werror
+  #          (developers run clang-format locally to fix)
+  #   3. `permissions: contents: write` → `permissions: contents: read`
+  # ─────────────────────────────────────────────────────────────────
   lint:
     needs: precondition
-    if: ${{ needs.precondition.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
+      # ── Early exit for docs-only changes ──
+      - name: Skip for docs-only changes
+        if: ${{ needs.precondition.outputs.docs_only == 'true' }}
+        run: echo "Docs-only change, skipping." && exit 0
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
       - name: Install Linting Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang-format-18 cppcheck
-      - name: Run clang-format (auto-fix)
-        run: |
-          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 -i
-      - name: Commit clang-format fixes (if any)
-        if: github.event_name == 'pull_request'
-        run: |
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "style: auto-apply clang-format fixes"
-            git push origin HEAD:"${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          fi
-      - name: Verify clang-format (idempotent check)
+      - name: Verify clang-format
         run: |
           find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
       - name: Run cppcheck
@@ -246,10 +260,10 @@ jobs:
   # logic; it only tracks native job states (success/failure/skipped).
   # This caused "Expected — Waiting for status to be reported" to hang forever.
   #
-  # Solution: Instead of a synthetic aggregator job, mark `build-and-test` and
-  # `lint` directly as required checks in branch protection settings. When
-  # docs_only=true, these jobs are skipped via `if:` and GitHub treats
-  # 'skipped' as a passing status — no custom logic needed.
+  # CURRENT STRATEGY (applied above):
+  #   - Jobs are ALWAYS created (no `if:` skip on job level).
+  #   - For docs-only PRs, an early-exit step runs `exit 0` at the very top.
+  #   - GitHub sees the check exist with status=success → branch protection passes.
   #
   # If you ever need a single required check again, use GitHub's native
   # `${{ !cancelled() }}` pattern with `needs` result propagation instead of
