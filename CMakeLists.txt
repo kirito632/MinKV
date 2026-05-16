@@ -15,6 +15,45 @@ elseif(MSVC)
     add_compile_options(/arch:AVX2)
 endif()
 
+# ==========================================
+# 查找依赖包
+# ==========================================
+# rapidcheck: 先尝试 find_path 找头文件（兼容手动安装/非标准路径）
+# 如果找不到，再尝试 find_package 通过 CMake config 定位
+find_path(RAPIDCHECK_INCLUDE_DIR rapidcheck.h
+    HINTS /usr/include /usr/local/include /opt/homebrew/include
+    DOC "Path to rapidcheck.h"
+)
+if(RAPIDCHECK_INCLUDE_DIR)
+    message(STATUS "Found rapidcheck: ${RAPIDCHECK_INCLUDE_DIR}")
+    add_library(rapidcheck STATIC IMPORTED GLOBAL)
+    find_library(RAPIDCHECK_LIBRARY rapidcheck
+        HINTS /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib /usr/lib64
+    )
+    if(RAPIDCHECK_LIBRARY)
+        set_target_properties(rapidcheck PROPERTIES
+            IMPORTED_LOCATION "${RAPIDCHECK_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${RAPIDCHECK_INCLUDE_DIR}"
+        )
+    else()
+        # 只有头文件，没有库文件 — 作为 INTERFACE 库
+        set_target_properties(rapidcheck PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${RAPIDCHECK_INCLUDE_DIR}"
+        )
+    endif()
+    unset(RAPIDCHECK_INCLUDE_DIR)
+    unset(RAPIDCHECK_LIBRARY)
+else()
+    find_package(rapidcheck QUIET)
+    if(NOT rapidcheck_FOUND)
+        message(FATAL_ERROR
+            "rapidcheck not found. Install it via:\n"
+            "  sudo apt install librapidcheck-dev   # Debian/Ubuntu\n"
+            "  brew install rapidcheck              # macOS\n"
+            "Or set -DCMAKE_PREFIX_PATH=/path/to/rapidcheck"
+        )
+    endif()
+endif()
 # 设置输出目录
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -175,14 +214,32 @@ endif()
 # ==========================================
 # Graph HTTP Server（独立，只暴露 graph 接口）
 # 不依赖向量相关的未实现方法，可直接编译
+# 依赖: nlohmann/json (第三方), httplib.h (已内嵌在 src/server/)
 # ==========================================
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/server/graph_http_server.cpp")
+    # ── 查找 nlohmann-json ──────────────────────────────────────
+    # 优先通过 find_package 找系统安装的版本（apt install nlohmann-json3-dev）
+    # 找不到则自动通过 FetchContent 下载
+    find_package(nlohmann_json QUIET)
+    if(nlohmann_json_FOUND)
+        message(STATUS "Found nlohmann_json: ${nlohmann_json_DIR}")
+    else()
+        message(STATUS "nlohmann_json not found, fetching via FetchContent...")
+        include(FetchContent)
+        FetchContent_Declare(
+            nlohmann_json
+            GIT_REPOSITORY https://github.com/nlohmann/json.git
+            GIT_TAG v3.11.3
+        )
+        FetchContent_MakeAvailable(nlohmann_json)
+    endif()
+
     add_executable(graph_http_server
         src/server/graph_http_server.cpp
         ${GRAPH_SOURCES}
         ${SOURCES}
     )
-    target_link_libraries(graph_http_server pthread)
+    target_link_libraries(graph_http_server pthread nlohmann_json::nlohmann_json)
 endif()
 
 # ==========================================
