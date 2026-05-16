@@ -127,37 +127,37 @@ jobs:
           # 5. 创建版本信息文件
           echo "📝 Creating version information..."
           cat > dist/VERSION << EOF
-MinKV ${VERSION}
-Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-Platform: linux-x86_64
-Git commit: ${GITHUB_SHA}
-Build system: CMake/Ninja
-Compiler: $(gcc --version | head -n1)
-EOF
+          MinKV ${VERSION}
+          Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          Platform: linux-x86_64
+          Git commit: ${GITHUB_SHA}
+          Build system: CMake/Ninja
+          Compiler: $(gcc --version | head -n1)
+          EOF
           
           # 6. 创建使用说明
           cat > dist/USAGE.md << 'EOF'
-# MinKV Usage Guide
-
-## As a C++ Library
-```cpp
-#include "src/core/minkv.h"
-
-auto engine = minkv::MinKV<>::create(1000, 16);
-engine->put("key", "value", 5000); // 5 second TTL
-```
-
-## As Executables
-- `bin/comprehensive_benchmark`: Performance benchmark
-- `bin/demo_vector_db`: Vector database demo
-- `bin/graph_http_server`: Graph HTTP server
-
-## Directory Structure
-- `bin/`: Compiled executables
-- `include/src/`: Header files (add to include path)
-- `README.md`: Documentation
-- `LICENSE`: Open source license
-EOF
+          # MinKV Usage Guide
+          
+          ## As a C++ Library
+          ```cpp
+          #include "src/core/minkv.h"
+          
+          auto engine = minkv::MinKV<>::create(1000, 16);
+          engine->put("key", "value", 5000); // 5 second TTL
+          ```
+          
+          ## As Executables
+          - `bin/comprehensive_benchmark`: Performance benchmark
+          - `bin/demo_vector_db`: Vector database demo
+          - `bin/graph_http_server`: Graph HTTP server
+          
+          ## Directory Structure
+          - `bin/`: Compiled executables
+          - `include/src/`: Header files (add to include path)
+          - `README.md`: Documentation
+          - `LICENSE`: Open source license
+          EOF
           
           # 7. 显示打包内容
           echo "📊 Package contents:"
