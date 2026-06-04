@@ -6,9 +6,6 @@
 namespace minkv {
 namespace graph {
 
-// ══════════════════════════════════════════════════════════════════════════════
-// 内部工具函数
-// ══════════════════════════════════════════════════════════════════════════════
 
 /**
  * 把一个 32 位无符号整数以小端序（低字节在前）追加到字符串 buf 末尾。
@@ -31,15 +28,12 @@ void GraphSerializer::AppendUint32LE(std::string &buf, uint32_t val) {
  */
 uint32_t GraphSerializer::ReadUint32LE(const std::string &buf, size_t offset) {
   if (offset + 4 > buf.size()) {
-    throw std::runtime_error(
-        "GraphSerializer: buffer too short reading uint32");
+    throw std::runtime_error("GraphSerializer: buffer too short reading uint32");
   }
   // 用 unsigned char* 避免有符号扩展问题
-  const unsigned char *p =
-      reinterpret_cast<const unsigned char *>(buf.data() + offset);
+  const unsigned char *p = reinterpret_cast<const unsigned char *>(buf.data() + offset);
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) |
-         (static_cast<uint32_t>(p[3]) << 24);
+         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 /**
@@ -47,25 +41,21 @@ uint32_t GraphSerializer::ReadUint32LE(const std::string &buf, size_t offset) {
  *   先读 4 字节得到字符串长度 len，再读 len 字节得到字符串内容。
  * offset 会被更新到读完之后的位置，方便连续调用。
  */
-std::string GraphSerializer::ReadString(const std::string &buf,
-                                        size_t &offset) {
+std::string GraphSerializer::ReadString(const std::string &buf, size_t &offset) {
   uint32_t len = ReadUint32LE(buf, offset);
   offset += 4; // 跳过长度字段
   if (offset + len > buf.size()) {
-    throw std::runtime_error(
-        "GraphSerializer: buffer too short reading string");
+    throw std::runtime_error("GraphSerializer: buffer too short reading string");
   }
   std::string s(&buf[offset], len);
   offset += len; // 跳过字符串内容
   return s;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
 // Node 序列化 / 反序列化
 //
 // 二进制布局（设计文档 3.1 节）：
 //   [4B node_id_len][node_id 字节][4B props_len][properties_json 字节]
-// ══════════════════════════════════════════════════════════════════════════════
 
 std::string GraphSerializer::SerializeNode(const Node &node) {
   std::string buf;
@@ -89,13 +79,11 @@ Node GraphSerializer::DeserializeNode(const std::string &data) {
   return node;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
 // Edge 序列化 / 反序列化
 //
 // 二进制布局（设计文档 3.2 节）：
 //   [4B src_len][src][4B dst_len][dst][4B label_len][label]
 //   [4B float weight][4B props_len][properties_json]
-// ══════════════════════════════════════════════════════════════════════════════
 
 std::string GraphSerializer::SerializeEdge(const Edge &edge) {
   std::string buf;
@@ -134,8 +122,7 @@ Edge GraphSerializer::DeserializeEdge(const std::string &data) {
 
   // 读取 4 字节 float weight
   if (offset + 4 > data.size()) {
-    throw std::runtime_error(
-        "GraphSerializer: buffer too short reading weight");
+    throw std::runtime_error("GraphSerializer: buffer too short reading weight");
   }
   std::memcpy(&edge.weight, data.data() + offset, 4);
   offset += 4;
@@ -144,7 +131,6 @@ Edge GraphSerializer::DeserializeEdge(const std::string &data) {
   return edge;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
 // 邻接表序列化 / 反序列化
 //
 // 优化：从 JSON 格式改为紧凑二进制格式，消除 JSON 解析开销。
@@ -160,10 +146,8 @@ Edge GraphSerializer::DeserializeEdge(const std::string &data) {
 //   3. 内存连续：整块 buffer 一次分配，CPU cache line 预取友好
 //   4. Hub Node 场景：出度 1000 的节点，JSON 约 15KB，二进制约 12KB，
 //      但序列化速度提升 3~5x（消除了 jsonEscape 和字符串拼接）
-// ══════════════════════════════════════════════════════════════════════════════
 
-std::string
-GraphSerializer::SerializeAdjList(const std::vector<std::string> &ids) {
+std::string GraphSerializer::SerializeAdjList(const std::vector<std::string> &ids) {
   // 预计算总大小，一次性分配内存，避免 realloc
   // 总大小 = 4（count）+ sum(4 + len_i)
   size_t total = 4;
@@ -185,8 +169,7 @@ GraphSerializer::SerializeAdjList(const std::vector<std::string> &ids) {
   return buf;
 }
 
-std::vector<std::string>
-GraphSerializer::DeserializeAdjList(const std::string &data) {
+std::vector<std::string> GraphSerializer::DeserializeAdjList(const std::string &data) {
   if (data.empty())
     return {};
 

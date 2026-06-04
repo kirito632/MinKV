@@ -30,7 +30,7 @@ enum class LogLevel {
 /**
  * @brief 固定大小的日志缓冲区
  *
- * [核心优化] 使用固定大小缓冲区避免动态内存分配，提升性能。
+ * 使用固定大小缓冲区避免动态内存分配，提升性能。
  * 4MB的缓冲区大小是业界常见的经验值（muduo日志库也用这个）。
  *
  * @note 线程不安全，需要外部同步机制保护
@@ -50,7 +50,7 @@ public:
    * @param data 要追加的数据指针
    * @param len 数据长度
    *
-   * [核心优化] 使用memcpy进行内存拷贝，比逐字符拷贝快数倍
+   * 使用memcpy进行内存拷贝，比逐字符拷贝快数倍
    */
   void append(const char *data, size_t len) {
     if (avail() >= len) {
@@ -103,7 +103,7 @@ private:
 /**
  * @brief 高性能异步日志器
  *
- * [核心优化] 采用双缓冲机制实现异步日志，前端线程写入不阻塞，后端线程负责I/O。
+ * 采用双缓冲机制实现异步日志，前端线程写入不阻塞，后端线程负责I/O。
  * 这是Muduo网络库的经典设计，能够达到百万级QPS的日志写入性能。
  *
  * 设计特点：
@@ -127,7 +127,7 @@ public:
   /**
    * @brief 析构函数，确保资源正确释放
    *
-   * [RAII] 析构时自动停止后台线程，刷新剩余日志到文件
+   * 析构时自动停止后台线程，刷新剩余日志到文件
    */
   ~AsyncLogger();
 
@@ -136,7 +136,7 @@ public:
    * @param logline 日志内容
    * @param len 日志长度
    *
-   * [核心优化] 前端接口，快速写入缓冲区后立即返回，不等待I/O完成
+   * 前端接口，快速写入缓冲区后立即返回，不等待I/O完成
    */
   void append(const char *logline, size_t len);
 
@@ -155,7 +155,7 @@ public:
   /**
    * @brief 停止异步日志线程
    *
-   * [异常安全] 等待后台线程完成所有日志写入后再退出
+   * 等待后台线程完成所有日志写入后再退出
    */
   void stop();
 
@@ -172,7 +172,7 @@ public:
    * @brief 获取全局日志器实例
    * @return 单例日志器引用
    *
-   * [单例模式] 使用Meyer's Singleton保证线程安全的延迟初始化
+   * 使用Meyer's Singleton保证线程安全的延迟初始化
    */
   static AsyncLogger &instance();
 
@@ -180,7 +180,7 @@ public:
    * @brief 设置全局日志级别
    * @param level 日志级别
    *
-   * [原子操作] 使用atomic确保多线程环境下的安全性
+   * 使用atomic确保多线程环境下的安全性
    */
   static void setLogLevel(LogLevel level);
 
@@ -194,7 +194,7 @@ private:
   /**
    * @brief 后台线程函数，负责日志的实际写入
    *
-   * [生产者-消费者] 从缓冲区队列中取出数据，批量写入文件
+   * 从缓冲区队列中取出数据，批量写入文件
    * 使用条件变量实现高效的线程间通信
    */
   void threadFunc();
@@ -208,14 +208,14 @@ private:
   const size_t rollSize_;      ///< 日志文件滚动大小
 
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证线程安全
-  std::atomic<bool> syncRequested_{false}; ///< ERROR/FATAL 触发的 fsync 请求
-  std::thread thread_;                     ///< 后台I/O线程
+  std::atomic<bool> syncRequested_ {false}; ///< ERROR/FATAL 触发的 fsync 请求
+  std::thread thread_;                      ///< 后台I/O线程
 
-  // [分片锁] 使用mutex保护共享数据，condition_variable实现高效等待
+  // 使用mutex保护共享数据，condition_variable实现高效等待
   std::mutex mutex_;             ///< 保护缓冲区的互斥锁
   std::condition_variable cond_; ///< 条件变量，用于线程间通信
 
-  // [双缓冲机制] 核心数据结构
+  // 核心数据结构
   BufferPtr currentBuffer_; ///< 当前写入缓冲区，前端线程使用
   BufferPtr nextBuffer_;    ///< 备用缓冲区，避免频繁内存分配
   BufferVector buffers_;    ///< 待写入缓冲区队列，后端线程处理
@@ -246,7 +246,7 @@ public:
   /**
    * @brief 析构函数，自动提交日志
    *
-   * [RAII] 对象销毁时自动将缓冲的日志内容提交到AsyncLogger
+   * 对象销毁时自动将缓冲的日志内容提交到AsyncLogger
    */
   ~LogStream();
 
@@ -280,7 +280,7 @@ private:
 };
 
 // 便利宏定义，提供简洁的日志接口
-// [性能优化] 使用条件编译，只有满足级别要求的日志才会创建LogStream对象
+// 使用条件编译，只有满足级别要求的日志才会创建LogStream对象
 
 /**
  * @brief DEBUG级别日志宏
@@ -294,15 +294,15 @@ private:
 /**
  * @brief INFO级别日志宏
  */
-#define LOG_INFO                                                               \
-  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::INFO)  \
+#define LOG_INFO                                                              \
+  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::INFO) \
   minkv::base::LogStream(minkv::base::LogLevel::INFO, __FILE__, __LINE__)
 
 /**
  * @brief WARN级别日志宏
  */
-#define LOG_WARN                                                               \
-  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::WARN)  \
+#define LOG_WARN                                                              \
+  if (minkv::base::AsyncLogger::getLogLevel() <= minkv::base::LogLevel::WARN) \
   minkv::base::LogStream(minkv::base::LogLevel::WARN, __FILE__, __LINE__)
 
 /**
@@ -317,8 +317,7 @@ private:
  *
  * FATAL级别总是输出，不做级别检查
  */
-#define LOG_FATAL                                                              \
-  minkv::base::LogStream(minkv::base::LogLevel::FATAL, __FILE__, __LINE__)
+#define LOG_FATAL minkv::base::LogStream(minkv::base::LogLevel::FATAL, __FILE__, __LINE__)
 
 } // namespace base
 } // namespace minkv

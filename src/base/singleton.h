@@ -9,7 +9,7 @@ namespace base {
 /**
  * @brief 高性能单例模板基类
  *
- * [设计模式] 使用CRTP (Curiously Recurring Template Pattern) 实现单例模式
+ * 使用CRTP (Curiously Recurring Template Pattern) 实现单例模式
  * 相比传统的shared_ptr实现，这个版本：
  * - 返回引用而不是智能指针，避免引用计数开销
  * - 使用Meyer's Singleton保证线程安全
@@ -19,13 +19,14 @@ namespace base {
  *
  * @note 适用于高频访问的单例对象，如日志器、缓存管理器等
  */
-template <typename T> class Singleton {
+template <typename T>
+class Singleton {
 public:
   /**
    * @brief 获取单例实例
    * @return 单例对象的引用
    *
-   * [核心优化] 使用Meyer's Singleton，C++11保证线程安全的延迟初始化
+   * 使用Meyer's Singleton，C++11保证线程安全的延迟初始化
    * 返回引用避免智能指针的引用计数开销，适合高频调用场景
    */
   static T &GetInstance() {
@@ -39,9 +40,10 @@ public:
    * @param args 构造函数参数
    * @return 单例对象的引用
    *
-   * [灵活性] 支持带参数的单例初始化，只在第一次调用时使用参数
+   * 支持带参数的单例初始化，只在第一次调用时使用参数
    */
-  template <typename... Args> static T &GetInstance(Args &&...args) {
+  template <typename... Args>
+  static T &GetInstance(Args &&...args) {
     static T instance(std::forward<Args>(args)...);
     return instance;
   }
@@ -57,7 +59,7 @@ protected:
   /**
    * @brief 受保护的析构函数
    *
-   * [RAII] 确保单例对象在程序结束时正确析构
+   * 确保单例对象在程序结束时正确析构
    */
   virtual ~Singleton() = default;
 
@@ -73,21 +75,23 @@ protected:
 /**
  * @brief 线程安全的延迟初始化单例模板
  *
- * [高级特性] 支持复杂的初始化逻辑，使用std::call_once保证初始化只执行一次
+ * 支持复杂的初始化逻辑，使用std::call_once保证初始化只执行一次
  * 适用于需要异步初始化或者初始化可能失败的场景
  *
  * @tparam T 派生类类型
  */
-template <typename T> class LazySingleton {
+template <typename T>
+class LazySingleton {
 public:
   /**
    * @brief 获取单例实例
    * @param init_func 初始化函数，只在第一次调用时执行
    * @return 单例对象的引用
    *
-   * [线程安全] 使用std::call_once确保初始化函数只被调用一次
+   * 使用std::call_once确保初始化函数只被调用一次
    */
-  template <typename InitFunc> static T &GetInstance(InitFunc &&init_func) {
+  template <typename InitFunc>
+  static T &GetInstance(InitFunc &&init_func) {
     std::call_once(init_flag_, [&]() {
       instance_ = std::make_unique<T>();
       init_func(*instance_);
@@ -116,9 +120,11 @@ private:
 };
 
 // 静态成员定义
-template <typename T> std::unique_ptr<T> LazySingleton<T>::instance_ = nullptr;
+template <typename T>
+std::unique_ptr<T> LazySingleton<T>::instance_ = nullptr;
 
-template <typename T> std::once_flag LazySingleton<T>::init_flag_;
+template <typename T>
+std::once_flag LazySingleton<T>::init_flag_;
 
 } // namespace base
 } // namespace minkv

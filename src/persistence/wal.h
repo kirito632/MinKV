@@ -1,6 +1,7 @@
 #pragma once
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,8 +42,7 @@ struct LogEntry {
   std::string key;      // 键
   std::string value;    // 值（DELETE 时为空）
   int64_t timestamp_ms; // 时间戳（毫秒，保留用于调试/审计）
-  uint64_t lsn{
-      0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
+  uint64_t lsn {0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
 
   // 计算校验和（key + value，lsn 不参与）
   uint32_t compute_checksum() const;
@@ -161,6 +162,22 @@ public:
    */
   size_t get_log_size() const;
 
+  // ============ 公开序列化接口 (供 GCM 外部调用) ============
+
+  /**
+   * @brief 序列化日志条目为二进制字符串
+   *
+   * 输出格式与 WAL 文件一致，供 GroupCommitManager 在 hot path 直接写入。
+   * 返回 std::string 而非 std::vector<uint8_t>，与 GCM 的 CommitRequest::data 类型一致，
+   * 避免类型转换拷贝。
+   *
+   * @param entry 日志条目
+   * @return 二进制序列化结果
+   */
+  static std::string serialize_entry(const LogEntry &entry);
+  // 返回 nullopt 表示校验和不匹配（条目损坏）
+  static std::optional<LogEntry> deserialize_entry(const uint8_t *data, size_t size);
+
   /**
    * @brief 获取缓冲区中待 fsync 的字节数
    */
@@ -186,11 +203,11 @@ private:
 
   std::ofstream wal_stream_; // WAL 文件输出流（仅构造时打开，实际读取由
                              // read_all() 内部独立 ifstream 完成）
-  int wal_fd_{-1}; // WAL 文件描述符（用于 write + fsync）
+  int wal_fd_ {-1};          // WAL 文件描述符（用于 write + fsync）
 
   // 后台 fsync 线程
   std::thread fsync_thread_;
-  mutable std::atomic<bool> fsync_running_{false};
+  mutable std::atomic<bool> fsync_running_ {false};
   std::condition_variable fsync_cv_;
   std::mutex fsync_cv_mutex_;
 
@@ -199,12 +216,6 @@ private:
   void fsync_thread_main();
   bool write_to_buffer(const LogEntry &entry);
   bool flush_buffer_to_disk();
-
-  // 序列化/反序列化
-  static std::vector<uint8_t> serialize_entry(const LogEntry &entry);
-  // 返回 nullopt 表示校验和不匹配（条目损坏）
-  static std::optional<LogEntry> deserialize_entry(const uint8_t *data,
-                                                   size_t size);
 };
 
 // ============ 模板实现 ============
@@ -226,7 +237,7 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
   std::string snapshot_file =
       snapshot_dir_ + "/snapshot_" + std::to_string(snapshot_id) + ".bin";
 
-  // [writev优化] 使用 raw fd + writev 替代 ofstream，减少系统调用
+  // 使用 raw fd + writev 替代 ofstream，减少系统调用
   int fd = ::open(snapshot_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0) {
     return 0;
@@ -239,7 +250,7 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
     }
   };
 
-  // [writev] 写入快照 ID + 数据个数（一次系统调用）
+  // 写入快照 ID + 数据个数（一次系统调用）
   struct iovec header_iov[2];
   header_iov[0].iov_base = &snapshot_id;
   header_iov[0].iov_len = sizeof(snapshot_id);
@@ -253,7 +264,7 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
     return 0;
   }
 
-  // [writev优化] 每个KV对用4个iovec片段一次写入
+  // 每个 KV 对用 4 个 iovec 片段一次写入
   struct iovec iov[4];
   for (const auto &[key, value] : data) {
     std::string key_str = minkv::serialize(key);
@@ -271,8 +282,7 @@ int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
     iov[3].iov_base = const_cast<char *>(value_str.data());
     iov[3].iov_len = value_len;
 
-    ssize_t expected =
-        key_len + value_len + sizeof(key_len) + sizeof(value_len);
+    ssize_t expected = key_len + value_len + sizeof(key_len) + sizeof(value_len);
     if (::writev(fd, iov, 4) != expected) {
       close_fd();
       std::filesystem::remove(snapshot_file);
@@ -297,8 +307,8 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
       if (!entry.is_regular_file())
         continue;
       std::string name = entry.path().filename().string();
-      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" &&
-          name.size() > 4 && name.substr(name.size() - 4) == ".bin") {
+      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" && name.size() > 4 &&
+          name.substr(name.size() - 4) == ".bin") {
         files.push_back(name);
       }
     }
@@ -311,7 +321,7 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   std::string latest = *std::max_element(files.begin(), files.end());
   std::string full_path = snapshot_dir_ + "/" + latest;
 
-  // [preadv优化] 使用 raw fd + preadv 替代 ifstream
+  // 使用 raw fd + preadv 替代 ifstream
   int fd = ::open(full_path.c_str(), O_RDONLY);
   if (fd < 0)
     return 0;
@@ -324,7 +334,7 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   };
 
   // 2. 读取并校验 SnapshotHeader
-  WalSnapshotHeader header{};
+  WalSnapshotHeader header {};
   struct iovec header_iov;
   header_iov.iov_base = &header;
   header_iov.iov_len = sizeof(header);
@@ -352,8 +362,7 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
   calc ^= static_cast<uint32_t>(header.timestamp);
   calc ^= static_cast<uint32_t>(header.timestamp >> 32);
   for (int i = 0; i < 4; ++i)
-    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i]))
-            << (i * 8);
+    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i])) << (i * 8);
   if (stored != calc) {
     close_fd();
     return 0;
@@ -361,7 +370,7 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
 
   uint64_t snapshot_lsn = header.wal_lsn;
 
-  // 3. [preadv优化] 读取 record_count 条 length-prefixed key/value
+  // 3. 读取 record_count 条 length-prefixed key/value
   std::map<K, V> tmp;
   off_t file_offset = sizeof(WalSnapshotHeader);
   struct iovec iov[2];
@@ -391,7 +400,7 @@ uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
     }
     file_offset += sizeof(val_len);
 
-    // [preadv] 一次读取 key + value 到两个缓冲区
+    // 一次读取 key + value 到两个缓冲区
     std::string key_str(key_len, '\0');
     std::string val_str(val_len, '\0');
 

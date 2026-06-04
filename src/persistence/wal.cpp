@@ -13,13 +13,11 @@
 namespace minkv {
 namespace db {
 
-// ============ 辅助函数 ============
 
 int64_t WriteAheadLog::current_time_ms() {
   auto now = std::chrono::high_resolution_clock::now();
   auto duration = now.time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(duration)
-      .count();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 }
 
 uint32_t LogEntry::compute_checksum() const {
@@ -32,11 +30,11 @@ uint32_t LogEntry::compute_checksum() const {
   return checksum;
 }
 
-// ============ WriteAheadLog 实现 ============
-
-WriteAheadLog::WriteAheadLog(const std::string &data_dir, size_t buffer_size,
+WriteAheadLog::WriteAheadLog(const std::string &data_dir,
+                             size_t buffer_size,
                              int64_t fsync_interval_ms)
-    : data_dir_(data_dir), buffer_size_(buffer_size),
+    : data_dir_(data_dir),
+      buffer_size_(buffer_size),
       fsync_interval_ms_(fsync_interval_ms) {
   try {
     // 创建数据目录
@@ -54,8 +52,8 @@ WriteAheadLog::WriteAheadLog(const std::string &data_dir, size_t buffer_size,
     // 这里不用 O_SYNC，而是手动 fsync，以便批量刷盘控制性能
     wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (wal_fd_ < 0) {
-      throw std::runtime_error(std::string("Failed to open WAL file: ") +
-                               wal_file_ + " (" + std::strerror(errno) + ")");
+      throw std::runtime_error(std::string("Failed to open WAL file: ") + wal_file_ +
+                               " (" + std::strerror(errno) + ")");
     }
 
     // wal_stream_ 仅用于 read_all() 读取，保持只读打开
@@ -185,8 +183,7 @@ std::vector<LogEntry> WriteAheadLog::read_all() {
     if (offset + 4 > data.size())
       break;
 
-    uint32_t entry_size =
-        *reinterpret_cast<const uint32_t *>(data.data() + offset);
+    uint32_t entry_size = *reinterpret_cast<const uint32_t *>(data.data() + offset);
     offset += 4;
 
     if (offset + entry_size > data.size())
@@ -205,8 +202,7 @@ std::vector<LogEntry> WriteAheadLog::read_all() {
   return entries;
 }
 
-std::vector<LogEntry>
-WriteAheadLog::read_after_snapshot(uint64_t snapshot_lsn) {
+std::vector<LogEntry> WriteAheadLog::read_after_snapshot(uint64_t snapshot_lsn) {
   auto all_entries = read_all();
 
   std::vector<LogEntry> result;
@@ -247,9 +243,9 @@ void WriteAheadLog::fsync_thread_main() {
   }
   while (true) {
     std::unique_lock<std::mutex> lock(fsync_cv_mutex_);
-    fsync_cv_.wait_for(
-        lock, std::chrono::milliseconds(fsync_interval_ms_),
-        [this] { return !fsync_running_.load(std::memory_order_relaxed); });
+    fsync_cv_.wait_for(lock, std::chrono::milliseconds(fsync_interval_ms_), [this] {
+      return !fsync_running_.load(std::memory_order_relaxed);
+    });
 
     if (!fsync_running_.load(std::memory_order_relaxed)) {
       break;
@@ -287,89 +283,75 @@ size_t WriteAheadLog::get_buffer_size() const {
 void WriteAheadLog::clear_all() {
   std::lock_guard<std::mutex> lock(buffer_mutex_);
 
-  // 关闭现有文件
+  // ftruncate 替代 close+remove+reopen，保持同一 inode，GCM 的 fd 不失效
   if (wal_fd_ >= 0) {
-    ::close(wal_fd_);
-    wal_fd_ = -1;
-  }
-  if (wal_stream_.is_open()) {
-    wal_stream_.close();
+    if (::ftruncate(wal_fd_, 0) != 0) {
+      throw std::runtime_error("clear_all: ftruncate failed: " +
+                               std::string(std::strerror(errno)));
+    }
+
+    if (wal_stream_.is_open()) {
+      wal_stream_.close();
+      wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
+    }
   }
 
-  // 只删除 WAL 文件，保留快照目录（快照由 CheckpointManager 管理）
-  std::filesystem::remove(wal_file_);
-
-  // 清空缓冲区
   buffer_.clear();
-
-  // 重新打开
-  wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-  if (wal_fd_ < 0) {
-    throw std::runtime_error(
-        std::string("clear_all: failed to reopen WAL file: ") + wal_file_ +
-        " (" + std::strerror(errno) + ")");
-  }
-  wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
 }
 
-// ============ 序列化/反序列化 ============
-
-std::vector<uint8_t> WriteAheadLog::serialize_entry(const LogEntry &entry) {
+std::string WriteAheadLog::serialize_entry(const LogEntry &entry) {
   // 检查长度限制，防止整型溢出
   constexpr size_t MAX_STRING_SIZE = std::numeric_limits<uint32_t>::max();
 
   if (entry.key.size() > MAX_STRING_SIZE) {
-    throw std::invalid_argument(
-        "Key too large: " + std::to_string(entry.key.size()) +
-        " bytes (max: " + std::to_string(MAX_STRING_SIZE) + ")");
+    throw std::invalid_argument("Key too large: " + std::to_string(entry.key.size()) +
+                                " bytes (max: " + std::to_string(MAX_STRING_SIZE) + ")");
   }
 
   if (entry.value.size() > MAX_STRING_SIZE) {
-    throw std::invalid_argument(
-        "Value too large: " + std::to_string(entry.value.size()) +
-        " bytes (max: " + std::to_string(MAX_STRING_SIZE) + ")");
+    throw std::invalid_argument("Value too large: " + std::to_string(entry.value.size()) +
+                                " bytes (max: " + std::to_string(MAX_STRING_SIZE) + ")");
   }
 
-  std::vector<uint8_t> data;
+  std::string data;
+  // 预留空间减少 reallocation
+  // 格式: entry_size(4B) + op(1B) + key_len(4B) + key + value_len(4B) + value +
+  // timestamp(8B) + lsn(8B) + checksum(4B)
+  data.reserve(4 + 1 + 4 + entry.key.size() + 4 + entry.value.size() + 8 + 8 + 4);
 
-  // 预留空间用于条目大小
+  // 预留空间用于条目大小（稍后回填）
   size_t size_offset = data.size();
-  data.resize(data.size() + 4); // 预留 4 字节用于条目大小
+  data.append(4, '\0');
 
   // 写入操作类型
-  data.push_back(static_cast<uint8_t>(entry.op));
+  data.push_back(static_cast<char>(static_cast<uint8_t>(entry.op)));
 
   // 安全转换：已经检查过大小限制
   uint32_t key_len = static_cast<uint32_t>(entry.key.size());
   uint32_t value_len = static_cast<uint32_t>(entry.value.size());
 
   // 写入 key
-  data.insert(data.end(), reinterpret_cast<const uint8_t *>(&key_len),
-              reinterpret_cast<const uint8_t *>(&key_len) + 4);
-  data.insert(data.end(), entry.key.begin(), entry.key.end());
+  data.append(reinterpret_cast<const char *>(&key_len), sizeof(key_len));
+  data.append(entry.key);
 
   // 写入 value
-  data.insert(data.end(), reinterpret_cast<const uint8_t *>(&value_len),
-              reinterpret_cast<const uint8_t *>(&value_len) + 4);
-  data.insert(data.end(), entry.value.begin(), entry.value.end());
+  data.append(reinterpret_cast<const char *>(&value_len), sizeof(value_len));
+  data.append(entry.value);
 
   // 写入时间戳
-  data.insert(data.end(),
-              reinterpret_cast<const uint8_t *>(&entry.timestamp_ms),
-              reinterpret_cast<const uint8_t *>(&entry.timestamp_ms) + 8);
+  data.append(reinterpret_cast<const char *>(&entry.timestamp_ms),
+              sizeof(entry.timestamp_ms));
 
-  // 写入 LSN（位于 timestamp 之后、checksum 之前）
-  data.insert(data.end(), reinterpret_cast<const uint8_t *>(&entry.lsn),
-              reinterpret_cast<const uint8_t *>(&entry.lsn) + 8);
+  // 写入 LSN
+  data.append(reinterpret_cast<const char *>(&entry.lsn), sizeof(entry.lsn));
 
-  // 写入校验和（覆盖范围：key + value，lsn 不参与）
+  // 写入校验和
   uint32_t checksum = entry.compute_checksum();
-  data.insert(data.end(), reinterpret_cast<const uint8_t *>(&checksum),
-              reinterpret_cast<const uint8_t *>(&checksum) + 4);
+  data.append(reinterpret_cast<const char *>(&checksum), sizeof(checksum));
 
   // 回填条目大小（不包括大小字段本身）
   uint32_t entry_size = static_cast<uint32_t>(data.size() - 4);
-  std::memcpy(data.data() + size_offset, &entry_size, 4);
+  std::memcpy(&data[size_offset], &entry_size, 4);
 
   return data;
 }
@@ -386,15 +368,13 @@ std::optional<LogEntry> WriteAheadLog::deserialize_entry(const uint8_t *data,
   // 读取 key
   uint32_t key_len = *reinterpret_cast<const uint32_t *>(data + offset);
   offset += 4;
-  entry.key =
-      std::string(reinterpret_cast<const char *>(data + offset), key_len);
+  entry.key = std::string(reinterpret_cast<const char *>(data + offset), key_len);
   offset += key_len;
 
   // 读取 value
   uint32_t value_len = *reinterpret_cast<const uint32_t *>(data + offset);
   offset += 4;
-  entry.value =
-      std::string(reinterpret_cast<const char *>(data + offset), value_len);
+  entry.value = std::string(reinterpret_cast<const char *>(data + offset), value_len);
   offset += value_len;
 
   // 读取时间戳

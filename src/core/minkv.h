@@ -11,16 +11,16 @@ namespace minkv {
 /**
  * @brief MinKV 存储引擎 - 统一入口
  *
- * [工业级设计] 这是整个MinKV系统的统一入口类，
+ * 这是整个MinKV系统的统一入口类，
  * 封装了所有复杂性，提供简洁易用的API。
  *
- * [核心特性]
+ * 核心特性：
  * - 高性能：250万+QPS，P99延迟2.81μs
  * - 功能完整：缓存+持久化+向量搜索+定期删除
  * - 高可用：分片级故障隔离和自动恢复
  * - 易使用：一个类解决所有KV存储需求
  *
- * [使用示例]
+ * 使用示例：
  * ```cpp
  * auto engine = MinKV::create(1000, 16);  // 每分片1000容量，16个分片
  * engine->enablePersistence("/data/minkv");
@@ -37,7 +37,8 @@ namespace minkv {
  * @tparam K 键类型，默认std::string
  * @tparam V 值类型，默认std::string
  */
-template <typename K = std::string, typename V = std::string> class MinKV {
+template <typename K = std::string, typename V = std::string>
+class MinKV {
 public:
   /**
    * @brief 创建MinKV实例
@@ -54,12 +55,8 @@ public:
    * @brief 构造函数
    */
   MinKV(size_t capacity_per_shard, size_t shard_count)
-      : cache_(std::make_unique<db::ShardedCache<K, V>>(capacity_per_shard,
-                                                        shard_count)) {}
-
-  // ==========================================
-  // 基础KV接口 - 简洁易用
-  // ==========================================
+      : cache_(
+            std::make_unique<db::ShardedCache<K, V>>(capacity_per_shard, shard_count)) {}
 
   /**
    * @brief 获取数据
@@ -89,25 +86,20 @@ public:
    */
   void clear() { cache_->clear(); }
 
-  // ==========================================
-  // 高级功能接口 - 工业级特性
-  // ==========================================
-
   /**
    * @brief 启用持久化
    * @param data_dir 数据目录
    * @param fsync_interval_ms 同步间隔
    */
-  void enablePersistence(const std::string &data_dir,
-                         int64_t fsync_interval_ms = 1000) {
+  void enablePersistence(const std::string &data_dir, int64_t fsync_interval_ms = 1000) {
     data_dir_ = data_dir;
     cache_->enable_persistence(data_dir, fsync_interval_ms);
     // 创建 CheckpointManager（如果还没有）
     if (!checkpoint_mgr_) {
       typename db::SimpleCheckpointManager<K, V>::CheckpointConfig cfg;
       cfg.data_dir = data_dir;
-      checkpoint_mgr_ = std::make_unique<db::SimpleCheckpointManager<K, V>>(
-          cache_.get(), cfg);
+      checkpoint_mgr_ =
+          std::make_unique<db::SimpleCheckpointManager<K, V>>(cache_.get(), cfg);
     }
   }
 
@@ -139,8 +131,7 @@ public:
    * @param check_interval_ms 检查间隔（毫秒）
    * @param sample_size 每次采样大小
    */
-  void startExpirationService(int64_t check_interval_ms = 100,
-                              size_t sample_size = 20) {
+  void startExpirationService(int64_t check_interval_ms = 100, size_t sample_size = 20) {
     cache_->startExpirationService(std::chrono::milliseconds(check_interval_ms),
                                    sample_size);
   }
@@ -153,8 +144,7 @@ public:
   /**
    * @brief 存储向量数据
    */
-  void vectorPut(const K &key, const std::vector<float> &vec,
-                 int64_t ttl_ms = 0) {
+  void vectorPut(const K &key, const std::vector<float> &vec, int64_t ttl_ms = 0) {
     cache_->vectorPut(key, vec, ttl_ms);
   }
 
@@ -171,10 +161,6 @@ public:
   std::vector<K> vectorSearch(const std::vector<float> &query, int k) {
     return cache_->vectorSearch(query, k);
   }
-
-  // ==========================================
-  // 监控和诊断接口
-  // ==========================================
 
   /**
    * @brief 获取性能统计

@@ -15,7 +15,7 @@ namespace base {
 /**
  * @brief 定期删除管理器 - 仿 Redis serverCron 机制
  *
- * [核心优化] 实现类似 Redis 的主动过期删除策略，避免过期数据占用内存
+ * 实现类似 Redis 的主动过期删除策略，避免过期数据占用内存
  * 采用"渐进式删除"策略，每次只处理少量数据，不影响正常业务性能。
  *
  * 设计特点：
@@ -46,8 +46,7 @@ public:
    * 3. 如果获取成功，随机采样指定数量的 key
    * 4. 检查并删除过期的 key，返回删除数量（可以为 0）
    */
-  using ExpirationCallback =
-      std::function<size_t(size_t shard_id, size_t sample_size)>;
+  using ExpirationCallback = std::function<size_t(size_t shard_id, size_t sample_size)>;
 
   /**
    * @brief 构造定期删除管理器
@@ -56,22 +55,23 @@ public:
    * @param check_interval 检查间隔，默认100ms
    * @param sample_size 每次采样大小，默认20个key
    *
-   * [性能平衡]
+   * 性能平衡：
    * - 检查间隔：100ms 平衡了及时性和性能开销
    * - 采样大小：20个key 是 Redis 的经典配置
    *
    * @note 回调函数在构造时验证，如果为空则抛出异常
    */
   explicit ExpirationManager(
-      ExpirationCallback callback, size_t shard_count,
+      ExpirationCallback callback,
+      size_t shard_count,
       std::chrono::milliseconds check_interval = std::chrono::milliseconds(100),
       size_t sample_size = 20);
 
   /**
    * @brief 析构函数，确保资源正确释放
    *
-   * [RAII] 析构时自动停止后台线程
-   * [异常安全] 提供无抛出保证 (noexcept)
+   * 析构时自动停止后台线程
+   * 提供无抛出保证 (noexcept)
    */
   ~ExpirationManager() noexcept;
 
@@ -83,10 +83,10 @@ public:
    * @brief 性能统计信息结构体
    */
   struct Stats {
-    uint64_t total_checks;    ///< 总检查次数
-    uint64_t total_expired;   ///< 总过期删除数
-    uint64_t total_skipped;   ///< 总跳过次数（锁竞争）
-    double avg_expired_ratio; ///< 平均过期比例
+    uint64_t total_checks;                    ///< 总检查次数
+    uint64_t total_expired;                   ///< 总过期删除数
+    uint64_t total_skipped;                   ///< 总跳过次数（锁竞争）
+    double avg_expired_ratio;                 ///< 平均过期比例
     std::chrono::milliseconds avg_check_time; ///< 平均检查耗时
   };
 
@@ -94,7 +94,7 @@ public:
    * @brief 获取性能统计信息
    * @return 当前的性能统计数据
    *
-   * [监控接口] 用于性能分析和调优
+   * 用于性能分析和调优
    */
   Stats getStats() const;
 
@@ -102,7 +102,7 @@ private:
   /**
    * @brief 后台定期检查线程主函数
    *
-   * [定时任务] 类似 Redis serverCron，定期遍历所有分片
+   * 类似 Redis serverCron，定期遍历所有分片
    * 使用 try_lock() 实现非阻塞检查，避免影响业务性能
    */
   void cronThreadFunc();
@@ -112,7 +112,7 @@ private:
    * @param shard_id 分片ID
    * @return 本次删除的过期key数量
    *
-   * [核心算法] 随机采样 + 非阻塞锁 + 自适应频率
+   * 随机采样 + 非阻塞锁 + 自适应频率
    */
   size_t processShard(size_t shard_id);
 
@@ -134,11 +134,11 @@ private:
   std::mt19937 rng_;                                 ///< 随机数生成器
   std::uniform_int_distribution<size_t> shard_dist_; ///< 分片选择分布
 
-  // [快速停止] 条件变量和互斥锁，用于可中断的睡眠
+  // 条件变量和互斥锁，用于可中断的睡眠
   std::condition_variable stop_cv_; ///< 停止信号条件变量
   std::mutex stop_mutex_;           ///< 保护停止信号的互斥锁
 
-  // [RAII] 线程必须最后声明，确保先于其他成员析构
+  // 线程必须最后声明，确保先于其他成员析构
   std::thread cron_thread_; ///< 后台定时线程
 };
 
