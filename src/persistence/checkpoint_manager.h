@@ -246,50 +246,27 @@ template <typename K, typename V>
 bool SimpleCheckpointManager<K, V>::checkpoint_now() {
   auto start_time = std::chrono::high_resolution_clock::now();
 
-  std::cout << "[Checkpoint] Starting ATOMIC checkpoint (Stop-The-World mode)..."
-            << std::endl;
+  std::cout << "[Checkpoint] Starting WAL-rotate checkpoint..." << std::endl;
 
   try {
-    // 三步走，每步失败都安全：
-    // 1. 独占锁下导出数据+LSN（WAL不动）
-    // 2. 写快照文件到磁盘（失败时WAL仍完整，可重试）
-    // 3. 快照持久化成功后才清WAL
+    auto cut = cache_->capture_checkpoint_cut();
+    std::string snapshot_file = get_snapshot_path(cut.snapshot_lsn);
 
-    std::cout << "[Checkpoint] Acquiring exclusive lock for atomic export..."
-              << std::endl;
-
-    // 1. 在独占锁下原子性导出数据和LSN（不清WAL，保证快照写失败时WAL仍完整）
-    std::map<K, V> all_data;
-    uint64_t current_wal_lsn = 0;
-    cache_->export_for_checkpoint(all_data, current_wal_lsn);
-
-    // 2. 写入快照文件（此时WAL仍然完整，写失败可安全重试）
-    // 用 LSN 而非时间戳命名，避免时钟回拨导致新快照文件名小于旧快照
-    std::string snapshot_file = get_snapshot_path(current_wal_lsn);
-
-    if (!write_snapshot_file(snapshot_file, all_data, current_wal_lsn)) {
+    if (!write_snapshot_file(snapshot_file, cut.data, cut.snapshot_lsn)) {
       std::cerr << "[Checkpoint] Failed to write snapshot file: " << snapshot_file
                 << std::endl;
-      // WAL未清，数据安全，下次checkpoint可重试
       return false;
     }
 
-    std::cout << "[Checkpoint] Snapshot written to: " << snapshot_file
-              << ", lsn=" << current_wal_lsn << std::endl;
+    cache_->cleanup_wal_up_to(cut.snapshot_lsn);
 
-    // 3. 快照写成功后才清WAL（此时快照已持久化，清WAL是安全的）
-    cache_->clear_wal();
-    std::cout << "[Checkpoint] WAL cleared after successful snapshot" << std::endl;
-
-    // 4. 更新统计信息
     {
       std::lock_guard<std::mutex> lock(stats_mutex_);
-      stats_.last_checkpoint_time = current_time_ms(); // 监控用，仍记录时间戳
-      stats_.last_checkpoint_records = all_data.size();
+      stats_.last_checkpoint_time = current_time_ms();
+      stats_.last_checkpoint_records = cut.data.size();
       stats_.total_checkpoints++;
       stats_.last_snapshot_file = snapshot_file;
 
-      // 计算平均耗时
       auto end_time = std::chrono::high_resolution_clock::now();
       auto duration =
           std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -305,7 +282,6 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
       }
     }
 
-    // 5. 清理旧快照 (可选)
     if (config_.auto_cleanup) {
       cleanup_old_snapshots();
     }
@@ -314,13 +290,8 @@ bool SimpleCheckpointManager<K, V>::checkpoint_now() {
     auto duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    std::cout << "[Checkpoint] ✅ ATOMIC checkpoint completed successfully in "
-              << duration.count() << "ms" << std::endl;
-    std::cout << "[Checkpoint] 🎯 Data consistency GUARANTEED - no loss window!"
-              << std::endl;
-    std::cout << "[Checkpoint] Records: " << all_data.size()
-              << ", Total checkpoints: " << stats_.total_checkpoints << std::endl;
-
+    std::cout << "[Checkpoint] Completed successfully in " << duration.count() << "ms"
+              << ", snapshot_lsn=" << cut.snapshot_lsn << std::endl;
     return true;
 
   } catch (const std::exception &e) {
@@ -744,23 +715,11 @@ bool SimpleCheckpointManager<K, V>::read_snapshot_file(const std::string &filepa
 
     data.clear();
 
-    // 每个 KV 对用 preadv 一次读取 key_len + key + value_len + value
-    // 但变长字段需要先读 key_len 才能知道 key 大小，所以分两步：
-    // 第一步：preadv读取 key_len(4B) + value_len(4B)
-    // 第二步：preadv读取 key + value
-    //
-    // 更优方案：先读key_len，分配key_str，再读value_len，分配value_str，
-    // 然后用preadv一次读 key + value（两个iovec片段）
     off_t file_offset = sizeof(SnapshotHeader);
-    struct iovec iov[2];
 
     for (uint32_t i = 0; i < header.record_count; ++i) {
-      // 先读 key_len (4B)
-      uint32_t key_len;
-      struct iovec keylen_iov;
-      keylen_iov.iov_base = &key_len;
-      keylen_iov.iov_len = sizeof(key_len);
-      if (::preadv(fd, &keylen_iov, 1, file_offset) !=
+      uint32_t key_len = 0;
+      if (::pread(fd, &key_len, sizeof(key_len), file_offset) !=
           static_cast<ssize_t>(sizeof(key_len))) {
         std::cerr << "[Snapshot] Failed to read key length at record " << i << std::endl;
         close_fd();
@@ -768,36 +727,33 @@ bool SimpleCheckpointManager<K, V>::read_snapshot_file(const std::string &filepa
       }
       file_offset += sizeof(key_len);
 
-      // 再读 value_len (4B)
-      uint32_t value_len;
-      struct iovec valuelen_iov;
-      valuelen_iov.iov_base = &value_len;
-      valuelen_iov.iov_len = sizeof(value_len);
-      if (::preadv(fd, &valuelen_iov, 1, file_offset) !=
+      std::string key_str(key_len, '\0');
+      if (key_len > 0 &&
+          ::pread(fd, key_str.data(), key_len, file_offset) != static_cast<ssize_t>(key_len)) {
+        std::cerr << "[Snapshot] Failed to read key bytes at record " << i << std::endl;
+        close_fd();
+        return false;
+      }
+      file_offset += key_len;
+
+      uint32_t value_len = 0;
+      if (::pread(fd, &value_len, sizeof(value_len), file_offset) !=
           static_cast<ssize_t>(sizeof(value_len))) {
-        std::cerr << "[Snapshot] Failed to read value length at record " << i
-                  << std::endl;
+        std::cerr << "[Snapshot] Failed to read value length at record " << i << std::endl;
         close_fd();
         return false;
       }
       file_offset += sizeof(value_len);
 
-      // 一次读取 key + value 到两个缓冲区
-      std::string key_str(key_len, '\0');
       std::string value_str(value_len, '\0');
-
-      iov[0].iov_base = &key_str[0];
-      iov[0].iov_len = key_len;
-      iov[1].iov_base = &value_str[0];
-      iov[1].iov_len = value_len;
-
-      ssize_t expected = static_cast<ssize_t>(key_len + value_len);
-      if (::preadv(fd, iov, 2, file_offset) != expected) {
-        std::cerr << "[Snapshot] Failed to read key+value at record " << i << std::endl;
+      if (value_len > 0 &&
+          ::pread(fd, value_str.data(), value_len, file_offset) !=
+              static_cast<ssize_t>(value_len)) {
+        std::cerr << "[Snapshot] Failed to read value bytes at record " << i << std::endl;
         close_fd();
         return false;
       }
-      file_offset += key_len + value_len;
+      file_offset += value_len;
 
       // 转换为实际类型
       K key = minkv::deserialize<K>(key_str);

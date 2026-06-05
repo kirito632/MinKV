@@ -152,22 +152,21 @@ public:
    */
   std::map<K, V> export_all_data() const;
 
-  /**
-   * @brief 清空 WAL 文件中的所有日志条目
-   * @note 通常在快照写入成功后调用，截断已持久化的日志
-   */
-  void clear_wal();
+  struct CheckpointCut {
+    std::map<K, V> data;
+    uint64_t snapshot_lsn {0};
+    std::string rotated_wal_path;
+  };
 
   /**
-   * @brief Checkpoint专用：在独占锁下原子性导出数据和LSN（不清WAL）
-   *
-   * 只做导出，不清 WAL。调用方在快照文件写成功后再调用 clear_wal()。
-   * 这样快照写失败时 WAL 仍然完整，不会丢数据。
-   *
-   * @param out_data 导出的全量数据
-   * @param out_lsn  导出时的当前LSN（写入快照头部用）
+   * @brief 在独占锁下建立 checkpoint cut
    */
-  void export_for_checkpoint(std::map<K, V> &out_data, uint64_t &out_lsn) const;
+  CheckpointCut capture_checkpoint_cut();
+
+  /**
+   * @brief 快照成功后清理已被 snapshot_lsn 覆盖的旧 WAL
+   */
+  void cleanup_wal_up_to(uint64_t snapshot_lsn);
 
   /**
    * @brief 写入一个向量（自动序列化后存入缓存）
@@ -390,6 +389,8 @@ private:
   std::unique_ptr<WriteAheadLog> wal_;
   std::unique_ptr<base::GroupCommitManager> gcm_;
   bool persistence_enabled_ {false};
+  std::string persistence_data_dir_;
+  int64_t persistence_fsync_interval_ms_ {1000};
   mutable std::shared_mutex global_consistency_lock_;
   mutable std::mutex persistence_mutex_;
 
@@ -668,13 +669,12 @@ void ShardedCache<K, V, EnableCacheAlign>::enable_persistence(const std::string 
   }
 
   try {
-    // WAL：用于 recovery 读取（不启动后台 fsync，由 GCM 统一管理）
     wal_ = std::make_unique<WriteAheadLog>(data_dir, 1024 * 1024, fsync_interval_ms);
-    // 不调用 wal_->start_background_fsync()，后台刷盘由 GCM 统一管理
+    persistence_data_dir_ = data_dir;
+    persistence_fsync_interval_ms_ = fsync_interval_ms;
 
-    // GCM：用于 hot path 写入
     gcm_ = std::make_unique<base::GroupCommitManager>(
-        data_dir + "/wal.log", // 同一文件！
+        wal_->current_wal_path(),
         4096,
         std::chrono::milliseconds(fsync_interval_ms));
     gcm_->start();
@@ -705,11 +705,11 @@ void ShardedCache<K, V, EnableCacheAlign>::disable_persistence() {
   }
   gcm_.reset();
 
-  // 再停 WAL
   if (wal_) {
-    wal_->flush(); // 确保 buffer 刷盘
+    wal_->flush();
   }
   wal_.reset();
+  persistence_data_dir_.clear();
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
@@ -746,56 +746,53 @@ std::map<K, V> ShardedCache<K, V, EnableCacheAlign>::export_all_data() const {
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-void ShardedCache<K, V, EnableCacheAlign>::export_for_checkpoint(
-    std::map<K, V> &out_data, uint64_t &out_lsn) const {
-  // 独占锁：阻塞所有 put/remove，确保导出的数据和 LSN 一致
+typename ShardedCache<K, V, EnableCacheAlign>::CheckpointCut
+ShardedCache<K, V, EnableCacheAlign>::capture_checkpoint_cut() {
+  CheckpointCut cut;
   std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
+  std::lock_guard<std::mutex> lock(persistence_mutex_);
 
-  out_data.clear();
+  if (gcm_) {
+    gcm_->flush();
+    gcm_->stop();
+    gcm_.reset();
+  }
+  if (wal_) {
+    wal_->flush();
+    cut.rotated_wal_path = wal_->rotate();
+  }
+
+  cut.data.clear();
   for (size_t i = 0; i < shards_.size(); ++i) {
     if (!isShardDisabled(i)) {
       try {
         auto shard_data = shards_[i]->get_all();
-        out_data.insert(shard_data.begin(), shard_data.end());
+        cut.data.insert(shard_data.begin(), shard_data.end());
       } catch (const std::exception &e) {
         std::cerr << "[Checkpoint] Shard " << i << " export error: " << e.what()
                   << std::endl;
       }
     }
   }
+  cut.snapshot_lsn = current_lsn();
 
-  // 在锁内读 LSN，保证与导出数据严格对应
-  out_lsn = current_lsn();
+  if (wal_ && !persistence_data_dir_.empty()) {
+    gcm_ = std::make_unique<base::GroupCommitManager>(
+        wal_->current_wal_path(),
+        4096,
+        std::chrono::milliseconds(persistence_fsync_interval_ms_));
+    gcm_->start();
+  }
+
+  return cut;
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-void ShardedCache<K, V, EnableCacheAlign>::clear_wal() {
-  // 持独占锁阻塞所有 put/remove，确保 flush 到 ftruncate 之间无新请求
-  std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
-
+void ShardedCache<K, V, EnableCacheAlign>::cleanup_wal_up_to(uint64_t snapshot_lsn) {
   std::lock_guard<std::mutex> lock(persistence_mutex_);
-
-  auto now = std::chrono::steady_clock::now();
-  auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch())
-                .count();
-  // drain GCM 所有 in-flight 请求到磁盘
-  if (gcm_) {
-    // flush 前队列大小
-    gcm_->flush(); // 处理队列中所有 pending 请求 → 写入文件 → fsync
-    gcm_->stop();  // join 后台线程
-  }
-
-  // 清空 WAL 文件（ftruncate，不改变 inode）
   if (wal_) {
-    wal_->clear_all(); // clear_all 内部改用 ftruncate
+    wal_->cleanup_logs_up_to(snapshot_lsn);
   }
-
-  // 重建 GCM 线程
-  if (gcm_) {
-    gcm_->start(); // AppendFile fd 指向同一 inode（已被 truncate 到 0）
-  }
-
-  // consistency_lock 在此释放，put/remove 恢复执行
 }
 
 template <typename K, typename V, bool EnableCacheAlign>

@@ -13,6 +13,22 @@
 namespace minkv {
 namespace db {
 
+std::string WriteAheadLog::wal_filename_for_index(uint64_t index) {
+  return "wal_" + std::to_string(index) + ".log";
+}
+
+bool WriteAheadLog::parse_wal_index(const std::string &filename, uint64_t &index) {
+  if (filename.size() < 9 || filename.rfind("wal_", 0) != 0 ||
+      filename.substr(filename.size() - 4) != ".log") {
+    return false;
+  }
+  try {
+    index = std::stoull(filename.substr(4, filename.size() - 8));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
 
 int64_t WriteAheadLog::current_time_ms() {
   auto now = std::chrono::high_resolution_clock::now();
@@ -37,27 +53,22 @@ WriteAheadLog::WriteAheadLog(const std::string &data_dir,
       buffer_size_(buffer_size),
       fsync_interval_ms_(fsync_interval_ms) {
   try {
-    // 创建数据目录
     std::filesystem::create_directories(data_dir);
-
-    // 设置文件路径
-    wal_file_ = data_dir + "/wal.log";
     snapshot_dir_ = data_dir + "/snapshots";
     std::filesystem::create_directories(snapshot_dir_);
 
-    // 初始化缓冲区（可能抛 bad_alloc）
-    buffer_.reserve(buffer_size);
+    buffer_.reserve(buffer_size_);
 
-    // 用 POSIX open 打开 WAL 文件，O_SYNC 保证每次 write 都落盘
-    // 这里不用 O_SYNC，而是手动 fsync，以便批量刷盘控制性能
-    wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (wal_fd_ < 0) {
-      throw std::runtime_error(std::string("Failed to open WAL file: ") + wal_file_ +
-                               " (" + std::strerror(errno) + ")");
+    uint64_t max_index = 0;
+    for (const auto &path : list_wal_files()) {
+      uint64_t idx = 0;
+      if (parse_wal_index(std::filesystem::path(path).filename().string(), idx)) {
+        max_index = std::max(max_index, idx);
+      }
     }
 
-    // wal_stream_ 仅用于 read_all() 读取，保持只读打开
-    wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
+    wal_file_index_ = (max_index == 0) ? 1 : max_index;
+    reopen_wal_file_locked(data_dir_ + "/" + wal_filename_for_index(wal_file_index_));
   } catch (...) {
     if (wal_fd_ >= 0) {
       ::close(wal_fd_);
@@ -147,20 +158,17 @@ bool WriteAheadLog::flush() {
   return flush_buffer_to_disk();
 }
 
-std::vector<LogEntry> WriteAheadLog::read_all() {
+std::vector<LogEntry> WriteAheadLog::read_file(const std::string &filepath) const {
   std::vector<LogEntry> entries;
 
-  // 使用 raw fd + posix_fadvise 预读提示，优化 WAL 恢复时的顺序读取性能
-  int fd = ::open(wal_file_.c_str(), O_RDONLY);
+  int fd = ::open(filepath.c_str(), O_RDONLY);
   if (fd == -1) {
     return entries;
   }
 
-  // 告知内核：我们将顺序读取整个文件，并建议内核预读
   ::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
   ::posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
 
-  // 获取文件大小
   off_t file_size = ::lseek(fd, 0, SEEK_END);
   ::lseek(fd, 0, SEEK_SET);
   if (file_size <= 0) {
@@ -176,10 +184,8 @@ std::vector<LogEntry> WriteAheadLog::read_all() {
     return entries;
   }
 
-  // 反序列化日志条目
   size_t offset = 0;
   while (offset < data.size()) {
-    // 读取条目大小（前 4 字节）
     if (offset + 4 > data.size())
       break;
 
@@ -191,14 +197,21 @@ std::vector<LogEntry> WriteAheadLog::read_all() {
 
     auto entry = deserialize_entry(data.data() + offset, entry_size);
     if (!entry) {
-      // 校验和不匹配：遇到损坏条目，截断到此处
-      // 这是 WAL 恢复的标准做法：只重放到最后一个完整提交点
       break;
     }
     entries.push_back(std::move(*entry));
     offset += entry_size;
   }
 
+  return entries;
+}
+
+std::vector<LogEntry> WriteAheadLog::read_all() {
+  std::vector<LogEntry> entries;
+  for (const auto &path : list_wal_files()) {
+    auto file_entries = read_file(path);
+    entries.insert(entries.end(), file_entries.begin(), file_entries.end());
+  }
   return entries;
 }
 
@@ -213,6 +226,18 @@ std::vector<LogEntry> WriteAheadLog::read_after_snapshot(uint64_t snapshot_lsn) 
   }
 
   return result;
+}
+
+std::string WriteAheadLog::rotate() {
+  std::lock_guard<std::mutex> lock(buffer_mutex_);
+  if (!flush_buffer_to_disk()) {
+    throw std::runtime_error("rotate: failed to flush current WAL");
+  }
+
+  std::string old_path = wal_file_;
+  ++wal_file_index_;
+  reopen_wal_file_locked(data_dir_ + "/" + wal_filename_for_index(wal_file_index_));
+  return old_path;
 }
 
 void WriteAheadLog::start_background_fsync() {
@@ -257,22 +282,69 @@ void WriteAheadLog::fsync_thread_main() {
 }
 
 size_t WriteAheadLog::get_log_size() const {
-  // 磁盘文件大小
-  size_t disk_size = 0;
-  std::ifstream file(wal_file_, std::ios::binary);
-  if (file.is_open()) {
-    file.seekg(0, std::ios::end);
-    disk_size = static_cast<size_t>(file.tellg());
+  size_t total_size = 0;
+  for (const auto &path : list_wal_files()) {
+    std::error_code ec;
+    total_size += std::filesystem::file_size(path, ec);
   }
 
-  // 加上内存缓冲区中还未 fsync 的部分
   size_t buf_size = 0;
   {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     buf_size = buffer_.size();
   }
 
-  return disk_size + buf_size;
+  return total_size + buf_size;
+}
+
+std::string WriteAheadLog::current_wal_path() const { return wal_file_; }
+
+std::vector<std::string> WriteAheadLog::list_wal_files() const {
+  std::vector<std::pair<uint64_t, std::string>> indexed;
+  if (!std::filesystem::exists(data_dir_)) {
+    return {};
+  }
+
+  for (const auto &entry : std::filesystem::directory_iterator(data_dir_)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    uint64_t index = 0;
+    auto filename = entry.path().filename().string();
+    if (parse_wal_index(filename, index)) {
+      indexed.emplace_back(index, entry.path().string());
+    }
+  }
+
+  std::sort(indexed.begin(), indexed.end(), [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+
+  std::vector<std::string> files;
+  files.reserve(indexed.size());
+  for (const auto &it : indexed) {
+    files.push_back(it.second);
+  }
+  return files;
+}
+
+void WriteAheadLog::cleanup_logs_up_to(uint64_t snapshot_lsn) {
+  auto files = list_wal_files();
+  if (files.size() <= 1) {
+    return;
+  }
+
+  for (size_t i = 0; i + 1 < files.size(); ++i) {
+    auto entries = read_file(files[i]);
+    uint64_t max_lsn = 0;
+    for (const auto &entry : entries) {
+      max_lsn = std::max(max_lsn, entry.lsn);
+    }
+    if (max_lsn <= snapshot_lsn) {
+      std::error_code ec;
+      std::filesystem::remove(files[i], ec);
+    }
+  }
 }
 
 size_t WriteAheadLog::get_buffer_size() const {
@@ -354,6 +426,24 @@ std::string WriteAheadLog::serialize_entry(const LogEntry &entry) {
   std::memcpy(&data[size_offset], &entry_size, 4);
 
   return data;
+}
+
+void WriteAheadLog::reopen_wal_file_locked(const std::string &filepath) {
+  if (wal_fd_ >= 0) {
+    ::close(wal_fd_);
+    wal_fd_ = -1;
+  }
+  if (wal_stream_.is_open()) {
+    wal_stream_.close();
+  }
+
+  wal_file_ = filepath;
+  wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (wal_fd_ < 0) {
+    throw std::runtime_error(std::string("Failed to open WAL file: ") + wal_file_ +
+                             " (" + std::strerror(errno) + ")");
+  }
+  wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
 }
 
 std::optional<LogEntry> WriteAheadLog::deserialize_entry(const uint8_t *data,

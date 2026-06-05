@@ -102,12 +102,26 @@ public:
   std::vector<LogEntry> read_all();
 
   /**
+   * @brief 读取指定 WAL 文件中的全部日志条目
+   */
+  std::vector<LogEntry> read_file(const std::string &filepath) const;
+
+  /**
    * @brief 读取快照之后的日志（按 LSN 过滤）
    *
    * @param snapshot_lsn 快照时刻的 LSN（来自 SnapshotHeader::wal_lsn）
    * @return 所有 entry.lsn > snapshot_lsn 的条目，顺序与文件一致
    */
   std::vector<LogEntry> read_after_snapshot(uint64_t snapshot_lsn);
+
+  /**
+   * @brief 轮转到新的 WAL 文件
+   *
+   * 调用方应保证没有并发 append/flush 正在进行。
+   *
+   * @return 轮转前的 WAL 文件路径
+   */
+  std::string rotate();
 
   /**
    * @brief 创建快照
@@ -162,6 +176,21 @@ public:
    */
   size_t get_log_size() const;
 
+  /**
+   * @brief 获取当前活动 WAL 文件路径
+   */
+  std::string current_wal_path() const;
+
+  /**
+   * @brief 列出数据目录下所有 WAL 文件（按文件名升序）
+   */
+  std::vector<std::string> list_wal_files() const;
+
+  /**
+   * @brief 删除所有已完全被 snapshot_lsn 覆盖的旧 WAL 文件
+   */
+  void cleanup_logs_up_to(uint64_t snapshot_lsn);
+
   // ============ 公开序列化接口 (供 GCM 外部调用) ============
 
   /**
@@ -194,6 +223,7 @@ private:
   std::string data_dir_;     // 数据目录
   std::string wal_file_;     // WAL 文件路径
   std::string snapshot_dir_; // 快照目录
+  uint64_t wal_file_index_ {1};
 
   size_t buffer_size_;        // 缓冲区大小
   int64_t fsync_interval_ms_; // fsync 间隔
@@ -213,9 +243,12 @@ private:
 
   // 辅助函数
   static int64_t current_time_ms();
+  static std::string wal_filename_for_index(uint64_t index);
+  static bool parse_wal_index(const std::string &filename, uint64_t &index);
   void fsync_thread_main();
   bool write_to_buffer(const LogEntry &entry);
   bool flush_buffer_to_disk();
+  void reopen_wal_file_locked(const std::string &filepath);
 };
 
 // ============ 模板实现 ============
