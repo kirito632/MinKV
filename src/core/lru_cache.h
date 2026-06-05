@@ -7,9 +7,11 @@
 #include <list>
 #include <map>
 #include <optional>
+#include <random>
 #include <shared_mutex>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace minkv {
 namespace db {
@@ -180,6 +182,24 @@ public:
   size_t cleanup_expired_keys();
 
   /**
+   * @brief 基于渐进游标做有界采样
+   *
+   * 每次最多只遍历有限个节点，避免后台过期线程退化成全量扫描。
+   *
+   * @param sample_size 期望采样数量
+   * @param rng 调用方提供的随机数生成器，用于打乱小样本顺序
+   * @return 采样得到的 key 列表（实际数量 <= sample_size）
+   */
+  std::vector<K> sample_keys(size_t sample_size, std::mt19937 &rng);
+
+  /**
+   * @brief 仅检查并删除指定 key 中已过期的条目
+   * @param keys 待检查的 key 列表
+   * @return 实际删除的过期条目数
+   */
+  size_t expire_keys(const std::vector<K> &keys);
+
+  /**
    * @brief 获取所有有效的键值对（用于向量搜索等场景）
    *
    * 返回所有未过期的键值对。
@@ -292,6 +312,12 @@ private:
 
   // 辅助函数：后台清理线程的主函数
   void cleanup_thread_main();
+
+  // 辅助函数：删除指定节点并维护游标
+  ListIterator erase_node(ListIterator it);
+
+  // 渐进式过期清理游标，避免每轮都从头全量扫描
+  ListIterator expiration_cursor_;
 };
 
 template <typename K, typename V, bool ThreadSafe>
@@ -311,7 +337,9 @@ bool LruCache<K, V, ThreadSafe>::is_expired(const Node &node) const {
 
 template <typename K, typename V, bool ThreadSafe>
 LruCache<K, V, ThreadSafe>::LruCache(size_t capacity)
-    : capacity_(capacity), start_time_ms_(static_cast<uint64_t>(current_time_ms())) {}
+    : capacity_(capacity),
+      start_time_ms_(static_cast<uint64_t>(current_time_ms())),
+      expiration_cursor_(cache_list_.end()) {}
 
 template <typename K, typename V, bool ThreadSafe>
 std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
@@ -347,9 +375,7 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
       return std::nullopt;
     }
     if (is_expired(*it->second)) {
-      auto list_it = it->second;
-      map_.erase(it);
-      cache_list_.erase(list_it);
+      erase_node(it->second);
       ++stats_expired_;
       ++stats_misses_;
       return std::nullopt;
@@ -371,9 +397,7 @@ std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
       return std::nullopt;
     }
     if (is_expired(*it->second)) {
-      auto list_it = it->second;
-      map_.erase(it);
-      cache_list_.erase(list_it);
+      erase_node(it->second);
       ++stats_expired_;
       ++stats_misses_;
       return std::nullopt;
@@ -393,6 +417,10 @@ template <typename K, typename V, bool ThreadSafe>
 void LruCache<K, V, ThreadSafe>::put(const K &key, const V &value, int64_t ttl_ms) {
   std::lock_guard<MutexType> lock(mutex_);
 
+  if (capacity_ == 0) {
+    return;
+  }
+
   int64_t expiry_time = 0;
   if (ttl_ms > 0) {
     expiry_time = current_time_ms() + ttl_ms;
@@ -411,12 +439,10 @@ void LruCache<K, V, ThreadSafe>::put(const K &key, const V &value, int64_t ttl_m
   if (map_.size() >= capacity_) {
     auto last = cache_list_.end();
     --last;
-    K key_to_remove = last->key;
     cache_list_.push_front(Node(key, value, expiry_time));
     try {
       map_[key] = cache_list_.begin();
-      map_.erase(key_to_remove);
-      cache_list_.pop_back();
+      erase_node(last);
       ++stats_evictions_;
     } catch (...) {
       cache_list_.pop_front();
@@ -445,8 +471,7 @@ bool LruCache<K, V, ThreadSafe>::remove(const K &key) {
     return false;
   }
 
-  cache_list_.erase(it->second);
-  map_.erase(it);
+  erase_node(it->second);
   ++stats_removes_;
   return true;
 }
@@ -509,6 +534,24 @@ void LruCache<K, V, ThreadSafe>::clear() {
   std::lock_guard<MutexType> lock(mutex_);
   cache_list_.clear();
   map_.clear();
+  expiration_cursor_ = cache_list_.end();
+}
+
+template <typename K, typename V, bool ThreadSafe>
+typename LruCache<K, V, ThreadSafe>::ListIterator
+LruCache<K, V, ThreadSafe>::erase_node(ListIterator it) {
+  auto next = std::next(it);
+  if (expiration_cursor_ == it) {
+    expiration_cursor_ = next;
+  }
+  map_.erase(it->key);
+  auto erased_next = cache_list_.erase(it);
+  if (cache_list_.empty()) {
+    expiration_cursor_ = cache_list_.end();
+  } else if (expiration_cursor_ == cache_list_.end()) {
+    expiration_cursor_ = cache_list_.begin();
+  }
+  return erased_next;
 }
 
 template <typename K, typename V, bool ThreadSafe>
@@ -518,8 +561,7 @@ size_t LruCache<K, V, ThreadSafe>::cleanup_expired_keys() {
   auto it = cache_list_.begin();
   while (it != cache_list_.end()) {
     if (is_expired(*it)) {
-      map_.erase(it->key);
-      it = cache_list_.erase(it);
+      it = erase_node(it);
       ++removed_count;
       ++stats_expired_;
     } else {
@@ -530,13 +572,75 @@ size_t LruCache<K, V, ThreadSafe>::cleanup_expired_keys() {
 }
 
 template <typename K, typename V, bool ThreadSafe>
+std::vector<K> LruCache<K, V, ThreadSafe>::sample_keys(size_t sample_size,
+                                                       std::mt19937 &rng) {
+  std::lock_guard<MutexType> lock(mutex_);
+
+  if (sample_size == 0 || cache_list_.empty()) {
+    return {};
+  }
+
+  if (expiration_cursor_ == cache_list_.end()) {
+    expiration_cursor_ = cache_list_.begin();
+  }
+
+  std::vector<K> keys;
+  keys.reserve(std::min(sample_size, cache_list_.size()));
+
+  const size_t scan_budget = std::min(cache_list_.size(), sample_size * 4);
+  size_t scanned = 0;
+  auto it = expiration_cursor_;
+
+  while (scanned < scan_budget && keys.size() < sample_size) {
+    keys.push_back(it->key);
+    ++it;
+    if (it == cache_list_.end()) {
+      it = cache_list_.begin();
+    }
+    ++scanned;
+  }
+
+  expiration_cursor_ = it;
+  std::shuffle(keys.begin(), keys.end(), rng);
+  return keys;
+}
+
+template <typename K, typename V, bool ThreadSafe>
+size_t LruCache<K, V, ThreadSafe>::expire_keys(const std::vector<K> &keys) {
+  std::lock_guard<MutexType> lock(mutex_);
+
+  size_t removed_count = 0;
+  for (const auto &key : keys) {
+    auto it = map_.find(key);
+    if (it == map_.end()) {
+      continue;
+    }
+
+    auto node_it = it->second;
+    if (!is_expired(*node_it)) {
+      continue;
+    }
+
+    erase_node(node_it);
+    ++removed_count;
+    ++stats_expired_;
+  }
+
+  return removed_count;
+}
+
+template <typename K, typename V, bool ThreadSafe>
 void LruCache<K, V, ThreadSafe>::cleanup_thread_main() {
+  constexpr size_t kBackgroundSampleSize = 20;
+  std::mt19937 rng(std::random_device {}());
+
   while (cleanup_running_.load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(cleanup_interval_ms_));
     if (!cleanup_running_.load(std::memory_order_relaxed)) {
       break;
     }
-    cleanup_expired_keys();
+    auto keys = sample_keys(kBackgroundSampleSize, rng);
+    expire_keys(keys);
   }
 }
 

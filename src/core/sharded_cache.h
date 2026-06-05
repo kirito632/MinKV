@@ -334,21 +334,24 @@ private:
     /** @brief 释放锁 */
     void unlock();
     /**
-     * @brief 从分片中随机采样若干 key
+     * @brief 从分片中做有界渐进采样
      * @param sample_size 期望采样数量
-     * @return 随机打乱后截取的 key 列表（实际数量 ≤ sample_size）
+     * @return 打乱后的 key 列表（实际数量 ≤ sample_size）
      * @note 调用前必须已持有该分片的锁
      */
     std::vector<K> randomSample(size_t sample_size);
     /**
-     * @brief 清理已过期的 key
-     * @param keys 采样列表（当前实现忽略此参数，直接全量扫描）
+     * @brief 仅删除采样列表里已过期的 key
+     * @param keys 采样列表
      * @return 本次清理的过期条目数
-     * @note 调用前必须已持有该分片的锁；
-     *       实际委托给 LruCache::cleanup_expired_keys()，内部会加 LruCache
-     * 自己的锁， 两把锁不同，不会死锁
+     * @note 调用前必须已持有该分片的锁
      */
     size_t expireKeys(const std::vector<K> &keys);
+    /**
+     * @brief 对整个分片做一次全量过期清理
+     * @return 本次清理的过期条目数
+     */
+    size_t cleanupExpiredKeysFullScan();
 
     /**
      * @brief 原子 read-modify-write
@@ -981,13 +984,12 @@ size_t ShardedCache<K, V, EnableCacheAlign>::manualExpiration(int shard_id) {
   size_t total_expired = 0;
 
   if (shard_id == -1) {
-    // 清理所有分片
-    for (size_t i = 0; i < shards_.size(); ++i) {
-      total_expired += expirationCallback(i, 20);
+    for (auto &shard : shards_) {
+      total_expired += shard->cleanupExpiredKeysFullScan();
     }
   } else if (shard_id >= 0 && shard_id < static_cast<int>(shards_.size())) {
-    // 清理指定分片
-    total_expired = expirationCallback(static_cast<size_t>(shard_id), 20);
+    total_expired =
+        shards_[static_cast<size_t>(shard_id)]->cleanupExpiredKeysFullScan();
   }
 
   return total_expired;
@@ -1141,25 +1143,7 @@ template <typename K, typename V, bool EnableCacheAlign>
 std::vector<K> ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::randomSample(
     size_t sample_size) {
   // 调用前必须已获取锁
-  auto all_data = cache_->get_all();
-
-  std::vector<K> keys;
-  keys.reserve(all_data.size());
-
-  for (const auto &[key, value] : all_data) {
-    keys.push_back(key);
-  }
-
-  if (keys.empty()) {
-    return {};
-  }
-
-  std::shuffle(keys.begin(), keys.end(), rng_);
-
-  size_t actual_size = std::min(sample_size, keys.size());
-  keys.resize(actual_size);
-
-  return keys;
+  return cache_->sample_keys(sample_size, rng_);
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
@@ -1167,7 +1151,12 @@ size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::expireKeys(
     const std::vector<K> &keys) {
   // 调用前必须已获取 EnhancedLruShard 的锁
   // LruCache<K,V,false> 内部使用 NullMutex，锁由外层 mutex_wrapper_ 统一管理
-  (void)keys;
+  return cache_->expire_keys(keys);
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::cleanupExpiredKeysFullScan() {
+  std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
   return cache_->cleanup_expired_keys();
 }
 
