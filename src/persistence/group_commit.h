@@ -92,10 +92,11 @@ public:
    * @param data 要提交的数据
    * @param callback 完成回调函数，可选
    *
-   * 前端线程调用此接口提交数据，立即返回不阻塞
-   * 数据会被加入待处理队列，由后台线程批量处理
+   * 前端线程调用此接口提交数据，立即返回不阻塞。
+   * @return true 表示数据已进入待处理队列，false 表示管理器已停止。
+   *         入队成功不代表已经 append/fsync 到磁盘，实际 I/O 由后台线程批量处理。
    */
-  void commitAsync(std::string data, CommitCallback callback = nullptr);
+  bool commitAsync(std::string data, CommitCallback callback = nullptr);
 
   /**
    * @brief 同步提交数据（阻塞等待完成）

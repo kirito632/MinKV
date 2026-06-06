@@ -189,10 +189,11 @@ std::vector<LogEntry> WriteAheadLog::read_file(const std::string &filepath) cons
     if (offset + 4 > data.size())
       break;
 
-    uint32_t entry_size = *reinterpret_cast<const uint32_t *>(data.data() + offset);
-    offset += 4;
+    uint32_t entry_size = 0;
+    std::memcpy(&entry_size, data.data() + offset, sizeof(entry_size));
+    offset += sizeof(entry_size);
 
-    if (offset + entry_size > data.size())
+    if (entry_size == 0 || entry_size > data.size() - offset)
       break;
 
     auto entry = deserialize_entry(data.data() + offset, entry_size);
@@ -297,7 +298,9 @@ size_t WriteAheadLog::get_log_size() const {
   return total_size + buf_size;
 }
 
-std::string WriteAheadLog::current_wal_path() const { return wal_file_; }
+std::string WriteAheadLog::current_wal_path() const {
+  return wal_file_;
+}
 
 std::vector<std::string> WriteAheadLog::list_wal_files() const {
   std::vector<std::pair<uint64_t, std::string>> indexed;
@@ -440,8 +443,8 @@ void WriteAheadLog::reopen_wal_file_locked(const std::string &filepath) {
   wal_file_ = filepath;
   wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
   if (wal_fd_ < 0) {
-    throw std::runtime_error(std::string("Failed to open WAL file: ") + wal_file_ +
-                             " (" + std::strerror(errno) + ")");
+    throw std::runtime_error(std::string("Failed to open WAL file: ") + wal_file_ + " (" +
+                             std::strerror(errno) + ")");
   }
   wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
 }
@@ -449,34 +452,59 @@ void WriteAheadLog::reopen_wal_file_locked(const std::string &filepath) {
 std::optional<LogEntry> WriteAheadLog::deserialize_entry(const uint8_t *data,
                                                          size_t size) {
   LogEntry entry;
-
   size_t offset = 0;
 
-  // 读取操作类型
-  entry.op = static_cast<LogEntry::OpType>(data[offset++]);
+  auto require = [&](size_t bytes) -> bool {
+    return offset <= size && bytes <= size - offset;
+  };
 
-  // 读取 key
-  uint32_t key_len = *reinterpret_cast<const uint32_t *>(data + offset);
-  offset += 4;
-  entry.key = std::string(reinterpret_cast<const char *>(data + offset), key_len);
-  offset += key_len;
+  auto read_bytes = [&](void *dst, size_t bytes) -> bool {
+    if (!require(bytes)) {
+      return false;
+    }
+    std::memcpy(dst, data + offset, bytes);
+    offset += bytes;
+    return true;
+  };
 
-  // 读取 value
-  uint32_t value_len = *reinterpret_cast<const uint32_t *>(data + offset);
-  offset += 4;
-  entry.value = std::string(reinterpret_cast<const char *>(data + offset), value_len);
-  offset += value_len;
+  auto read_string = [&](std::string &out, size_t min_remaining_after) -> bool {
+    uint32_t len = 0;
+    if (!read_bytes(&len, sizeof(len)) || !require(min_remaining_after) ||
+        len > size - offset - min_remaining_after) {
+      return false;
+    }
+    out.assign(reinterpret_cast<const char *>(data + offset), len);
+    offset += len;
+    return true;
+  };
 
-  // 读取时间戳
-  entry.timestamp_ms = *reinterpret_cast<const int64_t *>(data + offset);
-  offset += 8;
+  uint8_t op = 0;
+  if (!read_bytes(&op, sizeof(op))) {
+    return std::nullopt;
+  }
+  if (op != LogEntry::PUT && op != LogEntry::DELETE && op != LogEntry::SNAPSHOT) {
+    return std::nullopt;
+  }
+  entry.op = static_cast<LogEntry::OpType>(op);
 
-  // 读取 LSN（位于 timestamp 之后、checksum 之前）
-  entry.lsn = *reinterpret_cast<const uint64_t *>(data + offset);
-  offset += 8;
+  constexpr size_t kTimestampSize = sizeof(entry.timestamp_ms);
+  constexpr size_t kLsnSize = sizeof(entry.lsn);
+  constexpr size_t kChecksumSize = sizeof(uint32_t);
+  constexpr size_t kValueLenSize = sizeof(uint32_t);
 
-  // 验证校验和：防止崩溃时 partial write 导致的数据损坏
-  uint32_t stored_checksum = *reinterpret_cast<const uint32_t *>(data + offset);
+  if (!read_string(entry.key,
+                   kValueLenSize + kTimestampSize + kLsnSize + kChecksumSize) ||
+      !read_string(entry.value, kTimestampSize + kLsnSize + kChecksumSize) ||
+      !read_bytes(&entry.timestamp_ms, sizeof(entry.timestamp_ms)) ||
+      !read_bytes(&entry.lsn, sizeof(entry.lsn))) {
+    return std::nullopt;
+  }
+
+  uint32_t stored_checksum = 0;
+  if (!read_bytes(&stored_checksum, sizeof(stored_checksum)) || offset != size) {
+    return std::nullopt;
+  }
+
   uint32_t computed_checksum = entry.compute_checksum();
   if (stored_checksum != computed_checksum) {
     return std::nullopt; // 条目损坏，通知调用方截断

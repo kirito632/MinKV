@@ -4,15 +4,22 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include "../core/sharded_cache.h"
 #include "wal.h"
@@ -209,7 +216,7 @@ private:
                           uint64_t &wal_lsn);
   std::vector<std::string> list_snapshot_files() const;
   std::string find_latest_snapshot() const;
-  int64_t extract_timestamp_from_filename(const std::string &filename) const;
+  std::optional<uint64_t> parse_snapshot_lsn(const std::string &filename) const;
   uint32_t calculate_checksum(const SnapshotHeader &header) const;
   void background_checker_loop();
   static int64_t current_time_ms();
@@ -485,19 +492,27 @@ template <typename K, typename V>
 void SimpleCheckpointManager<K, V>::cleanup_old_snapshots() {
   try {
     auto snapshot_files = list_snapshot_files();
+    const size_t keep_count = config_.keep_snapshot_count > 0
+                                ? static_cast<size_t>(config_.keep_snapshot_count)
+                                : 0;
 
-    if (snapshot_files.size() <= static_cast<size_t>(config_.keep_snapshot_count)) {
+    if (snapshot_files.size() <= keep_count) {
       return; // 不需要清理
     }
 
-    // 按时间戳排序 (文件名包含时间戳)
-    std::sort(snapshot_files.begin(), snapshot_files.end(), std::greater<std::string>());
+    // 按文件名中的数字 LSN 排序，兼容旧的非补零文件名 snapshot_9.bin。
+    std::sort(snapshot_files.begin(),
+              snapshot_files.end(),
+              [this](const auto &lhs, const auto &rhs) {
+                return parse_snapshot_lsn(lhs).value_or(0) >
+                       parse_snapshot_lsn(rhs).value_or(0);
+              });
 
     size_t deleted_count = 0;
     size_t total_saved_bytes = 0;
 
     // 删除多余的快照文件
-    for (size_t i = config_.keep_snapshot_count; i < snapshot_files.size(); ++i) {
+    for (size_t i = keep_count; i < snapshot_files.size(); ++i) {
       std::string file_path = get_snapshots_dir() + "/" + snapshot_files[i];
 
       // 获取文件大小
@@ -533,8 +548,10 @@ void SimpleCheckpointManager<K, V>::cleanup_old_snapshots() {
 
 template <typename K, typename V>
 std::string SimpleCheckpointManager<K, V>::get_snapshot_path(uint64_t lsn) const {
-  // 用 LSN 命名，单调递增，不受时钟回拨影响
-  return get_snapshots_dir() + "/snapshot_" + std::to_string(lsn) + ".bin";
+  // 用 LSN 命名，单调递增，不受时钟回拨影响。固定宽度便于人工查看。
+  std::ostringstream filename;
+  filename << "snapshot_" << std::setw(20) << std::setfill('0') << lsn << ".bin";
+  return get_snapshots_dir() + "/" + filename.str();
 }
 
 template <typename K, typename V>
@@ -728,8 +745,8 @@ bool SimpleCheckpointManager<K, V>::read_snapshot_file(const std::string &filepa
       file_offset += sizeof(key_len);
 
       std::string key_str(key_len, '\0');
-      if (key_len > 0 &&
-          ::pread(fd, key_str.data(), key_len, file_offset) != static_cast<ssize_t>(key_len)) {
+      if (key_len > 0 && ::pread(fd, key_str.data(), key_len, file_offset) !=
+                             static_cast<ssize_t>(key_len)) {
         std::cerr << "[Snapshot] Failed to read key bytes at record " << i << std::endl;
         close_fd();
         return false;
@@ -739,16 +756,16 @@ bool SimpleCheckpointManager<K, V>::read_snapshot_file(const std::string &filepa
       uint32_t value_len = 0;
       if (::pread(fd, &value_len, sizeof(value_len), file_offset) !=
           static_cast<ssize_t>(sizeof(value_len))) {
-        std::cerr << "[Snapshot] Failed to read value length at record " << i << std::endl;
+        std::cerr << "[Snapshot] Failed to read value length at record " << i
+                  << std::endl;
         close_fd();
         return false;
       }
       file_offset += sizeof(value_len);
 
       std::string value_str(value_len, '\0');
-      if (value_len > 0 &&
-          ::pread(fd, value_str.data(), value_len, file_offset) !=
-              static_cast<ssize_t>(value_len)) {
+      if (value_len > 0 && ::pread(fd, value_str.data(), value_len, file_offset) !=
+                               static_cast<ssize_t>(value_len)) {
         std::cerr << "[Snapshot] Failed to read value bytes at record " << i << std::endl;
         close_fd();
         return false;
@@ -812,8 +829,7 @@ std::vector<std::string> SimpleCheckpointManager<K, V>::list_snapshot_files() co
     for (const auto &entry : std::filesystem::directory_iterator(snapshots_dir)) {
       if (entry.is_regular_file()) {
         std::string filename = entry.path().filename().string();
-        if (filename.substr(0, 9) == "snapshot_" && filename.size() >= 4 &&
-            filename.substr(filename.size() - 4) == ".bin") {
+        if (parse_snapshot_lsn(filename).has_value()) {
           files.push_back(filename);
         }
       }
@@ -832,13 +848,49 @@ std::string SimpleCheckpointManager<K, V>::find_latest_snapshot() const {
     return "";
   }
 
-  // 按文件名排序（文件名包含 LSN，字典序即 LSN 序，LSN 单调递增不受时钟影响）
-  std::sort(files.begin(), files.end(), std::greater<std::string>());
+  // 按文件名中的数字 LSN 选择最新快照，避免 snapshot_9.bin 排在
+  // snapshot_10.bin 前面。
+  std::sort(files.begin(), files.end(), [this](const auto &lhs, const auto &rhs) {
+    return parse_snapshot_lsn(lhs).value_or(0) > parse_snapshot_lsn(rhs).value_or(0);
+  });
 
   std::string latest_file = get_snapshots_dir() + "/" + files[0];
   std::cout << "[Recovery] Found latest snapshot: " << files[0] << std::endl;
 
   return latest_file;
+}
+
+template <typename K, typename V>
+std::optional<uint64_t> SimpleCheckpointManager<K, V>::parse_snapshot_lsn(
+    const std::string &filename) const {
+  constexpr std::string_view prefix = "snapshot_";
+  constexpr std::string_view suffix = ".bin";
+
+  if (filename.size() <= prefix.size() + suffix.size() ||
+      filename.rfind(prefix, 0) != 0 ||
+      filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) != 0) {
+    return std::nullopt;
+  }
+
+  const size_t number_begin = prefix.size();
+  const size_t number_len = filename.size() - prefix.size() - suffix.size();
+  const std::string number = filename.substr(number_begin, number_len);
+  if (number.empty() || !std::all_of(number.begin(), number.end(), [](unsigned char ch) {
+        return std::isdigit(ch) != 0;
+      })) {
+    return std::nullopt;
+  }
+
+  try {
+    size_t parsed = 0;
+    uint64_t lsn = std::stoull(number, &parsed, 10);
+    if (parsed != number.size()) {
+      return std::nullopt;
+    }
+    return lsn;
+  } catch (...) {
+    return std::nullopt;
+  }
 }
 
 template <typename K, typename V>

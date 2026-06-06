@@ -1,11 +1,14 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <random>
+#include <shared_mutex>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -62,7 +65,8 @@ public:
    * @param key   键
    * @param value 值
    * @param ttl_ms 过期时间（毫秒），0 表示永不过期
-   * @note 如果启用了持久化，会先写 WAL 再写内存（write-ahead 语义）
+   * @note 如果启用了持久化，写入返回前只保证 WAL entry 已进入异步提交队列，
+   *       不保证已经 fsync 到磁盘。如果 WAL 序列化或入队失败，不会写内存。
    *       如果 key 已存在，会覆盖旧值并刷新 TTL
    */
   void put(const K &key, const V &value, int64_t ttl_ms = 0);
@@ -71,7 +75,8 @@ public:
    * @brief 删除一个键值对
    * @param key 要删除的键
    * @return true 表示删除成功（key 存在），false 表示 key 不存在
-   * @note 如果启用了持久化，会先写 DELETE 日志再删内存
+   * @note 如果启用了持久化，删除返回前只保证 DELETE entry 已进入异步提交队列，
+   *       不保证已经 fsync 到磁盘。如果 WAL 序列化或入队失败，不会删内存。
    */
   bool remove(const K &key);
 
@@ -113,7 +118,8 @@ public:
    *
    * 与 put() 一样会持 global_consistency_lock_ 的 shared_lock，
    * 保证与 export_all_data / create_snapshot 的互斥。
-   * 如果启用了持久化，会在分片锁内完成内存写入后，再写 WAL。
+   * 如果启用了持久化，会先把新值对应的 WAL entry 放入异步提交队列，
+   * 再更新内存；不保证返回时已经 fsync 到磁盘。
    *
    * @tparam F  回调类型，签名: V(const std::optional<V>& old_val)
    * @param key      要更新的键
@@ -365,9 +371,16 @@ private:
      */
     template <typename F>
     V update_in_place(const K &key, F &&updater) {
+      return update_in_place_with_precommit(
+          key, std::forward<F>(updater), [](const V &) {});
+    }
+
+    template <typename F, typename Precommit>
+    V update_in_place_with_precommit(const K &key, F &&updater, Precommit &&precommit) {
       std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
       auto old_val = cache_->get(key);
       auto new_val = updater(old_val);
+      precommit(new_val);
       cache_->put(key, new_val, 0);
       return new_val;
     }
@@ -391,7 +404,7 @@ private:
 
   std::unique_ptr<WriteAheadLog> wal_;
   std::unique_ptr<base::GroupCommitManager> gcm_;
-  bool persistence_enabled_ {false};
+  std::atomic<bool> persistence_enabled_ {false};
   std::string persistence_data_dir_;
   int64_t persistence_fsync_interval_ms_ {1000};
   mutable std::shared_mutex global_consistency_lock_;
@@ -452,20 +465,20 @@ template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
                                                const V &value,
                                                int64_t ttl_ms) {
-  // 仅持久化启用时需要全局一致性锁
-  // Use deferred_lock to avoid heap allocation (unique_ptr<shared_lock>),
-  // reducing per-op overhead when persistence is enabled.
+  const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
+
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
                                                        std::defer_lock);
-  if (persistence_enabled_) [[unlikely]] {
+  if (persistence_active) [[unlikely]] {
     consistency_lock.lock();
   }
 
   size_t shard_idx = get_shard_index(key);
 
-  // 预序列化（无锁），返回 string 直接用于 GCM push（零拷贝）
-  std::string serialized;
-  if (persistence_enabled_ && gcm_) [[unlikely]] {
+  const bool write_wal =
+      persistence_active && persistence_enabled_.load(std::memory_order_acquire) && gcm_;
+  if (write_wal) [[unlikely]] {
+    std::string serialized;
     try {
       LogEntry entry;
       entry.op = LogEntry::PUT;
@@ -478,13 +491,13 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
       entry.lsn = next_lsn();
       serialized = WriteAheadLog::serialize_entry(entry);
     } catch (const std::exception &e) {
-      serialized.clear(); // 序列化失败，跳过 WAL
+      throw std::runtime_error("[WAL] put serialization failed: " +
+                               std::string(e.what()));
     }
-  }
 
-  // push GCM（O(1) queue push，move 语义零拷贝）
-  if (!serialized.empty() && gcm_) {
-    gcm_->commitAsync(std::move(serialized));
+    if (!gcm_->commitAsync(std::move(serialized))) {
+      throw std::runtime_error("[WAL] put enqueue failed");
+    }
   }
 
   // 写内存
@@ -499,64 +512,71 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
 template <typename K, typename V, bool EnableCacheAlign>
 template <typename F>
 V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&updater) {
-  // 仅持久化启用时需要全局一致性锁
-  // Use deferred_lock to avoid heap allocation
+  const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
+
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
                                                        std::defer_lock);
-  if (persistence_enabled_) [[unlikely]] {
+  if (persistence_active) [[unlikely]] {
     consistency_lock.lock();
   }
 
   size_t shard_idx = get_shard_index(key);
 
-  // 在分片锁内完成 RMW（读旧值 → 应用回调 → 写新值）
-  V new_val;
+  const bool write_wal =
+      persistence_active && persistence_enabled_.load(std::memory_order_acquire) && gcm_;
+
+  bool wal_precommit_failed = false;
   try {
-    new_val = shards_[shard_idx]->update_in_place(key, std::forward<F>(updater));
+    return shards_[shard_idx]->update_in_place_with_precommit(
+        key, std::forward<F>(updater), [&](const V &new_val) {
+          if (!write_wal) [[likely]] {
+            return;
+          }
+
+          try {
+            LogEntry entry;
+            entry.op = LogEntry::PUT;
+            entry.key = Serializer<K>::serialize(key);
+            entry.value = Serializer<V>::serialize(new_val);
+            entry.timestamp_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::high_resolution_clock::now().time_since_epoch())
+                    .count();
+            entry.lsn = next_lsn();
+            std::string serialized = WriteAheadLog::serialize_entry(entry);
+            if (!gcm_->commitAsync(std::move(serialized))) {
+              throw std::runtime_error("enqueue failed");
+            }
+          } catch (const std::exception &e) {
+            wal_precommit_failed = true;
+            throw std::runtime_error("[WAL] update_in_place precommit failed: " +
+                                     std::string(e.what()));
+          }
+        });
   } catch (const std::exception &e) {
-    recordShardError(shard_idx);
+    if (!wal_precommit_failed) {
+      recordShardError(shard_idx);
+    }
     throw;
   }
-
-  // 写 WAL（分片锁外，内存在前 WAL 在后，幂等安全）
-  if (persistence_enabled_ && gcm_) [[unlikely]] {
-    try {
-      LogEntry entry;
-      entry.op = LogEntry::PUT;
-      entry.key = Serializer<K>::serialize(key);
-      entry.value = Serializer<V>::serialize(new_val);
-      entry.timestamp_ms =
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::high_resolution_clock::now().time_since_epoch())
-              .count();
-      entry.lsn = next_lsn();
-      // 内存已更新 → 序列化 new_val → GCM push
-
-      std::string serialized = WriteAheadLog::serialize_entry(entry);
-      gcm_->commitAsync(std::move(serialized));
-    } catch (const std::exception &e) {
-      std::cerr << "[WAL] update_in_place WAL failed: " << e.what() << std::endl;
-    }
-  }
-
-  return new_val;
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
 bool ShardedCache<K, V, EnableCacheAlign>::remove(const K &key) {
-  // 仅持久化启用时需要全局一致性锁
-  // Use deferred_lock to avoid heap allocation
+  const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
+
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
                                                        std::defer_lock);
-  if (persistence_enabled_) [[unlikely]] {
+  if (persistence_active) [[unlikely]] {
     consistency_lock.lock();
   }
 
   size_t shard_idx = get_shard_index(key);
 
-  // 预序列化（无锁）
-  std::string serialized;
-  if (persistence_enabled_ && gcm_) [[unlikely]] {
+  const bool write_wal =
+      persistence_active && persistence_enabled_.load(std::memory_order_acquire) && gcm_;
+  if (write_wal) [[unlikely]] {
+    std::string serialized;
     try {
       LogEntry entry;
       entry.op = LogEntry::DELETE;
@@ -568,14 +588,13 @@ bool ShardedCache<K, V, EnableCacheAlign>::remove(const K &key) {
       entry.lsn = next_lsn();
       serialized = WriteAheadLog::serialize_entry(entry);
     } catch (const std::exception &e) {
-      serialized.clear(); // 序列化失败，跳过 WAL
+      throw std::runtime_error("[WAL] remove serialization failed: " +
+                               std::string(e.what()));
     }
-  }
 
-  // remove() 的序列化（无锁）vs GCM push（O(1)无锁竞争）
-  // push GCM（O(1) queue push，move 语义零拷贝）
-  if (!serialized.empty() && gcm_) {
-    gcm_->commitAsync(std::move(serialized));
+    if (!gcm_->commitAsync(std::move(serialized))) {
+      throw std::runtime_error("[WAL] remove enqueue failed");
+    }
   }
 
   // 删内存数据
@@ -667,65 +686,91 @@ void ShardedCache<K, V, EnableCacheAlign>::enable_persistence(const std::string 
                                                               int64_t fsync_interval_ms) {
   std::lock_guard<std::mutex> lock(persistence_mutex_);
 
-  if (persistence_enabled_) {
+  if (persistence_enabled_.load(std::memory_order_acquire)) {
     return; // 已启用
   }
 
+  std::unique_ptr<WriteAheadLog> new_wal;
+  std::unique_ptr<base::GroupCommitManager> new_gcm;
+
   try {
-    wal_ = std::make_unique<WriteAheadLog>(data_dir, 1024 * 1024, fsync_interval_ms);
+    new_wal = std::make_unique<WriteAheadLog>(data_dir, 1024 * 1024, fsync_interval_ms);
+    new_gcm = std::make_unique<base::GroupCommitManager>(
+        new_wal->current_wal_path(), 4096, std::chrono::milliseconds(fsync_interval_ms));
+    new_gcm->start();
+
+    std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
+    wal_ = std::move(new_wal);
+    gcm_ = std::move(new_gcm);
     persistence_data_dir_ = data_dir;
     persistence_fsync_interval_ms_ = fsync_interval_ms;
-
-    gcm_ = std::make_unique<base::GroupCommitManager>(
-        wal_->current_wal_path(),
-        4096,
-        std::chrono::milliseconds(fsync_interval_ms));
-    gcm_->start();
-
-    persistence_enabled_ = true;
+    persistence_enabled_.store(true, std::memory_order_release);
   } catch (const std::exception &e) {
     std::cerr << "[Persistence] Failed to enable: " << e.what() << std::endl;
-    persistence_enabled_ = false;
-    wal_.reset();
-    gcm_.reset();
+    if (new_gcm) {
+      new_gcm->stop();
+    }
+    persistence_enabled_.store(false, std::memory_order_release);
   }
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::disable_persistence() {
+  std::unique_ptr<base::GroupCommitManager> old_gcm;
+  std::unique_ptr<WriteAheadLog> old_wal;
+
   std::lock_guard<std::mutex> lock(persistence_mutex_);
 
-  if (!persistence_enabled_) {
+  if (!persistence_enabled_.load(std::memory_order_acquire)) {
     return;
   }
 
-  persistence_enabled_ = false;
+  {
+    std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
+    if (!persistence_enabled_.load(std::memory_order_acquire)) {
+      return;
+    }
 
-  // 先停 GCM（drain 所有请求，join 线程）
-  if (gcm_) {
-    gcm_->flush();
-    gcm_->stop();
+    persistence_enabled_.store(false, std::memory_order_release);
+    old_gcm = std::move(gcm_);
+    old_wal = std::move(wal_);
+    persistence_data_dir_.clear();
   }
-  gcm_.reset();
 
-  if (wal_) {
-    wal_->flush();
+  // 全局锁已释放；继续持有 persistence_mutex_，避免并发 enable 复用同一路径。
+  if (old_gcm) {
+    old_gcm->flush();
+    old_gcm->stop();
   }
-  wal_.reset();
-  persistence_data_dir_.clear();
+
+  if (old_wal) {
+    old_wal->flush();
+  }
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::create_snapshot() {
+  std::lock_guard<std::mutex> lock(persistence_mutex_);
+  std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
+
   if (!wal_) {
     return;
   }
 
-  // 导出所有数据（在一致性锁保护下）
-  auto all_data = export_all_data();
+  std::map<K, V> all_data;
+  for (size_t i = 0; i < shards_.size(); ++i) {
+    if (!isShardDisabled(i)) {
+      try {
+        auto shard_data = shards_[i]->get_all();
+        all_data.insert(shard_data.begin(), shard_data.end());
+      } catch (const std::exception &e) {
+        std::cerr << "[Snapshot] Shard " << i << " export error: " << e.what()
+                  << std::endl;
+      }
+    }
+  }
 
-  // 创建快照
-  int64_t snapshot_id = wal_->create_snapshot(all_data);
+  wal_->create_snapshot(all_data);
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
@@ -752,8 +797,8 @@ template <typename K, typename V, bool EnableCacheAlign>
 typename ShardedCache<K, V, EnableCacheAlign>::CheckpointCut
 ShardedCache<K, V, EnableCacheAlign>::capture_checkpoint_cut() {
   CheckpointCut cut;
-  std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
   std::lock_guard<std::mutex> lock(persistence_mutex_);
+  std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
 
   if (gcm_) {
     gcm_->flush();
@@ -988,8 +1033,7 @@ size_t ShardedCache<K, V, EnableCacheAlign>::manualExpiration(int shard_id) {
       total_expired += shard->cleanupExpiredKeysFullScan();
     }
   } else if (shard_id >= 0 && shard_id < static_cast<int>(shards_.size())) {
-    total_expired =
-        shards_[static_cast<size_t>(shard_id)]->cleanupExpiredKeysFullScan();
+    total_expired = shards_[static_cast<size_t>(shard_id)]->cleanupExpiredKeysFullScan();
   }
 
   return total_expired;
@@ -1155,7 +1199,8 @@ size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::expireKeys(
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-size_t ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::cleanupExpiredKeysFullScan() {
+size_t
+ShardedCache<K, V, EnableCacheAlign>::EnhancedLruShard::cleanupExpiredKeysFullScan() {
   std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
   return cache_->cleanup_expired_keys();
 }

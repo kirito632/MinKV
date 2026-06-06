@@ -132,13 +132,13 @@ void GroupCommitManager::stop() {
   flush();
 }
 
-void GroupCommitManager::commitAsync(std::string data, CommitCallback callback) {
+bool GroupCommitManager::commitAsync(std::string data, CommitCallback callback) {
   // 如果管理器已停止，立即调用回调通知失败，避免阻塞
   if (!running_) {
     if (callback) {
       callback(false);
     }
-    return;
+    return false;
   }
 
   {
@@ -186,6 +186,8 @@ void GroupCommitManager::commitAsync(std::string data, CommitCallback callback) 
       cond_.notify_one();
     }
   }
+
+  return true;
 }
 
 bool GroupCommitManager::commitSync(const std::string &data) {
