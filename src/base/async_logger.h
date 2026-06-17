@@ -149,13 +149,15 @@ public:
 
   /**
    * @brief 启动异步日志线程
+   *
+   * 重复调用安全，线程已运行时直接返回。
    */
   void start();
 
   /**
    * @brief 停止异步日志线程
    *
-   * 等待后台线程完成所有日志写入后再退出
+   * 等待后台线程完成所有日志写入后再退出；重复调用安全。
    */
   void stop();
 
@@ -210,6 +212,7 @@ private:
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证线程安全
   std::atomic<bool> syncRequested_ {false}; ///< ERROR/FATAL 触发的 fsync 请求
   std::thread thread_;                      ///< 后台I/O线程
+  std::mutex lifecycleMutex_; ///< 保护后台线程启动/停止生命周期
 
   // 使用mutex保护共享数据，condition_variable实现高效等待
   std::mutex mutex_;             ///< 保护缓冲区的互斥锁

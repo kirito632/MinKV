@@ -5,9 +5,10 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
-#include <mutex> // for std::once_flag
+#include <mutex>
 #include <sstream>
 #include <utility>
 
@@ -29,20 +30,39 @@ AsyncLogger::AsyncLogger(const std::string &basename, size_t rollSize)
 
 AsyncLogger::~AsyncLogger() {
   // 析构时确保后台线程正确停止，避免资源泄漏
-  if (running_) {
-    stop();
-  }
+  stop();
 }
 
 void AsyncLogger::start() {
-  running_ = true;
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+
+  if (running_.load(std::memory_order_acquire)) {
+    return;
+  }
+
+  if (thread_.joinable()) {
+    thread_.join();
+  }
+
+  running_.store(true, std::memory_order_release);
   // 启动后台I/O线程，使用成员函数指针和this指针
-  thread_ = std::thread(&AsyncLogger::threadFunc, this);
+  try {
+    thread_ = std::thread(&AsyncLogger::threadFunc, this);
+  } catch (...) {
+    running_.store(false, std::memory_order_release);
+    throw;
+  }
 }
 
 void AsyncLogger::stop() {
-  // 设置停止标志并通知所有等待的线程
-  running_ = false;
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+
+  bool was_running = running_.exchange(false, std::memory_order_acq_rel);
+  if (!was_running && !thread_.joinable()) {
+    return;
+  }
+
+  // 通知后台线程响应停止信号
   cond_.notify_all(); // 唤醒可能在等待的后台线程
 
   // 等待后台线程完成所有工作后再退出
@@ -251,14 +271,21 @@ LogStream::~LogStream() {
 void LogStream::formatHeader(LogLevel level, const char *file, int line) {
   // 获取高精度时间戳，包含毫秒信息
   auto now = std::chrono::system_clock::now();
-  auto time_t = std::chrono::system_clock::to_time_t(now);
+  std::time_t timestamp = std::chrono::system_clock::to_time_t(now);
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
       1000;
 
+  std::tm local_time {};
+#if defined(_WIN32)
+  localtime_s(&local_time, &timestamp);
+#else
+  localtime_r(&timestamp, &local_time);
+#endif
+
   // 使用ostringstream进行高效的字符串拼接
   std::ostringstream oss;
-  oss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+  oss << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S");
   oss << '.' << std::setfill('0') << std::setw(3) << ms.count();
 
   // 将枚举值转换为可读的字符串

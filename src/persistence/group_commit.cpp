@@ -93,32 +93,37 @@ GroupCommitManager::GroupCommitManager(const std::string &filename,
 
 GroupCommitManager::~GroupCommitManager() {
   // 析构时确保后台线程正确停止，避免数据丢失和资源泄漏
-  if (running_) {
-    stop();
-  }
+  stop();
 }
 
 void GroupCommitManager::start() {
-  // 防止重复启动，使用原子标志位检查
-  if (running_) {
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycleMutex_);
+
+  if (running_.load(std::memory_order_acquire)) {
     return;
   }
 
-  // 设置运行标志，后台线程会检查此标志决定是否继续工作
-  running_ = true;
+  if (syncThread_.joinable()) {
+    syncThread_.join();
+  }
 
-  // 启动后台同步线程
-  syncThread_ = std::thread(&GroupCommitManager::syncThreadFunc, this);
+  running_.store(true, std::memory_order_release);
+
+  try {
+    syncThread_ = std::thread(&GroupCommitManager::syncThreadFunc, this);
+  } catch (...) {
+    running_.store(false, std::memory_order_release);
+    throw;
+  }
 }
 
 void GroupCommitManager::stop() {
-  // 防止重复停止，检查运行状态
-  if (!running_) {
+  std::lock_guard<std::mutex> lifecycle_lock(lifecycleMutex_);
+
+  bool was_running = running_.exchange(false, std::memory_order_acq_rel);
+  if (!was_running && !syncThread_.joinable()) {
     return;
   }
-
-  // 设置停止标志，通知后台线程准备退出
-  running_ = false;
 
   // 唤醒所有等待的线程，确保后台线程能及时响应停止信号
   cond_.notify_all();
@@ -134,13 +139,14 @@ void GroupCommitManager::stop() {
 
 bool GroupCommitManager::commitAsync(std::string data, CommitCallback callback) {
   // 如果管理器已停止，立即调用回调通知失败，避免阻塞
-  if (!running_) {
+  if (!running_.load(std::memory_order_acquire)) {
     if (callback) {
       callback(false);
     }
     return false;
   }
 
+  bool accepted = false;
   {
 #ifdef GCM_LATENCY_TRACE
     // 测量等待 mutex_ 的时间
@@ -160,31 +166,31 @@ bool GroupCommitManager::commitAsync(std::string data, CommitCallback callback) 
     }
 #endif
 
-    // 将请求加入队列，使用 move 语义避免二次拷贝
-    // by value 参数 + std::move = 调用方 move 一次，入队 move 一次 = 零额外拷贝
-    // 必须在 std::move(data) 之前保存 size，因为 move 后 data.size() 未定义
-    size_t data_size = data.size();
-    bool was_empty = pendingRequests_.empty();
-    pendingRequests_.emplace(std::move(data), std::move(callback));
+    if (running_.load(std::memory_order_acquire)) {
+      // 将请求加入队列，使用 move 语义避免二次拷贝
+      // by value 参数 + std::move = 调用方 move 一次，入队 move 一次 = 零额外拷贝
+      // 必须在 std::move(data) 之前保存 size，因为 move 后 data.size() 未定义
+      size_t data_size = data.size();
+      bool was_empty = pendingRequests_.empty();
+      pendingRequests_.emplace(std::move(data), std::move(callback));
 
-    // 累积当前批次的数据大小，用于触发条件判断
-    // 使用预先保存的 size（std::move 后 data 为空）
-    currentBatchSize_ += data_size;
+      // 累积当前批次的数据大小，用于触发条件判断
+      // 使用预先保存的 size（std::move 后 data 为空）
+      currentBatchSize_ += data_size;
+      accepted = true;
 
-    // CRITICAL: Only notify on empty→non-empty transition.
-    //
-    // Previously we called notify_one() unconditionally on every push (18M/s).
-    // But the syncThread predicate is `!running_` (always false while running),
-    // causing every notification to be a futile wakeup:
-    //   wake → lock mutex_ → check predicate(false) → sleep → futex_wake
-    // This created a 18M/s wake storm + mutex cacheline bouncing storm.
-    //
-    // Fix: wake syncThread only when the queue transitions from empty→non-empty.
-    // The timeout-based flush (syncInterval_) handles the case where data
-    // arrives gradually and never fills the queue.
-    if (was_empty) {
-      cond_.notify_one();
+      // CRITICAL: Only notify on empty→non-empty transition.
+      if (was_empty) {
+        cond_.notify_one();
+      }
     }
+  }
+
+  if (!accepted) {
+    if (callback) {
+      callback(false);
+    }
+    return false;
   }
 
   return true;

@@ -74,9 +74,6 @@ WriteAheadLog::WriteAheadLog(const std::string &data_dir,
       ::close(wal_fd_);
       wal_fd_ = -1;
     }
-    if (wal_stream_.is_open()) {
-      wal_stream_.close();
-    }
     throw;
   }
 }
@@ -87,9 +84,6 @@ WriteAheadLog::~WriteAheadLog() {
   if (wal_fd_ >= 0) {
     ::close(wal_fd_);
     wal_fd_ = -1;
-  }
-  if (wal_stream_.is_open()) {
-    wal_stream_.close();
   }
 }
 
@@ -242,19 +236,33 @@ std::string WriteAheadLog::rotate() {
 }
 
 void WriteAheadLog::start_background_fsync() {
-  if (fsync_running_.load(std::memory_order_relaxed)) {
+  std::lock_guard<std::mutex> lifecycle_lock(fsync_lifecycle_mutex_);
+
+  if (fsync_interval_ms_ == 0 || fsync_running_.load(std::memory_order_acquire)) {
     return;
   }
 
-  fsync_running_.store(true, std::memory_order_relaxed);
-  fsync_thread_ = std::thread([this]() { this->fsync_thread_main(); });
+  if (fsync_thread_.joinable()) {
+    fsync_thread_.join();
+  }
+
+  fsync_running_.store(true, std::memory_order_release);
+  try {
+    fsync_thread_ = std::thread([this]() { this->fsync_thread_main(); });
+  } catch (...) {
+    fsync_running_.store(false, std::memory_order_release);
+    throw;
+  }
 }
 
 void WriteAheadLog::stop_background_fsync() {
-  {
-    std::lock_guard<std::mutex> lock(fsync_cv_mutex_);
-    fsync_running_.store(false, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lifecycle_lock(fsync_lifecycle_mutex_);
+
+  bool was_running = fsync_running_.exchange(false, std::memory_order_acq_rel);
+  if (!was_running && !fsync_thread_.joinable()) {
+    return;
   }
+
   fsync_cv_.notify_all();
 
   if (fsync_thread_.joinable()) {
@@ -263,7 +271,7 @@ void WriteAheadLog::stop_background_fsync() {
 }
 
 void WriteAheadLog::fsync_thread_main() {
-  // fsync_interval_ms_ == 0 时走同步刷盘模式，后台线程不参与
+  // 防御性检查：同步刷盘模式不会启动后台线程。
   if (fsync_interval_ms_ == 0) {
     return;
   }
@@ -358,16 +366,11 @@ size_t WriteAheadLog::get_buffer_size() const {
 void WriteAheadLog::clear_all() {
   std::lock_guard<std::mutex> lock(buffer_mutex_);
 
-  // ftruncate 替代 close+remove+reopen，保持同一 inode，GCM 的 fd 不失效
+  // ftruncate 截断当前 WAL 文件，保持同一 inode，GCM 的 fd 不失效
   if (wal_fd_ >= 0) {
     if (::ftruncate(wal_fd_, 0) != 0) {
       throw std::runtime_error("clear_all: ftruncate failed: " +
                                std::string(std::strerror(errno)));
-    }
-
-    if (wal_stream_.is_open()) {
-      wal_stream_.close();
-      wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
     }
   }
 
@@ -436,9 +439,6 @@ void WriteAheadLog::reopen_wal_file_locked(const std::string &filepath) {
     ::close(wal_fd_);
     wal_fd_ = -1;
   }
-  if (wal_stream_.is_open()) {
-    wal_stream_.close();
-  }
 
   wal_file_ = filepath;
   wal_fd_ = ::open(wal_file_.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -446,7 +446,6 @@ void WriteAheadLog::reopen_wal_file_locked(const std::string &filepath) {
     throw std::runtime_error(std::string("Failed to open WAL file: ") + wal_file_ + " (" +
                              std::strerror(errno) + ")");
   }
-  wal_stream_.open(wal_file_, std::ios::binary | std::ios::in);
 }
 
 std::optional<LogEntry> WriteAheadLog::deserialize_entry(const uint8_t *data,

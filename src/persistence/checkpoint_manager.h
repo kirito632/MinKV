@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -43,7 +44,7 @@ namespace db {
  * 1. 智能触发检查 (双重条件)
  * 2. 导出内存数据 (export_all_data)
  * 3. 写入快照文件 (带LSN标记)
- * 4. 原子性WAL截断 (clear_wal)
+ * 4. 按 snapshot_lsn 清理已覆盖的旧 WAL 文件 (cleanup_wal_up_to)
  * 5. 版本轮替清理 (cleanup_old_snapshots)
  *
  * [面试亮点]
@@ -126,11 +127,14 @@ public:
    * @brief 启动后台检查线程
    *
    * 定期检查是否需要执行checkpoint，实现自动化管理。
+   * 重复调用安全，后台线程已运行时直接返回。
    */
   void start_background_checker();
 
   /**
    * @brief 停止后台检查线程
+   *
+   * 重复调用安全。
    */
   void stop_background_checker();
 
@@ -187,6 +191,7 @@ private:
   // 后台检查线程
   std::atomic<bool> background_running_ {false};
   std::thread background_thread_;
+  std::mutex background_lifecycle_mutex_;
   std::condition_variable bg_cv_;
   std::mutex bg_cv_mutex_;
 
@@ -347,13 +352,24 @@ bool SimpleCheckpointManager<K, V>::should_checkpoint() const {
 
 template <typename K, typename V>
 void SimpleCheckpointManager<K, V>::start_background_checker() {
-  if (background_running_.load()) {
+  std::lock_guard<std::mutex> lifecycle_lock(background_lifecycle_mutex_);
+
+  if (background_running_.load(std::memory_order_acquire)) {
     return; // 已经在运行
   }
 
-  background_running_.store(true);
-  background_thread_ =
-      std::thread(&SimpleCheckpointManager::background_checker_loop, this);
+  if (background_thread_.joinable()) {
+    background_thread_.join();
+  }
+
+  background_running_.store(true, std::memory_order_release);
+  try {
+    background_thread_ =
+        std::thread(&SimpleCheckpointManager::background_checker_loop, this);
+  } catch (...) {
+    background_running_.store(false, std::memory_order_release);
+    throw;
+  }
 
   std::cout << "[CheckpointManager] Background checker started (interval: "
             << config_.check_interval.count() << " minutes)" << std::endl;
@@ -361,14 +377,13 @@ void SimpleCheckpointManager<K, V>::start_background_checker() {
 
 template <typename K, typename V>
 void SimpleCheckpointManager<K, V>::stop_background_checker() {
-  if (!background_running_.load()) {
+  std::lock_guard<std::mutex> lifecycle_lock(background_lifecycle_mutex_);
+
+  bool was_running = background_running_.exchange(false, std::memory_order_acq_rel);
+  if (!was_running && !background_thread_.joinable()) {
     return;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(bg_cv_mutex_);
-    background_running_.store(false);
-  }
   bg_cv_.notify_all();
 
   if (background_thread_.joinable()) {

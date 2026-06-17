@@ -1,11 +1,14 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <list>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <shared_mutex>
@@ -101,6 +104,7 @@ class LruCache {
 public:
   // 构造函数，指定缓存容量
   explicit LruCache(size_t capacity);
+  ~LruCache();
 
   // 禁止拷贝和赋值
   LruCache(const LruCache &) = delete;
@@ -161,6 +165,7 @@ public:
    * @brief 启动后台过期键清理线程
    *
    * 定期扫描缓存中的过期键并删除，防止内存泄漏。
+   * 重复调用安全，清理线程已运行时直接返回。
    *
    * @param cleanup_interval_ms 清理间隔（毫秒），默认 1000ms
    */
@@ -169,7 +174,7 @@ public:
   /**
    * @brief 停止后台清理线程
    *
-   * 调用此方法会等待清理线程优雅退出。
+   * 调用此方法会等待清理线程优雅退出；重复调用安全。
    */
   void stop_cleanup_thread();
 
@@ -297,9 +302,12 @@ private:
 
   mutable std::atomic<size_t> peak_size_ {0}; // 历史峰值大小
 
-  std::thread cleanup_thread_;                        // 后台清理线程
-  mutable std::atomic<bool> cleanup_running_ {false}; // 清理线程是否运行中
-  int64_t cleanup_interval_ms_ {1000};                // 清理间隔（毫秒）
+  std::thread cleanup_thread_; // 后台清理线程
+  std::mutex cleanup_control_mutex_;
+  std::condition_variable cleanup_cv_;
+  bool cleanup_running_ {false};       // 由 cleanup_control_mutex_ 保护
+  bool cleanup_stopping_ {false};      // 防止 stop/join 与 restart 并发交错
+  int64_t cleanup_interval_ms_ {1000}; // 清理间隔（毫秒）
 
   // 辅助函数：检查节点是否过期
   bool is_expired(const Node &node) const;
@@ -340,6 +348,11 @@ LruCache<K, V, ThreadSafe>::LruCache(size_t capacity)
     : capacity_(capacity),
       start_time_ms_(static_cast<uint64_t>(current_time_ms())),
       expiration_cursor_(cache_list_.end()) {}
+
+template <typename K, typename V, bool ThreadSafe>
+LruCache<K, V, ThreadSafe>::~LruCache() {
+  stop_cleanup_thread();
+}
 
 template <typename K, typename V, bool ThreadSafe>
 std::optional<V> LruCache<K, V, ThreadSafe>::get(const K &key) {
@@ -538,8 +551,8 @@ void LruCache<K, V, ThreadSafe>::clear() {
 }
 
 template <typename K, typename V, bool ThreadSafe>
-typename LruCache<K, V, ThreadSafe>::ListIterator
-LruCache<K, V, ThreadSafe>::erase_node(ListIterator it) {
+typename LruCache<K, V, ThreadSafe>::ListIterator LruCache<K, V, ThreadSafe>::erase_node(
+    ListIterator it) {
   auto next = std::next(it);
   if (expiration_cursor_ == it) {
     expiration_cursor_ = next;
@@ -634,11 +647,16 @@ void LruCache<K, V, ThreadSafe>::cleanup_thread_main() {
   constexpr size_t kBackgroundSampleSize = 20;
   std::mt19937 rng(std::random_device {}());
 
-  while (cleanup_running_.load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(cleanup_interval_ms_));
-    if (!cleanup_running_.load(std::memory_order_relaxed)) {
-      break;
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lock(cleanup_control_mutex_);
+      const auto interval = std::chrono::milliseconds(cleanup_interval_ms_);
+      cleanup_cv_.wait_for(lock, interval, [this]() { return !cleanup_running_; });
+      if (!cleanup_running_) {
+        break;
+      }
     }
+
     auto keys = sample_keys(kBackgroundSampleSize, rng);
     expire_keys(keys);
   }
@@ -646,19 +664,76 @@ void LruCache<K, V, ThreadSafe>::cleanup_thread_main() {
 
 template <typename K, typename V, bool ThreadSafe>
 void LruCache<K, V, ThreadSafe>::start_cleanup_thread(int64_t cleanup_interval_ms) {
-  if (cleanup_running_.load(std::memory_order_relaxed)) {
-    return;
+  std::thread stale_thread;
+
+  {
+    std::lock_guard<std::mutex> lock(cleanup_control_mutex_);
+
+    if (cleanup_running_ || cleanup_stopping_) {
+      return;
+    }
+
+    if (cleanup_thread_.joinable()) {
+      cleanup_stopping_ = true;
+      stale_thread = std::move(cleanup_thread_);
+    } else {
+      cleanup_interval_ms_ = cleanup_interval_ms;
+      cleanup_running_ = true;
+      cleanup_thread_ = std::thread([this]() { this->cleanup_thread_main(); });
+      return;
+    }
   }
-  cleanup_interval_ms_ = cleanup_interval_ms;
-  cleanup_running_.store(true, std::memory_order_relaxed);
-  cleanup_thread_ = std::thread([this]() { this->cleanup_thread_main(); });
+
+  if (stale_thread.joinable()) {
+    if (stale_thread.get_id() == std::this_thread::get_id()) {
+      stale_thread.detach();
+    } else {
+      stale_thread.join();
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(cleanup_control_mutex_);
+    cleanup_stopping_ = false;
+    cleanup_interval_ms_ = cleanup_interval_ms;
+    cleanup_running_ = true;
+    cleanup_thread_ = std::thread([this]() { this->cleanup_thread_main(); });
+  }
 }
 
 template <typename K, typename V, bool ThreadSafe>
 void LruCache<K, V, ThreadSafe>::stop_cleanup_thread() {
-  cleanup_running_.store(false, std::memory_order_relaxed);
-  if (cleanup_thread_.joinable()) {
-    cleanup_thread_.join();
+  std::thread thread_to_join;
+
+  {
+    std::lock_guard<std::mutex> lock(cleanup_control_mutex_);
+    if (cleanup_stopping_) {
+      return;
+    }
+    if (!cleanup_running_ && !cleanup_thread_.joinable()) {
+      return;
+    }
+
+    cleanup_running_ = false;
+    cleanup_stopping_ = true;
+    if (cleanup_thread_.joinable()) {
+      thread_to_join = std::move(cleanup_thread_);
+    }
+  }
+
+  cleanup_cv_.notify_all();
+
+  if (thread_to_join.joinable()) {
+    if (thread_to_join.get_id() == std::this_thread::get_id()) {
+      thread_to_join.detach();
+    } else {
+      thread_to_join.join();
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(cleanup_control_mutex_);
+    cleanup_stopping_ = false;
   }
 }
 

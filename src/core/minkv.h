@@ -122,9 +122,13 @@ public:
   }
 
   /**
-   * @brief 创建数据快照
+   * @brief 创建数据快照（通过 CheckpointManager 写入一致快照 + WAL 轮转）
    */
-  void createSnapshot() { cache_->create_snapshot(); }
+  void createSnapshot() {
+    if (checkpoint_mgr_) {
+      checkpoint_mgr_->checkpoint_now();
+    }
+  }
 
   /**
    * @brief 启动定期删除服务

@@ -118,13 +118,15 @@ public:
 
   /**
    * @brief 启动后台同步线程
+   *
+   * 重复调用安全，线程已运行时直接返回。
    */
   void start();
 
   /**
    * @brief 停止后台同步线程
    *
-   * 等待后台线程完成所有工作后再退出
+   * 等待后台线程完成所有工作后再退出；重复调用安全。
    */
   void stop();
 
@@ -180,6 +182,7 @@ private:
 
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证线程安全
   std::thread syncThread_;    ///< 后台同步线程
+  std::mutex lifecycleMutex_; ///< 保护后台线程启动/停止生命周期
 
   // 保护共享数据的同步原语
   mutable std::mutex mutex_;                  ///< 保护请求队列的互斥锁

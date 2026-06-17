@@ -224,7 +224,7 @@ private:
                     // 字符串数据紧跟在header后面
   };
 
-  Header *header_;
+  Header *header_ {nullptr};
 
   // Redis风格的容量计算策略
   static size_t calculate_capacity(size_t required) {

@@ -117,7 +117,7 @@ public:
    * 确保并发安全，消除写覆盖问题。
    *
    * 与 put() 一样会持 global_consistency_lock_ 的 shared_lock，
-   * 保证与 export_all_data / create_snapshot 的互斥。
+   * 保证与 export_all_data 的互斥。
    * 如果启用了持久化，会先把新值对应的 WAL entry 放入异步提交队列，
    * 再更新内存；不保证返回时已经 fsync 到磁盘。
    *
@@ -143,13 +143,6 @@ public:
    * @brief 关闭 WAL 持久化，flush 并释放 WAL 资源
    */
   void disable_persistence();
-
-  /**
-   * @brief 创建一个全量快照（snapshot）
-   * @note 会持有全局一致性写锁导出数据，然后调用 WAL 的 create_snapshot 接口
-   *       快照完成后可以截断旧的 WAL 日志
-   */
-  void create_snapshot();
 
   /**
    * @brief 在全局一致性写锁下导出所有数据
@@ -433,6 +426,10 @@ template <typename K, typename V, bool EnableCacheAlign>
 ShardedCache<K, V, EnableCacheAlign>::ShardedCache(size_t capacity_per_shard,
                                                    size_t shard_count)
     : last_health_check_(std::chrono::steady_clock::now()) {
+  if (shard_count == 0) {
+    throw std::invalid_argument("ShardedCache: shard_count must be > 0");
+  }
+
   // 创建分片
   for (size_t i = 0; i < shard_count; ++i) {
     shards_.push_back(std::make_unique<EnhancedLruShard>(capacity_per_shard));
@@ -746,31 +743,6 @@ void ShardedCache<K, V, EnableCacheAlign>::disable_persistence() {
   if (old_wal) {
     old_wal->flush();
   }
-}
-
-template <typename K, typename V, bool EnableCacheAlign>
-void ShardedCache<K, V, EnableCacheAlign>::create_snapshot() {
-  std::lock_guard<std::mutex> lock(persistence_mutex_);
-  std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
-
-  if (!wal_) {
-    return;
-  }
-
-  std::map<K, V> all_data;
-  for (size_t i = 0; i < shards_.size(); ++i) {
-    if (!isShardDisabled(i)) {
-      try {
-        auto shard_data = shards_[i]->get_all();
-        all_data.insert(shard_data.begin(), shard_data.end());
-      } catch (const std::exception &e) {
-        std::cerr << "[Snapshot] Shard " << i << " export error: " << e.what()
-                  << std::endl;
-      }
-    }
-  }
-
-  wal_->create_snapshot(all_data);
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
