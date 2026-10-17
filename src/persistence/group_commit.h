@@ -8,6 +8,7 @@
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <vector>
 
 #include "../base/append_file.h"
 
@@ -22,8 +23,15 @@ namespace base {
  * 设计特点：
  * - 双重触发机制：批量大小阈值 + 时间间隔阈值
  * - 异步处理：前端提交不阻塞，后台线程负责实际 I/O
- * - 原子性保证：同一批次的所有请求要么全部成功，要么全部失败
+ * - 批次统一回调：同一批次共享一次 append + fsync 的成功/失败结果
  * - 回调机制：支持异步和同步两种提交方式
+ *
+ * 当前实现采用 sync-each-batch 持久化策略：每个后台批次都会写入 WAL 文件并
+ * 调用 fsync。GroupCommitManager 直接持有 AppendFile，因此它既负责聚合，也负责
+ * 当前热路径的实际 append/fsync。
+ *
+ * @note 批次统一回调不等于事务级原子提交。如果底层 write 在部分写入后失败，
+ *       文件中可能已经包含该批次的前缀数据。
  *
  * 这是 MySQL InnoDB、PostgreSQL 等数据库系统的核心技术，
  * 在 MinKV 中用于 WAL 日志的高性能写入。
@@ -65,11 +73,15 @@ public:
    * @brief 构造Group Commit管理器
    * @param filename 目标文件名
    * @param batchSize 批量大小阈值，默认4KB
-   * @param syncInterval 同步时间间隔，默认10ms
+   * @param syncInterval 后台批处理等待间隔，默认10ms
    *
    * 双重触发机制：
-   * - 当累积数据达到 batchSize 时立即提交（保证吞吐量）
-   * - 当距离上次提交超过 syncInterval 时强制提交（控制延迟）
+   * - batchSize 用于判断当前积累的数据是否足够形成一个批次
+   * - syncInterval 控制后台线程检查并处理 pending 队列的等待间隔
+   *
+   * 当前等待逻辑以 syncInterval 为主要唤醒节奏；请求入队时的 notify 不保证
+   * 立即执行 I/O。syncInterval 不是 Redis-style everysec fsync 策略，而是 GCM
+   * 的批处理等待参数。实际 fsync 发生在每个成功处理的 batch 内。
    */
   explicit GroupCommitManager(const std::string &filename,
                               size_t batchSize = 4096, ///< 4KB批量大小，平衡内存和I/O效率
@@ -164,9 +176,18 @@ private:
    * @brief 处理当前批次的所有请求
    *
    * 批量写入文件并调用 fsync()，
-   * 确保同一批次的所有请求具有相同的成功/失败状态
+   * 同一批次的所有请求会收到相同的成功/失败状态。
+   *
+   * @note 这里的相同状态来自同一次 append + fsync 调用结果，不提供底层文件写入
+   *       失败时的回滚或 batch framing。
    */
   void processBatch();
+
+  /**
+   * @brief 将一个批次合并为连续缓冲区后一次写入并 fsync
+   * @return true 表示写入和同步成功，false 表示 I/O 失败
+   */
+  bool writeBatch(const std::vector<CommitRequest> &batch, size_t batchBytes);
 
   /**
    * @brief 检查是否应该触发同步
@@ -178,7 +199,7 @@ private:
 
   std::unique_ptr<AppendFile> file_;             ///< 文件写入器，封装系统调用
   const size_t batchSize_;                       ///< 批量大小阈值
-  const std::chrono::milliseconds syncInterval_; ///< 同步时间间隔阈值
+  const std::chrono::milliseconds syncInterval_; ///< 后台批处理等待间隔
 
   std::atomic<bool> running_; ///< 运行状态标志，原子操作保证线程安全
   std::thread syncThread_;    ///< 后台同步线程

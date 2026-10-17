@@ -234,6 +234,60 @@ void GroupCommitManager::flush() {
   }
 }
 
+bool GroupCommitManager::writeBatch(const std::vector<CommitRequest> &batch,
+                                    size_t batchBytes) {
+#ifdef GCM_LATENCY_TRACE
+  auto append_start = std::chrono::steady_clock::now();
+#endif
+
+  try {
+    if (batch.size() == 1) {
+      const auto &data = batch.front().data;
+      if (!data.empty()) {
+        file_->append(data.data(), data.size());
+      }
+    } else {
+      std::string buffer;
+      buffer.reserve(batchBytes);
+      for (const auto &request : batch) {
+        buffer.append(request.data);
+      }
+      if (!buffer.empty()) {
+        file_->append(buffer.data(), buffer.size());
+      }
+    }
+
+#ifdef GCM_LATENCY_TRACE
+    auto sync_start = std::chrono::steady_clock::now();
+    uint64_t append_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(sync_start - append_start)
+            .count();
+#endif
+
+    file_->sync();
+
+#ifdef GCM_LATENCY_TRACE
+    auto sync_end = std::chrono::steady_clock::now();
+    uint64_t sync_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(sync_end - sync_start)
+            .count();
+    {
+      auto &t = tls_trace;
+      t.batch_append_ns_sum += append_ns;
+      t.batch_sync_ns_sum += sync_ns;
+      t.batch_count++;
+      t.batch_requests_sum += batch.size();
+      t.batch_bytes_sum += batchBytes;
+    }
+#endif
+
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "Group commit failed: " << e.what() << std::endl;
+    return false;
+  }
+}
+
 void GroupCommitManager::syncThreadFunc() {
   // 后台线程主循环，负责批量处理提交请求
 #ifdef GCM_LATENCY_TRACE
@@ -327,45 +381,8 @@ void GroupCommitManager::syncThreadFunc() {
     if (batch.empty())
       continue;
 
-      // -- 第2阶段：文件 I/O（不持有 mutex_，不阻塞生产者） --
-#ifdef GCM_LATENCY_TRACE
-    auto append_start = std::chrono::steady_clock::now();
-#endif
-
-    bool success = true;
-    try {
-      for (const auto &req : batch) {
-        file_->append(req.data.c_str(), req.data.size());
-      }
-
-#ifdef GCM_LATENCY_TRACE
-      auto sync_start = std::chrono::steady_clock::now();
-      uint64_t append_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(sync_start - append_start)
-              .count();
-#endif
-
-      file_->sync();
-
-#ifdef GCM_LATENCY_TRACE
-      auto sync_end = std::chrono::steady_clock::now();
-      uint64_t sync_ns =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(sync_end - sync_start)
-              .count();
-      {
-        auto &t = tls_trace;
-        t.batch_append_ns_sum += append_ns;
-        t.batch_sync_ns_sum += sync_ns;
-        t.batch_count++;
-        t.batch_requests_sum += batch.size();
-        t.batch_bytes_sum += batchBytes;
-      }
-#endif
-
-    } catch (const std::exception &e) {
-      std::cerr << "Group commit failed: " << e.what() << std::endl;
-      success = false;
-    }
+    // -- 第2阶段：文件 I/O（不持有 mutex_，不阻塞生产者） --
+    bool success = writeBatch(batch, batchBytes);
 
     // 更新统计（独立锁，不影响主路径）
     {
@@ -403,8 +420,6 @@ void GroupCommitManager::processBatch() {
     return;
   }
 
-  // 记录批次开始时间，用于延迟分析
-  auto batchStart = std::chrono::steady_clock::now();
   std::vector<CommitRequest> batch;
   size_t batchBytes = 0;
 
@@ -421,61 +436,15 @@ void GroupCommitManager::processBatch() {
   currentBatchSize_ = 0;
   batchStartTime_ = std::chrono::steady_clock::now();
 
-  bool success = true;
+  bool success = writeBatch(batch, batchBytes);
 
-  try {
-#ifdef GCM_LATENCY_TRACE
-    auto append_start = std::chrono::steady_clock::now();
-#endif
-
-    // 将所有数据连续写入文件，减少系统调用次数
-    // 这是 Group Commit 的核心：将多个逻辑写入合并为一次物理写入
-    for (const auto &request : batch) {
-      file_->append(request.data.c_str(), request.data.size());
-    }
-
-#ifdef GCM_LATENCY_TRACE
-    auto sync_start = std::chrono::steady_clock::now();
-    uint64_t append_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(sync_start - append_start)
-            .count();
-#endif
-
-    // 调用 fsync() 将数据强制刷新到磁盘
-    // 一次 fsync() 确保整个批次的持久化
-    // 相比每个请求单独 fsync()，大幅减少了昂贵的磁盘同步操作
-    file_->sync();
-
-#ifdef GCM_LATENCY_TRACE
-    auto sync_end = std::chrono::steady_clock::now();
-    uint64_t sync_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(sync_end - sync_start)
-            .count();
-
-    // 累积到 thread_local trace
-    {
-      auto &t = tls_trace;
-      t.batch_append_ns_sum += append_ns;
-      t.batch_sync_ns_sum += sync_ns;
-      t.batch_count++;
-      t.batch_requests_sum += batch.size();
-      t.batch_bytes_sum += batchBytes;
-    }
-#endif
-
-    // 更新统计信息，使用独立的锁避免影响主路径性能
-    {
-      std::lock_guard<std::mutex> statsLock(statsMutex_);
-      totalCommits_ += batch.size();                    // 累计提交请求数
-      totalBatches_++;                                  // 累计批次数
-      totalBytes_ += batchBytes;                        // 累计字节数
-      lastSyncTime_ = std::chrono::steady_clock::now(); // 更新最后同步时间
-    }
-
-  } catch (const std::exception &e) {
-    // 捕获 I/O 异常，记录错误信息
-    std::cerr << "Group commit failed: " << e.what() << std::endl;
-    success = false;
+  // 更新统计信息，使用独立的锁避免影响主路径性能
+  {
+    std::lock_guard<std::mutex> statsLock(statsMutex_);
+    totalCommits_ += batch.size();                    // 累计提交请求数
+    totalBatches_++;                                  // 累计批次数
+    totalBytes_ += batchBytes;                        // 累计字节数
+    lastSyncTime_ = std::chrono::steady_clock::now(); // 更新最后同步时间
   }
 
   // 调用所有请求的回调函数，通知提交结果

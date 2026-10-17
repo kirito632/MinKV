@@ -134,8 +134,10 @@ public:
   /**
    * @brief 启用 WAL 持久化
    * @param data_dir          WAL 文件存放目录
-   * @param fsync_interval_ms 后台 fsync 间隔（毫秒），默认 1000ms
-   * @note 重复调用无效（已启用时直接返回）
+   * @param fsync_interval_ms GCM 批处理等待间隔（毫秒），默认 1000ms
+   * @note 当前业务写入热路径由 GroupCommitManager 执行 sync-each-batch，
+   *       该参数控制后台批次等待时间，不是 WriteAheadLog 的后台 fsync 策略。
+   *       重复调用无效（已启用时直接返回）。
    */
   void enable_persistence(const std::string &data_dir, int64_t fsync_interval_ms = 1000);
 

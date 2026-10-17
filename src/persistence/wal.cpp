@@ -37,10 +37,12 @@ int64_t WriteAheadLog::current_time_ms() {
 }
 
 uint32_t LogEntry::compute_checksum() const {
-  // 简单的校验和：对 key + value 计算 hash
-  std::string data = key + value;
+  // 简单的校验和：按 key 后接 value 的字节顺序计算 hash
   uint32_t checksum = 0;
-  for (char c : data) {
+  for (char c : key) {
+    checksum = checksum * 31 + static_cast<uint8_t>(c);
+  }
+  for (char c : value) {
     checksum = checksum * 31 + static_cast<uint8_t>(c);
   }
   return checksum;
