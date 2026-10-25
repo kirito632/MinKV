@@ -335,3 +335,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ann_consistency.cpp")
     )
     target_link_libraries(test_ann_consistency pthread)
 endif()
+
+# ==========================================
+# HNSW A/B ?? (exact vs approximate)
+# Release ???????Debug ???????? 7 ?
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_hnsw.cpp")
+    add_executable(benchmark_hnsw
+        tests/benchmark_hnsw.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(benchmark_hnsw pthread)
+endif()
