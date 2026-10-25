@@ -1,7 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 namespace minkv {
@@ -42,27 +46,40 @@ struct AnnHit {
 /**
  * @brief 纯内存 HNSW 图
  *
- * 这一层只负责算法：不持锁、不了解 KV、不认识字符串 key。
- * 并发控制、key 映射、Tombstone 压缩策略都在 VectorAnnIndex 里，
- * 因为它们的取舍（锁粒度、何时 compact）随上层用法而变。
+ * 这一层只负责算法：不认识字符串 key，也不实现统计口径。
+ * key 映射与 Tombstone 压缩策略属于 VectorAnnIndex。
  *
- * 生命周期的约定：
- * - insert 只追加，内部 id 单调递增且永不复用；
- * - erase 只打 Tombstone，图结构不动（避免 O(M) 邻接修复）；
- * - 带 Tombstone 的节点仍参与导航，但不会出现在结果里；
- * - compact() 在原 id 空间上重建图，被删节点的数据槽位保留（内存回收由上层整体重建负责）。
+ * ## 内存布局
  *
- * 线程安全：本类所有方法都不是线程安全的，调用方必须自行串行化写入。
+ * 第 0 层占了全部访问量的 99%，因此单独用「定长平铺数组 + 原子计数」：
+ * 每个节点固定 `M0` 个槽位，写侧只在尾部追加并 release 发布计数，
+ * 读侧 acquire 读计数后逐槽读取，无需加锁、也不会读到被 realloc 释放的内存。
+ * 第 1 层及以上节点只占约 1/M，仍用 per-node vector，用节点锁保护。
+ *
+ * ## 并发模型
+ *
+ * - `knn`：可并发调用，持结构共享锁；
+ * - `insert`：可并发调用（各自占不同 id），只有扩容时短暂独占；
+ * - `erase` / `compact` / `reserve`：独占，会阻塞并发读写；
+ * - 双向加边永远只持有一把条带锁（先写自己、再逐条写邻居），因此不存在
+ *   两把锁的获取顺序问题，天然无死锁。
+ *
+ * `build_parallel` 是批量构建入口：它先单线程预分配 id 与层级，
+ * 再让多线程并发建边。注意并发构建的图与顺序构建立图**不保证逐位一致**。
  */
 class HnswIndex {
 public:
   static constexpr uint32_t kInvalidId = 0xFFFFFFFFu;
+  static constexpr uint32_t kInvalidNeighbor = 0xFFFFFFFFu;
 
   /**
    * @param config 维度必须 > 0；M/M0/ef_construction 为 0 时回落到默认值
    * @throws std::invalid_argument 维度为 0
    */
   explicit HnswIndex(const HnswConfig &config);
+
+  HnswIndex(const HnswIndex &) = delete;
+  HnswIndex &operator=(const HnswIndex &) = delete;
 
   /**
    * @brief 插入一个向量
@@ -72,7 +89,7 @@ public:
   uint32_t insert(const float *vec);
 
   /**
-   * @brief 删除一个向量（只打 Tombstone）
+   * @brief 删除一个向量（只打 Tombstone，不动物理结构）
    * @return 该 id 有效且此前未被删除时返回 true
    */
   bool erase(uint32_t id);
@@ -86,16 +103,34 @@ public:
    */
   std::vector<AnnHit> knn(const float *query, size_t k, size_t ef) const;
 
+  /**
+   * @brief 预留节点容量，避免后续插入触发扩容
+   *
+   * 会阻塞并发读写。`build_parallel` 内部会自行预留。
+   */
+  void reserve(size_t node_count);
+
+  /**
+   * @brief 批量并行构建
+   *
+   * @param flat  连续存放的 count 个向量（长度 count * dim）
+   * @param count 向量个数
+   * @param threads 工作线程数，0 或 1 表示退化为单线程
+   *
+   * 调用方保证构建期间没有其他写入；构建期间并发查询是安全的（可能看到部分图）。
+   */
+  void build_parallel(const float *flat, size_t count, size_t threads);
+
   /** @brief 取某个 id 的向量（调用方保证 id < capacity()） */
   const float *vector_of(uint32_t id) const;
 
   const HnswConfig &config() const { return config_; }
   size_t dim() const { return config_.dim; }
-  size_t size() const { return live_; }                 ///< 存活节点数
-  size_t capacity() const { return levels_.size(); }    ///< 已分配槽位数
-  size_t tombstone_count() const { return levels_.size() - live_; }
-  int max_level() const { return max_level_; }
-  uint32_t entry_point() const { return entry_point_; }
+  size_t size() const { return live_.load(std::memory_order_relaxed); } ///< 存活节点数
+  size_t capacity() const { return next_id_.load(std::memory_order_relaxed); }
+  size_t tombstone_count() const { return capacity() - size(); }
+  int max_level() const { return max_level_.load(std::memory_order_relaxed); }
+  uint32_t entry_point() const { return entry_point_.load(std::memory_order_relaxed); }
   size_t memory_bytes() const;
 
   /**
@@ -110,14 +145,18 @@ public:
   /**
    * @brief 在存活节点上重建整张图，清掉 Tombstone 对导航的污染
    *
-   * 只在没有并发写入时调用。id 保持不变，因此上层的 key→id 映射无需重建。
+   * 独占执行。id 保持不变，因此上层的 key→id 映射无需重建。
    */
   void compact();
 
 private:
-  using NodeLinks = std::vector<std::vector<uint32_t>>; ///< [level] -> 邻居 id
+  static constexpr size_t kStripeCount = 1024;
 
+  std::mutex &stripe_for(uint32_t node) const {
+    return stripes_[node & (kStripeCount - 1)];
+  }
   size_t max_degree(int level) const { return level == 0 ? config_.M0 : config_.M; }
+
   float distance(const float *a, const float *b) const;
   float distance_to(uint32_t id, const float *query) const;
   bool alive(uint32_t id) const { return deleted_[id] == 0; }
@@ -128,19 +167,41 @@ private:
                                    int level) const;
   std::vector<uint32_t> select_neighbors(const std::vector<AnnHit> &candidates,
                                          size_t m) const;
-  void link_node(uint32_t id, const float *vec);
-  void prune(uint32_t owner, int level);
-  void reset_graph();
+
+  /// 仅为 id 分配数据结构，不建边。调用方需持结构锁。
+  void write_node_locked(uint32_t id, const float *vec, int level);
+  void ensure_capacity_locked(size_t needed);
+  /// 建边：包括贪心下降、逐层选邻、双向加边。调用方需持结构共享锁。
+  void link_node(uint32_t id);
+  /// 空图时把 id 立为入口。
+  bool claim_entry_if_empty(uint32_t id);
+
+  void write_links_locked(uint32_t node, int level, const std::vector<uint32_t> &ids);
+  void add_back_link(uint32_t owner, int level, uint32_t id);
+  void prune_locked(uint32_t owner, int level, std::vector<uint32_t> candidates);
+  std::vector<uint32_t> read_links(uint32_t node, int level) const;
 
   HnswConfig config_;
   double level_multiplier_ = 1.0; ///< 1 / ln(M)
-  std::vector<float> data_;       ///< id * dim 连续存放的向量副本
-  std::vector<int> levels_;       ///< 每个节点的最高层
-  std::vector<NodeLinks> links_;  ///< [node][level] -> 邻居
-  std::vector<uint8_t> deleted_;  ///< Tombstone 位图
-  uint32_t entry_point_ = kInvalidId;
-  int max_level_ = -1;
-  size_t live_ = 0;
+
+  mutable std::shared_mutex structure_mu_; ///< 保护下面的数组容量与生命周期
+  mutable std::mutex entry_mu_;            ///< 保护 entry_point_ / max_level_
+
+  std::vector<float> data_;   ///< id * dim 连续存放的向量副本
+  std::vector<int> levels_;   ///< 每个节点的最高层
+  std::vector<uint8_t> deleted_;
+  size_t capacity_ = 0;       ///< 已分配的节点槽位数（受 structure_mu_ 保护）
+
+  std::unique_ptr<std::atomic<uint32_t>[]> l0_slots_;  ///< [node * M0 + i]
+  std::unique_ptr<std::atomic<uint32_t>[]> l0_counts_; ///< 每节点当前邻居数
+  std::vector<std::vector<std::vector<uint32_t>>> upper_links_; ///< [node][level-1]
+
+  std::unique_ptr<std::mutex[]> stripes_; ///< 按 node & (kStripeCount-1) 取
+
+  std::atomic<size_t> next_id_ {0};
+  std::atomic<size_t> live_ {0};
+  std::atomic<uint32_t> entry_point_ {kInvalidId};
+  std::atomic<int> max_level_ {-1};
   uint64_t rng_state_;
 };
 

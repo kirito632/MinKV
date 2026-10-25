@@ -12,12 +12,14 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -88,6 +90,20 @@ double recall_at_k(const std::vector<uint32_t> &approximate,
     }
   }
   return static_cast<double>(hits) / static_cast<double>(exact.size());
+}
+
+/// 对一组查询计算平均 Recall@k（精确答案来自暴力搜索）
+double recall_of(const HnswIndex &index, const std::vector<std::vector<float>> &database,
+                 const std::vector<std::vector<float>> &queries, size_t k, size_t ef) {
+  double sum = 0.0;
+  for (const auto &query : queries) {
+    std::vector<uint32_t> got;
+    for (const AnnHit &hit : index.knn(query.data(), k, ef)) {
+      got.push_back(hit.id);
+    }
+    sum += recall_at_k(got, brute_force(database, {}, query, k, index.config().metric));
+  }
+  return sum / static_cast<double>(queries.size());
 }
 
 void report(const char *name, double recall, double build_ms, double query_us,
@@ -371,7 +387,164 @@ int main() {
   }
 
   // ---------------------------------------------------------------
-  // 7. 非法配置
+  // 7. 并行构建：单线程等价性、4 线程质量与加速比
+  // ---------------------------------------------------------------
+  {
+    constexpr size_t kCount = 12000;
+    constexpr size_t kDim = 96;
+    constexpr size_t kK = 10;
+    constexpr size_t kEf = 64;
+
+    std::mt19937 gen(2026u);
+    std::uniform_real_distribution<float> dis(0.0f, 1.0f);
+    std::vector<float> flat(kCount * kDim);
+    for (float &value : flat) {
+      value = dis(gen);
+    }
+    std::vector<std::vector<float>> database(kCount, std::vector<float>(kDim));
+    for (size_t i = 0; i < kCount; ++i) {
+      std::copy(flat.begin() + static_cast<long>(i * kDim),
+                flat.begin() + static_cast<long>((i + 1) * kDim), database[i].begin());
+    }
+    std::vector<std::vector<float>> queries(20, std::vector<float>(kDim));
+    for (auto &query : queries) {
+      for (float &value : query) {
+        value = dis(gen);
+      }
+    }
+
+    HnswConfig config;
+    config.dim = kDim;
+
+    auto elapsed_ms = [](Clock::time_point start) {
+      return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    };
+
+    HnswIndex sequential(config);
+    auto start = Clock::now();
+    for (size_t i = 0; i < kCount; ++i) {
+      sequential.insert(flat.data() + i * kDim);
+    }
+    const double sequential_ms = elapsed_ms(start);
+
+    HnswIndex single(config);
+    start = Clock::now();
+    single.build_parallel(flat.data(), kCount, 1);
+    const double single_ms = elapsed_ms(start);
+
+    HnswIndex parallel(config);
+    start = Clock::now();
+    parallel.build_parallel(flat.data(), kCount, 4);
+    const double parallel_ms = elapsed_ms(start);
+
+    // build_parallel(threads=1) 必须与逐个 insert 生成完全相同的图：
+    // 两者抽到同一组层级序列，且链接顺序一致。
+    bool identical = true;
+    for (const auto &query : queries) {
+      const std::vector<AnnHit> a = sequential.knn(query.data(), kK, kEf);
+      const std::vector<AnnHit> b = single.knn(query.data(), kK, kEf);
+      if (a.size() != b.size()) {
+        identical = false;
+        break;
+      }
+      for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].id != b[i].id) {
+          identical = false;
+          break;
+        }
+      }
+      if (!identical) {
+        break;
+      }
+    }
+    assert(identical);
+    assert(single.size() == kCount);
+    assert(parallel.size() == kCount);
+
+    const double recall_sequential = recall_of(sequential, database, queries, kK, kEf);
+    const double recall_parallel = recall_of(parallel, database, queries, kK, kEf);
+    const double speedup = sequential_ms / parallel_ms;
+
+    std::printf("%-22s sequential=%7.1f ms  1-thread=%7.1f ms  4-thread=%7.1f ms  speedup=%.2fx\n",
+                "parallel-build", sequential_ms, single_ms, parallel_ms, speedup);
+    std::printf("%-22s recall seq=%.4f par=%.4f  delta=%.4f\n", "parallel-recall",
+                recall_sequential, recall_parallel,
+                std::fabs(recall_sequential - recall_parallel));
+
+    assert(std::fabs(recall_sequential - recall_parallel) <= 0.02);
+    assert(speedup >= 1.5); // 4 vCPU 上的保守下限
+  }
+
+  // ---------------------------------------------------------------
+  // 8. 8 线程并发 insert + 并发查询：无死锁、无崩溃、结果合法
+  // ---------------------------------------------------------------
+  {
+    constexpr size_t kDim = 32;
+    constexpr size_t kThreads = 8;
+    constexpr size_t kPerThread = 400;
+
+    HnswConfig config;
+    config.dim = kDim;
+    HnswIndex index(config);
+    index.reserve(kThreads * kPerThread);
+
+    std::atomic<size_t> ready {0};
+    std::atomic<size_t> inserted {0};
+    std::vector<std::thread> workers;
+    workers.reserve(kThreads);
+    for (size_t worker = 0; worker < kThreads; ++worker) {
+      workers.emplace_back([&index, &ready, &inserted, worker]() {
+        std::mt19937 gen(static_cast<unsigned>(worker) * 7919u + 13u);
+        std::uniform_real_distribution<float> dis(0.0f, 1.0f);
+        std::vector<float> vec(kDim);
+        ready.fetch_add(1);
+        while (ready.load() < kThreads) {
+          std::this_thread::yield();
+        }
+        for (size_t i = 0; i < kPerThread; ++i) {
+          for (float &value : vec) {
+            value = dis(gen);
+          }
+          if (index.insert(vec.data()) != HnswIndex::kInvalidId) {
+            inserted.fetch_add(1);
+          }
+        }
+      });
+    }
+
+    // 并发读者：短暂让出，避免写线程在共享锁上被饿死
+    std::atomic<bool> stop {false};
+    std::thread reader([&index, &stop]() {
+      std::vector<float> query(kDim, 0.5f);
+      while (!stop.load()) {
+        const std::vector<AnnHit> hits = index.knn(query.data(), 5, 32);
+        for (const AnnHit &hit : hits) {
+          assert(hit.id < index.capacity());
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    });
+
+    for (std::thread &worker : workers) {
+      worker.join();
+    }
+    stop.store(true);
+    reader.join();
+
+    assert(inserted.load() == kThreads * kPerThread);
+    assert(index.size() == kThreads * kPerThread);
+
+    std::vector<float> query(kDim, 0.5f);
+    const std::vector<AnnHit> hits = index.knn(query.data(), 10, 64);
+    assert(hits.size() == 10);
+    for (size_t i = 1; i < hits.size(); ++i) {
+      assert(hits[i - 1].score <= hits[i].score);
+    }
+    std::printf("%-22s %zu concurrent inserts, knn ok\n", "concurrency", index.size());
+  }
+
+  // ---------------------------------------------------------------
+  // 9. 非法配置
   // ---------------------------------------------------------------
   {
     bool threw = false;
