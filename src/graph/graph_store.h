@@ -223,6 +223,14 @@ private:
   static std::string VecKey(const std::string &node_id);
 
   /**
+   * @brief Exact scan over "vec:" keys (the pre-index implementation).
+   *
+   * SearchSimilarNodes uses it whenever the cosine index is unavailable.
+   */
+  std::vector<std::pair<std::string, float>> SearchSimilarNodesExact(
+      const std::vector<float> &query_embedding, int top_k) const;
+
+  /**
    * 边计数器 Key：ec:{src}:{dst}
    *
    * 用于 O(1) 判断 (src, dst) 之间是否还有其他 label 的边，

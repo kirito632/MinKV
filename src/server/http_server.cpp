@@ -1,5 +1,7 @@
 #include "http_server.h"
 
+#include <chrono>
+
 #include <iostream>
 #include <sstream>
 
@@ -242,21 +244,35 @@ void HttpServer::handle_vector_search(const httplib::Request &req,
       return;
     }
 
-    // 调用 MinKV L2 距离 Top-K 搜索（SIMD AVX2 加速）
-    auto results = kv_->vectorSearch(query, static_cast<int>(top_k));
+    // 可选字段：exact 强制精确扫描，ef 覆盖索引的搜索宽度
+    const bool exact = request_body.value("exact", false);
+    const size_t ef = request_body.value("ef", static_cast<size_t>(0));
 
-    // 构建响应：结果仅为 key 列表
+    const auto started = std::chrono::steady_clock::now();
+    const std::vector<std::pair<std::string, float>> hits =
+        kv_->vectorSearchScored(query, top_k, ef, exact);
+    const double latency_us =
+        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started)
+            .count();
+
+    // results 保持「key 字符串数组」以兼容既有客户端；scores 是它的平行数组
     json results_json = json::array();
-    for (const auto &key : results) {
-      results_json.push_back(key);
+    json scores_json = json::array();
+    for (const auto &hit : hits) {
+      results_json.push_back(hit.first);
+      scores_json.push_back(hit.second);
     }
 
+    const bool approximate = !exact && kv_->annMatchesDimension(query.size());
     send_success(res,
                  {{"success", true},
                   {"query_dimension", query.size()},
                   {"top_k", top_k},
-                  {"results_count", results.size()},
-                  {"results", results_json}});
+                  {"results_count", hits.size()},
+                  {"results", results_json},
+                  {"scores", scores_json},
+                  {"search_mode", approximate ? "ann" : "brute"},
+                  {"latency_us", latency_us}});
   } catch (const json::exception &e) {
     send_error(res, 400, std::string("JSON 解析错误：") + e.what());
   } catch (const std::exception &e) {

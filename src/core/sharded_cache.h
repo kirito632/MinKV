@@ -242,10 +242,26 @@ public:
    * @param ef search width, 0 means config.ef_search
    */
   std::vector<std::pair<K, float>> vectorSearchScored(const std::vector<float> &query,
-                                                      size_t k, size_t ef = 0);
+                                                      size_t k, size_t ef = 0,
+                                                      bool exact = false);
 
   /// Exact nearest neighbours (brute force): ground truth, tests, fallback.
   std::vector<K> vectorSearchExact(const std::vector<float> &query, int k);
+
+  /**
+   * @brief Query the cosine index, which holds only the "vec:" keys.
+   *
+   * Returns nullopt when the index is disabled or the query dimension differs,
+   * so the graph layer can fall back to its exact scan.
+   */
+  std::optional<std::vector<std::pair<K, float>>> vectorSearchGraph(
+      const std::vector<float> &query, size_t k);
+
+  /// Whether an enabled index covers this dimension.
+  bool ann_matches_dimension(size_t dim) const {
+    std::shared_lock<std::shared_mutex> lock(ann_mu_);
+    return ann_enabled_.load(std::memory_order_acquire) && ann_config_.dim == dim;
+  }
 
   /**
    * @brief 启动定期删除服务
@@ -1018,7 +1034,7 @@ std::vector<K> ShardedCache<K, V, EnableCacheAlign>::vectorSearchExact(
 
 template <typename K, typename V, bool EnableCacheAlign>
 std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vectorSearchScored(
-    const std::vector<float> &query, size_t k, size_t ef) {
+    const std::vector<float> &query, size_t k, size_t ef, bool exact) {
   if (query.empty() || k == 0) {
     return {};
   }
@@ -1028,7 +1044,7 @@ std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vectorSea
     std::vector<vector::AnnMatch> approximate;
     {
       std::shared_lock<std::shared_mutex> lock(ann_mu_);
-      if (!ann_enabled_.load(std::memory_order_acquire) || !ann_l2_ ||
+      if (exact || !ann_enabled_.load(std::memory_order_acquire) || !ann_l2_ ||
           query.size() != ann_config_.dim) {
         lock.unlock();
         // Disabled, or a dimension this cache does not index: exact scan.
@@ -1113,6 +1129,39 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
     }
     ann_enabled_.store(true, std::memory_order_release);
     return true;
+  }
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+std::optional<std::vector<std::pair<K, float>>>
+ShardedCache<K, V, EnableCacheAlign>::vectorSearchGraph(const std::vector<float> &query,
+                                                        size_t k) {
+  if constexpr (!std::is_same_v<K, std::string> || !std::is_same_v<V, std::string>) {
+    return std::nullopt;
+  } else {
+    if (query.empty() || k == 0) {
+      return std::nullopt;
+    }
+    std::vector<vector::AnnMatch> matches;
+    {
+      std::shared_lock<std::shared_mutex> lock(ann_mu_);
+      if (!ann_enabled_.load(std::memory_order_acquire) || !ann_cosine_ ||
+          query.size() != ann_config_.dim) {
+        return std::nullopt;
+      }
+      matches = ann_cosine_->search(query, k, ann_config_.ef_search);
+    }
+
+    // Index lock released; drop candidates the cache no longer holds.
+    std::vector<std::pair<K, float>> results;
+    results.reserve(matches.size());
+    for (const auto &match : matches) {
+      const K key = match.key;
+      if (shards_[get_shard_index(key)]->contains(key)) {
+        results.emplace_back(key, match.score);
+      }
+    }
+    return results;
   }
 }
 
