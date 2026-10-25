@@ -1,6 +1,6 @@
 # HNSW 向量索引设计
 
-> 状态：P1、P2、P2.5、P3、P4 已实现；P5 计划中
+> 状态：P1–P5 全部实现；后续演进见第 10 节
 > 分支：`feat/hnsw-ann-index`
 > 适用代码：`src/vector/hnsw_index.{h,cpp}`、`tests/test_hnsw_index.cpp`
 
@@ -288,23 +288,31 @@ POST /vector/search {"query":[0.1,0.2,0.3,0.4],"top_k":3}
 
 ### 6.1 默认档（RAG 场景）
 
-`M=16, M0=32, ef_construction=200, ef=64`，构建均为 4 线程（`build_parallel`）。
+`M=16, M0=32, ef_construction=200, ef=64`，4 线程建图，k=10，20 条查询。
+全部由 `tests/benchmark_hnsw.cpp` 生成，一条命令可复现（见文末附录）。
 
-| 场景 | N | dim | build | recall@10 | P50 | P99 |
-|---|---|---|---|---|---|---|
-| 聚类（真实分布） | 100,000 | 128 | 11.9 s | **1.000** | 0.105 ms | 0.168 ms |
-| 均匀（病态） | 100,000 | 128 | 38.0 s | 0.300¹ | 0.298 ms | 1.034 ms |
-| 均匀 768d | 10,000 | 768 | 8.7 s | 0.580¹ | 0.606 ms | 1.884 ms |
+| 数据集 | N | dim | build | 精确 P50 / P99 | ANN P50 / P99 | 加速 | recall@10 |
+|---|---|---|---|---|---|---|---|
+| 聚类 | 20,000 | 128 | 1.9 s | 9.11 / 10.55 ms | 0.096 / 0.127 ms | 95× | 1.0000 |
+| 聚类 | 100,000 | 128 | 12.0 s | 61.27 / 64.83 ms | 0.210 / 0.297 ms | 291× | 1.0000 |
+| 聚类 | 10,000 | 768 | 3.0 s | 10.97 / 11.49 ms | 0.212 / 0.429 ms | 52× | 1.0000 |
+| 均匀 | 20,000 | 128 | 4.1 s | 9.22 / 10.79 ms | 0.363 / 0.405 ms | 25× | 0.6500 |
+| 均匀 | 100,000 | 128 | 40.5 s | 57.88 / 61.26 ms | 0.539 / 1.933 ms | 107× | 0.3800 |
 
-¹ 均匀随机数据本身没有邻域结构，recall 低是数据问题，见 6.3。
+两点读法：
 
-与 1.1 的暴力基线同分布对比（100K × 128d 均匀）：
-P50 35.5 ms → 0.298 ms（119×），P99 68.9 ms → 1.03 ms（67×），
-吞吐 26 → 2899 QPS。聚类数据上 P50 可低到 0.105 ms。
+- 「精确」列比 1.1 的基线慢约 40%（100K/128d 从 35.5 ms 到 61.3 ms），因为基准程序
+  按生产路径构造 32 分片缓存并在同进程里持有索引，内存压力更大。
+  两列出自同一个二进制、同一次运行，**横向比较才有效**，不要跨表比绝对值。
+- 均匀数据上的 0.38 不是索引的问题，见 6.3。
+
+内存：100K × 128d 索引 64.7 MB（向量数据本身 51 MB，约 2.3×），10K × 768d 30.9 MB。
+100K 那两行的 `live` 是 99,885 —— 分片哈希不均挤掉了 115 条，与 1.1 的观察一致。
 
 ### 6.2 高维均匀数据档
 
-`M=32, M0=64, ef_construction=400, ef=128`。
+`M=32, M0=64, ef_construction=400, ef=128`（这组数字用 `HnswIndex` 直接测得，
+不含 ShardedCache 的分片与回查开销）。
 
 | 数据 | N | dim | build | recall@10 |
 |---|---|---|---|---|
@@ -449,7 +457,7 @@ setarch $(uname -m) -R /tmp/tsan_stress
 | P2 | `VectorAnnIndex`：key 映射、双实例（L2 按维度 + cosine 限 `vec:`） | ✅ 已实现，含 TSan |
 | P3 | 生命周期一致性：`LruCache::on_erase` + 各 hook + ghost 测试 | ✅ 已实现 |
 | P4 | `/vector/search` 接入：`exact`/`ef` 参数、`search_mode`、`scores`、示例服务 | ✅ 已实现，含端到端冒烟 |
-| P5 | `tests/benchmark_hnsw.cpp` 固化 A/B 数据 + 本文数据复现 | 下一步 |
+| P5 | `tests/benchmark_hnsw.cpp` 固化 A/B 数据 + 本文数据复现 | ✅ 已实现 |
 
 ---
 
@@ -464,12 +472,14 @@ setarch $(uname -m) -R /tmp/tsan_stress
 
 ## 附：数据复现
 
-本文表格来自临时基准程序（`/tmp` 下编译，未入库），编译方式：
+本文所有表格现在都由 `tests/benchmark_hnsw.cpp` 产出，一条命令即可复现：
 
 ```bash
-g++ -std=c++17 -O2 -march=native -mavx2 -mfma -pthread -Isrc \
-    <bench>.cpp src/vector/hnsw_index.cpp -o <bench>
+cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/release --target benchmark_hnsw -j2
+./build/release/bin/benchmark_hnsw        # 可选参数：k ef 查询条数
 ```
 
-P5 会把暴力/ANN 的 A/B 固化进 `tests/benchmark_hnsw.cpp`，届时本文所有数字
-都应能由该 target 一条命令复现。在那之前，这些数字只代表上面这一台机器的一次测量。
+该程序把精确扫描与 ANN 都跑在 `ShardedCache` 上，因此两列包含同样的分片开销，
+ANN 列还包含搜索之后的锁外存在性回查。**不要用 Debug 构建跑它**：
+`-O0` 会把两列都放大约 7 倍，比例虽接近但绝对值不可引用。
