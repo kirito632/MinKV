@@ -99,6 +99,14 @@ public:
   bool erase_without_compaction(const std::string &key);
 
   /**
+   * @brief Whether the key is currently mapped (cheap, shared lock).
+   *
+   * Lets a caller avoid the exclusive lock just to find out that nothing is
+   * there, which is the common case for non-vector writes.
+   */
+  bool contains(const std::string &key) const;
+
+  /**
    * @brief 近邻查询
    * @param query 维度必须等于构造时的 dim
    * @param k     返回条数上限
@@ -138,6 +146,8 @@ private:
   std::unordered_map<std::string, uint32_t> ids_; ///< 只含存活 key
   std::vector<std::string> keys_;                 ///< id → key；空串表示尚未发布
   double compact_ratio_;
+  /// Counter-only tombstone check: never walks the graph for memory accounting.
+  bool should_compact() const;
 };
 
 } // namespace vector

@@ -357,3 +357,15 @@ if(HNSW_TRACE_DISTANCE)
     add_compile_definitions(HNSW_TRACE_DISTANCE)
     message(STATUS "HNSW_TRACE_DISTANCE enabled - distance counts available")
 endif()
+
+# ==========================================
+# KV ?????????????????
+# Release ??????
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_kv_overhead.cpp")
+    add_executable(benchmark_kv_overhead
+        tests/benchmark_kv_overhead.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(benchmark_kv_overhead pthread)
+endif()

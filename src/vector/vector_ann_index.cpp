@@ -63,10 +63,26 @@ bool VectorAnnIndex::upsert(const std::string &key, const std::vector<float> &ve
 
   // 更新型负载同样会堆 Tombstone；只在 erase 路径检查阈值的话，
   // 一个纯覆盖写的业务永远等不到重建。
-  if (stats().tombstone_ratio() > compact_ratio_) {
+  if (should_compact()) {
     compact();
   }
   return true;
+}
+
+bool VectorAnnIndex::contains(const std::string &key) const {
+  std::shared_lock<std::shared_mutex> lock(mu_);
+  return ids_.find(key) != ids_.end();
+}
+
+bool VectorAnnIndex::should_compact() const {
+  std::shared_lock<std::shared_mutex> lock(mu_);
+  const size_t live = index_->size();
+  const size_t tombstones = index_->tombstone_count();
+  const size_t total = live + tombstones;
+  if (total == 0) {
+    return false;
+  }
+  return static_cast<double>(tombstones) / static_cast<double>(total) > compact_ratio_;
 }
 
 bool VectorAnnIndex::erase_without_compaction(const std::string &key) {
@@ -87,7 +103,7 @@ bool VectorAnnIndex::erase(const std::string &key) {
   if (!erase_without_compaction(key)) {
     return false;
   }
-  if (stats().tombstone_ratio() > compact_ratio_) {
+  if (should_compact()) {
     compact();
   }
   return true;

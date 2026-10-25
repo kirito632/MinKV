@@ -485,7 +485,7 @@ private:
   AnnConfig ann_config_;
   std::atomic<bool> ann_enabled_ {false};
 
-  void ann_on_put(const K &key, const V &value);
+  void ann_on_put(const K &key, const V &value, bool typed);
   void ann_on_erase(const K &key);
   void ann_on_clear();
   std::vector<std::pair<K, float>> vector_search_exact_scored(
@@ -600,7 +600,7 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
   // 写内存
   try {
     shards_[shard_idx]->put(key, value, ttl_ms);
-    ann_on_put(key, value); // shard lock already released
+    ann_on_put(key, value, false); // shard lock already released
   } catch (const std::exception &e) {
     // Shard put 是 noexcept 操作，仅捕获极端异常
     recordShardError(shard_idx);
@@ -659,7 +659,7 @@ V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&update
     throw;
   }
 
-  ann_on_put(key, *updated_value);
+  ann_on_put(key, *updated_value, false);
   return *updated_value;
 }
 
@@ -948,6 +948,9 @@ void ShardedCache<K, V, EnableCacheAlign>::vectorPut(const K &key,
 
   // 使用基础 put 接口存储
   put(key, serialized_vec, ttl_ms);
+
+  // 显式声明这是向量：普通 put 不再按长度猜（见 ann_on_put 的说明）
+  ann_on_put(key, serialized_vec, true);
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
@@ -1187,7 +1190,8 @@ std::vector<vector::AnnStats> ShardedCache<K, V, EnableCacheAlign>::ann_stats() 
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &value) {
+void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &value,
+                                                      bool typed) {
   if (!ann_enabled_.load(std::memory_order_acquire)) {
     return;
   }
@@ -1198,11 +1202,20 @@ void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &val
         return;
       }
       const size_t expected_bytes = ann_config_.dim * sizeof(float);
-      if (value.size() != expected_bytes) {
-        // This key no longer holds a vector of the indexed dimension: retire the
-        // old version, otherwise the search keeps returning a stale vector.
+      // A value enters the graph only when the caller declared it a vector
+      // (vectorPut) or it lives in the "vec:" namespace owned by the graph
+      // layer. Length alone is not evidence: a plain 512-byte blob used to be
+      // inserted as a 128d vector, which benchmark_kv_overhead measured at
+      // ~23000x the cost of a normal put.
+      const bool is_graph_key = key.rfind("vec:", 0) == 0;
+      if (value.size() != expected_bytes || (!typed && !is_graph_key)) {
+        // Retire an earlier version so a key that stopped being a vector
+        // stops being returned. Probe first: the exclusive lock is only worth
+        // taking when there is something to erase.
+        if (ann_l2_->contains(key)) {
         ann_l2_->erase_without_compaction(key);
-        if (ann_cosine_) {
+        }
+        if (ann_cosine_ && ann_cosine_->contains(key)) {
           ann_cosine_->erase_without_compaction(key);
         }
         return;
@@ -1210,7 +1223,7 @@ void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &val
       std::vector<float> vec(ann_config_.dim);
       std::memcpy(vec.data(), value.data(), expected_bytes);
       ann_l2_->upsert(key, vec);
-      if (ann_cosine_ && key.rfind("vec:", 0) == 0) {
+      if (ann_cosine_ && is_graph_key) {
         ann_cosine_->upsert(key, vec);
       }
     } catch (const std::exception &) {
