@@ -1,6 +1,6 @@
 # HNSW 向量索引设计
 
-> 状态：P1、P2、P2.5、P3 已实现；P4–P5 计划中
+> 状态：P1、P2、P2.5、P3、P4 已实现；P5 计划中
 > 分支：`feat/hnsw-ann-index`
 > 适用代码：`src/vector/hnsw_index.{h,cpp}`、`tests/test_hnsw_index.cpp`
 
@@ -256,6 +256,32 @@ void set_on_erase(std::function<void(const K&)> cb);
    （key 从向量被改写成了标量）。开启索引后普通 KV 写入会多两次哈希查找，
    这是「用字节长度判断是不是向量」这一妥协的连带成本，见 3.4。
 
+### 5.6 对外接口（P4）
+
+`POST /vector/search` 新增可选字段 `exact`（强制精确扫描）与 `ef`（覆盖搜索宽度）；
+响应在保持 `results` 为 **key 字符串数组**的前提下，新增 `scores`（与 results 平行的
+距离数组）、`search_mode`（`ann` | `brute`）、`latency_us`。
+保持 `results` 的类型不变是刻意的：`mcp_server/` 的 Python 客户端按字符串数组解析，
+改成对象数组会直接打断它。
+
+GraphRAG 侧：`GraphStore::SearchSimilarNodes` 优先走余弦索引（只含 `vec:` 键），
+索引不可用（未启用或维度不符）时回退到原来的全量扫描，签名与返回语义不变。
+
+顺带补上了缺失的 `examples/http_server_example.cpp`。CMake 里
+`http_server_example` 一直由 `if(EXISTS ...)` 保护，而该文件不存在——
+也就是说 `src/server/http_server.cpp` 从未被任何 target 编译过，
+这也是前面几轮改动「改 HTTP 层却无法验证」的根因。补上之后 HTTP 层才真正进入构建矩阵。
+
+端到端冒烟（dim=4，5 个向量）：
+
+```
+POST /vector/search {"query":[0.1,0.2,0.3,0.4],"top_k":3}
+  -> results ["v1","v2","v3"]  scores [0, 0.01, 0.04]
+     search_mode "ann"  latency_us 32.9
+同一请求 + "exact": true
+  -> 相同结果  search_mode "brute"  latency_us 24.3
+```
+
 ---
 
 ## 6. 参数与实测
@@ -422,8 +448,8 @@ setarch $(uname -m) -R /tmp/tsan_stress
 | P2.5 | 并行建图（第 8 节） | ✅ 已实现，4 线程 3.58× |
 | P2 | `VectorAnnIndex`：key 映射、双实例（L2 按维度 + cosine 限 `vec:`） | ✅ 已实现，含 TSan |
 | P3 | 生命周期一致性：`LruCache::on_erase` + 各 hook + ghost 测试 | ✅ 已实现 |
-| P4 | `/vector/search` 接入：`exact`/`ef`/`metric` 参数、`search_mode`、`scores` | 下一步 |
-| P5 | `tests/benchmark_hnsw.cpp` 固化 A/B 数据 + 本文数据复现 | 待做 |
+| P4 | `/vector/search` 接入：`exact`/`ef` 参数、`search_mode`、`scores`、示例服务 | ✅ 已实现，含端到端冒烟 |
+| P5 | `tests/benchmark_hnsw.cpp` 固化 A/B 数据 + 本文数据复现 | 下一步 |
 
 ---
 
