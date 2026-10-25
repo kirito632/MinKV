@@ -1,6 +1,6 @@
 # HNSW 向量索引设计
 
-> 状态：P1、P2、P2.5 已实现；P3–P5 计划中
+> 状态：P1、P2、P2.5、P3 已实现；P4–P5 计划中
 > 分支：`feat/hnsw-ann-index`
 > 适用代码：`src/vector/hnsw_index.{h,cpp}`、`tests/test_hnsw_index.cpp`
 
@@ -113,9 +113,12 @@ top_k = 10，单线程，32 分片，走的就是上面这条真实路径：
   `raw.size() == query.size()` 匹配的，`GraphStore::SetNodeEmbedding` 写入的
   `vec:` 原始 float 也会被 `/vector/search` 返回。把 `vec:` 从 L2 索引排除会改变
   现有响应，和「保持兼容」直接冲突。代价是这批向量被两份索引各存一份，属于有意为之。
-- **L2 侧要按维度分实例。** 当前存储允许混合维度（`vectorSearch` 是逐条比较长度的），
-  而一张 HNSW 只能有一个固定维度。因此 L2 侧是 `map<size_t dim, VectorAnnIndex>`，
-  否则 768d 与 1536d 混存时，另一维度的向量会被静默漏掉。
+- **L2 侧只索引一个配置维度，其余维度回退精确路径。** 当前存储允许混合维度
+  （`vectorSearch` 是逐条比较长度的），实现上曾考虑「每个维度一个实例」，
+  但那会让 `enable_ann_index` 的语义变得含糊。最终选择：只为一个维度建索引，
+  查询维度不匹配时**明确回退到暴力扫描**（`vectorSearchScored` 内部判断）。
+  代价是那个维度没有被加速，好处是绝不会静默漏结果。需要加速第二个维度时，
+  再调用一次 `enable_ann_index`（P4 之后支持）或为它单独建一个 ShardedCache。
 - **余弦侧可以是单维度**（图节点通常来自同一个 embedding 模型），但维度不符时
   必须显式报错，而不是悄悄跳过。
 
@@ -225,6 +228,33 @@ void set_on_erase(std::function<void(const K&)> cb);
 在此期间并发查询可能看不到这条向量，或看到旧向量的邻居关系。
 这是「先落 KV 再更新索引」模型的固有代价，可接受，但要在文档和测试里写明：
 **ANN 结果是最终一致的，不是线性一致的。**
+
+反方向的窗口（索引里还有、缓存里已经没了）用一次锁外回查兜住：
+`vectorSearchScored` 拿到 ANN 结果后释放索引锁，再对每个候选调用
+`shard->contains(key)`，已淘汰的 key 直接被过滤掉。
+
+### 5.5 实现要点（P3）
+
+| 位置 | 做法 |
+|---|---|
+| `LruCache::erase_node` | 新增 `on_erase_` 回调，在真正摘链之前调用；一处覆盖 remove / TTL / 淘汰 |
+| `ShardedCache` 构造 | 给每个分片挂 `set_on_erase([this](k){ ann_on_erase(k); })` |
+| `put` | 分片写入返回后调用 `ann_on_put`（分片锁已释放） |
+| `update_in_place` | 改为先取回新值再 `ann_on_put`，否则向量被 RMW 改写后索引仍是旧值 |
+| `clear` | `ann_on_clear()` |
+| `vectorSearchScored` | ANN 结果 → 释放锁 → `contains` 回查 → 返回 |
+
+三条实现上的硬约束：
+
+1. **回调里绝不 compact。** `ann_on_erase` 是在分片锁内被调用的，
+   整图重建会把分片卡住几百毫秒。因此新增了
+   `VectorAnnIndex::erase_without_compaction`，压缩统一交给显式路径。
+2. **回调必须幂等。** 淘汰与 `remove` 可能对同一个 key 各触发一次，
+   索引侧的 erase 对「不在映射里」的 key 直接返回 false。
+3. **写路径有一个恒定开销**：`ann_on_put` 对每次 put 都要判断
+   `value.size() == dim * 4`，不匹配时还要把该 key 从索引里撤下
+   （key 从向量被改写成了标量）。开启索引后普通 KV 写入会多两次哈希查找，
+   这是「用字节长度判断是不是向量」这一妥协的连带成本，见 3.4。
 
 ---
 
@@ -391,8 +421,8 @@ setarch $(uname -m) -R /tmp/tsan_stress
 | P1 | `HnswIndex` 算法层 + 单元测试 | ✅ 已提交 `ef44a4c` |
 | P2.5 | 并行建图（第 8 节） | ✅ 已实现，4 线程 3.58× |
 | P2 | `VectorAnnIndex`：key 映射、双实例（L2 按维度 + cosine 限 `vec:`） | ✅ 已实现，含 TSan |
-| P3 | 生命周期一致性：`LruCache::on_erase` + 各 hook + ghost 测试 | 下一步 |
-| P4 | `/vector/search` 接入：`exact`/`ef`/`metric` 参数、`search_mode`、`scores` | 待做 |
+| P3 | 生命周期一致性：`LruCache::on_erase` + 各 hook + ghost 测试 | ✅ 已实现 |
+| P4 | `/vector/search` 接入：`exact`/`ef`/`metric` 参数、`search_mode`、`scores` | 下一步 |
 | P5 | `tests/benchmark_hnsw.cpp` 固化 A/B 数据 + 本文数据复现 | 待做 |
 
 ---
