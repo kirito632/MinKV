@@ -659,9 +659,15 @@ size_t HnswIndex::memory_bytes() const {
   bytes += capacity_ * config_.M0 * sizeof(uint32_t); // level 0 槽位
   bytes += capacity_ * sizeof(uint32_t);              // level 0 计数
   bytes += upper_links_.capacity() * sizeof(std::vector<std::vector<uint32_t>>);
-  for (const auto &node : upper_links_) {
-    bytes += node.capacity() * sizeof(std::vector<uint32_t>);
-    for (const auto &level_links : node) {
+  // 上层链表由条带锁保护（不是结构锁），这里必须逐节点加锁读取，
+  // 否则会与并发 add_back_link 的 push_back 撞上。
+  for (size_t node = 0; node < capacity_; ++node) {
+    if (levels_[node] <= 0) {
+      continue;
+    }
+    std::lock_guard<std::mutex> guard(stripe_for(static_cast<uint32_t>(node)));
+    bytes += upper_links_[node].capacity() * sizeof(std::vector<uint32_t>);
+    for (const auto &level_links : upper_links_[node]) {
       bytes += level_links.capacity() * sizeof(uint32_t);
     }
   }

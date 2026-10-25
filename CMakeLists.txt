@@ -311,3 +311,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hnsw_index.cpp")
     )
     target_link_libraries(test_hnsw_index pthread)
 endif()
+
+# ==========================================
+# ?? ANN ????? (VectorAnnIndex)
+# key ????????Tombstone ???????????
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vector_ann_index.cpp")
+    add_executable(test_vector_ann_index
+        tests/test_vector_ann_index.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(test_vector_ann_index pthread)
+endif()
