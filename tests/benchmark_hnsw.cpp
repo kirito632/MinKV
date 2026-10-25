@@ -1,6 +1,12 @@
 /**
  * @file benchmark_hnsw.cpp
- * @brief Reproducible A/B benchmark: exact scan versus HNSW.
+ * @brief Reproducible A/B benchmark and ef sweep for the HNSW index.
+ *
+ * Two modes:
+ *
+ *   benchmark_hnsw                 # fixed suite, one row per dataset
+ *   benchmark_hnsw <k> <ef> <q>    # same suite with custom parameters
+ *   benchmark_hnsw sweep <clustered|uniform> <N> <dim> <M> <ef,ef,...>
  *
  * Every number in docs/HNSW_DESIGN.md should be reachable from this binary.
  * Build it in Release; a Debug build inflates both columns by roughly 7x.
@@ -9,17 +15,23 @@
  *   cmake --build build/release --target benchmark_hnsw -j2
  *   ./build/release/bin/benchmark_hnsw
  *
+ * The sweep also reports distance evaluations per query, which only exist when
+ * the build sets -DHNSW_TRACE_DISTANCE (off by default, since counting must not
+ * perturb the latency measurement):
+ *
+ *   cmake -S . -B build/trace -DCMAKE_BUILD_TYPE=Release -DHNSW_TRACE_DISTANCE=ON
+ *
  * Both paths run through ShardedCache, so the ANN column includes the
- * post-search existence re-check and the exact column includes the same
- * shard-copy overhead the production path has.
+ * post-search existence re-check and the exact column includes the same shard
+ * copy overhead the production path has.
  *
  * Two data distributions are measured on purpose:
- *   - clustered: what real embeddings look like, and the only realistic
- *     basis for a recall claim;
+ *   - clustered: what real embeddings look like, and the only realistic basis
+ *     for a recall claim;
  *   - uniform: adversarial, distance concentration leaves HNSW almost no
- *     neighbourhood structure. Recall here says more about the data than
- *     about the index, which is exactly why the repository's older benchmark
- *     (uniform 128d) must not be used to judge the index.
+ *     neighbourhood structure. Recall here says more about the data than about
+ *     the index, which is why the repository's older benchmark (uniform 128d)
+ *     must not be used to judge it.
  */
 
 #include <algorithm>
@@ -35,6 +47,10 @@
 #include <vector>
 
 #include "core/sharded_cache.h"
+
+#ifdef HNSW_TRACE_DISTANCE
+#include "vector/hnsw_index.h"
+#endif
 
 namespace {
 
@@ -112,6 +128,29 @@ void make_uniform(size_t count, size_t dim, std::mt19937 &gen, std::vector<float
   }
 }
 
+void fill_cache(Cache &cache, size_t count, size_t dim, bool clustered,
+              std::vector<float> &flat, std::vector<std::vector<float>> &queries,
+              size_t query_count) {
+  std::mt19937 gen(20261025u);
+  queries.assign(query_count, std::vector<float>(dim));
+  if (clustered) {
+    make_clustered(count, dim, 200, gen, flat, queries);
+  } else {
+    make_uniform(count, dim, gen, flat, queries);
+  }
+
+  std::vector<float> vec(dim);
+  for (size_t i = 0; i < count; ++i) {
+    std::copy(flat.begin() + static_cast<long>(i * dim),
+              flat.begin() + static_cast<long>((i + 1) * dim), vec.begin());
+    cache.vectorPut("v" + std::to_string(i), vec);
+  }
+}
+
+/// ShardedCache is neither copyable nor movable, so callers construct it and
+/// fill it here.
+constexpr size_t kShards = 32;
+
 struct Row {
   std::string dataset;
   size_t count = 0;
@@ -126,24 +165,10 @@ struct Row {
 
 Row run_case(const char *dataset, size_t count, size_t dim, bool clustered,
              size_t query_count, size_t k, size_t ef) {
-  std::mt19937 gen(20261025u);
   std::vector<float> flat;
-  std::vector<std::vector<float>> queries(query_count, std::vector<float>(dim));
-  if (clustered) {
-    make_clustered(count, dim, 200, gen, flat, queries);
-  } else {
-    make_uniform(count, dim, gen, flat, queries);
-  }
-
-  const size_t shards = 32;
-  Cache cache(count / shards + 64, shards);
-
-  std::vector<float> vec(dim);
-  for (size_t i = 0; i < count; ++i) {
-    std::copy(flat.begin() + static_cast<long>(i * dim),
-              flat.begin() + static_cast<long>((i + 1) * dim), vec.begin());
-    cache.vectorPut("v" + std::to_string(i), vec);
-  }
+  std::vector<std::vector<float>> queries;
+  Cache cache(count / kShards + 64, kShards);
+  fill_cache(cache, count, dim, clustered, flat, queries, query_count);
 
   Cache::AnnConfig config;
   config.dim = dim;
@@ -193,7 +218,7 @@ Row run_case(const char *dataset, size_t count, size_t dim, bool clustered,
   return row;
 }
 
-void print_row(const Row &row, size_t k) {
+void print_row(const Row &row) {
   const double speedup = row.approximate.p50_ms > 0.0
                              ? row.exact.p50_ms / row.approximate.p50_ms
                              : 0.0;
@@ -203,12 +228,126 @@ void print_row(const Row &row, size_t k) {
               row.exact.p95_ms, row.exact.p99_ms, row.approximate.p50_ms,
               row.approximate.p95_ms, row.approximate.p99_ms, speedup, row.recall, row.live,
               static_cast<double>(row.index_bytes) / (1024.0 * 1024.0));
-  (void)k;
+}
+
+std::vector<size_t> parse_list(const char *text) {
+  std::vector<size_t> values;
+  std::string current;
+  for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+    if (*cursor == ',') {
+      if (!current.empty()) {
+        values.push_back(static_cast<size_t>(std::stoul(current)));
+        current.clear();
+      }
+    } else {
+      current.push_back(*cursor);
+    }
+  }
+  if (!current.empty()) {
+    values.push_back(static_cast<size_t>(std::stoul(current)));
+  }
+  std::sort(values.begin(), values.end());
+  return values;
+}
+
+int run_sweep(bool clustered, size_t count, size_t dim, size_t M,
+              const std::vector<size_t> &ef_list, size_t query_count, size_t k) {
+  const char *name = clustered ? "clustered" : "uniform";
+  std::vector<float> flat;
+  std::vector<std::vector<float>> queries;
+  Cache cache(count / kShards + 64, kShards);
+  fill_cache(cache, count, dim, clustered, flat, queries, query_count);
+
+  // Exact answers and their latency do not depend on M or ef: measure once.
+  std::vector<std::vector<std::string>> truth;
+  std::vector<double> exact_ms;
+  truth.reserve(queries.size());
+  for (const auto &query : queries) {
+    const auto start = Clock::now();
+    truth.push_back(cache.vectorSearchExact(query, static_cast<int>(k)));
+    exact_ms.push_back(
+        std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+  }
+  const Latency exact = summarise(exact_ms);
+
+  Cache::AnnConfig config;
+  config.dim = dim;
+  config.M = M;
+  config.M0 = M * 2;
+  const auto build_start = Clock::now();
+  if (!cache.enable_ann_index(config)) {
+    std::printf("enable_ann_index failed\n");
+    return 1;
+  }
+  const double build_s =
+      std::chrono::duration<double>(Clock::now() - build_start).count();
+
+  std::printf("\n%s N=%zu dim=%zu M=%zu k=%zu queries=%zu build=%.2fs  exact P50=%.3f "
+              "P99=%.3f ms\n",
+              name, count, dim, M, k, query_count, build_s, exact.p50_ms, exact.p99_ms);
+  std::printf("%5s | %9s | %8s %8s %8s | %11s | %9s %9s\n", "ef", "recall@k", "P50", "P95",
+              "P99", "dist/query", "speedP50", "speedP99");
+
+  for (size_t ef : ef_list) {
+    std::vector<double> ann_ms;
+    double recall_sum = 0.0;
+    ann_ms.reserve(queries.size());
+    for (size_t q = 0; q < queries.size(); ++q) {
+#ifdef HNSW_TRACE_DISTANCE
+      minkv::vector::trace_reset_distance_calls();
+#endif
+      const auto start = Clock::now();
+      const auto hits = cache.vectorSearchScored(queries[q], k, ef);
+      ann_ms.push_back(
+          std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+
+      const std::set<std::string> expected(truth[q].begin(), truth[q].end());
+      size_t matched = 0;
+      for (const auto &hit : hits) {
+        if (expected.count(hit.first) != 0) {
+          ++matched;
+        }
+      }
+      recall_sum += expected.empty() ? 1.0 : static_cast<double>(matched) / expected.size();
+    }
+
+    const Latency ann = summarise(ann_ms);
+    const double recall = recall_sum / static_cast<double>(queries.size());
+#ifdef HNSW_TRACE_DISTANCE
+    char distance_text[32];
+    std::snprintf(distance_text, sizeof(distance_text), "%.0f",
+                  static_cast<double>(minkv::vector::trace_distance_calls()) /
+                      static_cast<double>(queries.size()));
+#else
+    const char *distance_text = "n/a";
+#endif
+    std::printf("%5zu | %9.4f | %8.3f %8.3f %8.3f | %11s | %8.1fx %8.1fx\n", ef, recall,
+                ann.p50_ms, ann.p95_ms, ann.p99_ms, distance_text,
+                ann.p50_ms > 0.0 ? exact.p50_ms / ann.p50_ms : 0.0,
+                ann.p99_ms > 0.0 ? exact.p99_ms / ann.p99_ms : 0.0);
+    std::fflush(stdout);
+  }
+  return 0;
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc > 1 && std::string(argv[1]) == "sweep") {
+    // benchmark_hnsw sweep <clustered|uniform> <N> <dim> <M> <ef,ef,...>
+    if (argc < 7) {
+      std::printf("usage: %s sweep <clustered|uniform> <N> <dim> <M> <ef,ef,...>\n",
+                  argv[0]);
+      return 2;
+    }
+    const bool clustered = std::string(argv[2]) == "clustered";
+    const size_t count = static_cast<size_t>(std::stoul(argv[3]));
+    const size_t dim = static_cast<size_t>(std::stoul(argv[4]));
+    const size_t M = static_cast<size_t>(std::stoul(argv[5]));
+    const std::vector<size_t> ef_list = parse_list(argv[6]);
+    return run_sweep(clustered, count, dim, M, ef_list, 20, 10);
+  }
+
   const size_t k = argc > 1 ? static_cast<size_t>(std::stoul(argv[1])) : 10;
   const size_t ef = argc > 2 ? static_cast<size_t>(std::stoul(argv[2])) : 64;
   const size_t queries = argc > 3 ? static_cast<size_t>(std::stoul(argv[3])) : 20;
@@ -230,11 +369,12 @@ int main(int argc, char **argv) {
   rows.push_back(run_case("clustered", 10000, 768, true, queries, k, ef));
 
   for (const Row &row : rows) {
-    print_row(row, k);
+    print_row(row);
     std::fflush(stdout);
   }
 
   const double total_s = std::chrono::duration<double>(Clock::now() - started).count();
   std::printf("\ntotal %.1f s\n", total_s);
+  std::printf("note: speedup column is P50-based; P99 speedup is exact99/ann99\n");
   return 0;
 }

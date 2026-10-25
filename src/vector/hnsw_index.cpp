@@ -59,6 +59,13 @@ bool mark_visited(VisitScratch &scratch, uint32_t id) {
   return true;
 }
 
+#ifdef HNSW_TRACE_DISTANCE
+// Counting is per thread on purpose: graph construction runs on several
+// threads, but the sweep only reads the counter around single-threaded
+// queries, so a shared counter would both race and mix both phases.
+thread_local uint64_t g_distance_calls = 0;
+#endif
+
 float point_distance(AnnMetric metric, const float *a, const float *b, size_t dim) {
   if (metric == AnnMetric::COSINE) {
     return 1.0f - ::VectorOps::CosineSimilarity_AVX2(a, b, dim);
@@ -67,6 +74,11 @@ float point_distance(AnnMetric metric, const float *a, const float *b, size_t di
 }
 
 } // namespace
+
+#ifdef HNSW_TRACE_DISTANCE
+uint64_t trace_distance_calls() { return g_distance_calls; }
+void trace_reset_distance_calls() { g_distance_calls = 0; }
+#endif
 
 HnswIndex::HnswIndex(const HnswConfig &config)
     : config_(config),
@@ -88,6 +100,9 @@ HnswIndex::HnswIndex(const HnswConfig &config)
 }
 
 float HnswIndex::distance(const float *a, const float *b) const {
+#ifdef HNSW_TRACE_DISTANCE
+  ++g_distance_calls;
+#endif
   return point_distance(config_.metric, a, b, config_.dim);
 }
 

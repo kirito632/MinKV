@@ -382,6 +382,11 @@ BenchmarkResult benchmark_concurrent_rw(int thread_count,
 // ============================================================
 //  Benchmark 2: 向量检索
 // ============================================================
+// NOTE: this section uses uniform random 128d vectors, which is adversarial
+// for any graph index: distance concentration erases neighbourhood structure
+// and recall collapses regardless of implementation quality. Keep it as the
+// historical brute-force baseline, but evaluate HNSW with benchmark_hnsw,
+// which measures both a clustered (realistic) and a uniform (stress) set.
 BenchmarkResult benchmark_vector_search(int thread_count,
                                         int searches_per_thread,
                                         uint32_t seed = kBenchmarkSeed) {

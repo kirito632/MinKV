@@ -347,3 +347,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_hnsw.cpp")
     )
     target_link_libraries(benchmark_hnsw pthread)
 endif()
+
+# ==========================================
+# HNSW ?????????????????
+# ??????????????????????????????
+# ==========================================
+option(HNSW_TRACE_DISTANCE "Count HNSW distance evaluations (benchmark only)" OFF)
+if(HNSW_TRACE_DISTANCE)
+    add_compile_definitions(HNSW_TRACE_DISTANCE)
+    message(STATUS "HNSW_TRACE_DISTANCE enabled - distance counts available")
+endif()

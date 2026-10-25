@@ -205,5 +205,17 @@ private:
   uint64_t rng_state_;
 };
 
+#ifdef HNSW_TRACE_DISTANCE
+/**
+ * @brief Distance evaluations performed by the calling thread.
+ *
+ * Compiled in only with -DHNSW_TRACE_DISTANCE (benchmark instrumentation).
+ * Counting is thread-local: graph construction on worker threads does not
+ * pollute the numbers measured around single-threaded queries.
+ */
+uint64_t trace_distance_calls();
+void trace_reset_distance_calls();
+#endif
+
 } // namespace vector
 } // namespace minkv
