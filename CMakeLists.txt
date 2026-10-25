@@ -299,3 +299,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/http_server_example.cpp")
     )
     target_link_libraries(http_server_example pthread)
 endif()
+
+# ==========================================
+# HNSW 索引测试 (ANN Index Tests)
+# 只测算法层：召回率、删除语义、图重建、可复现性
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hnsw_index.cpp")
+    add_executable(test_hnsw_index
+        tests/test_hnsw_index.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(test_hnsw_index pthread)
+endif()
