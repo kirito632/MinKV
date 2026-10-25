@@ -323,3 +323,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vector_ann_index.cpp")
     )
     target_link_libraries(test_vector_ann_index pthread)
 endif()
+
+# ==========================================
+# ?? ANN ????? (ShardedCache + HNSW)
+# ?? / TTL / remove ?????????????
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ann_consistency.cpp")
+    add_executable(test_ann_consistency
+        tests/test_ann_consistency.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(test_ann_consistency pthread)
+endif()

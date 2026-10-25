@@ -69,19 +69,24 @@ bool VectorAnnIndex::upsert(const std::string &key, const std::vector<float> &ve
   return true;
 }
 
-bool VectorAnnIndex::erase(const std::string &key) {
-  {
-    std::unique_lock<std::shared_mutex> lock(mu_);
-    const auto it = ids_.find(key);
-    if (it == ids_.end()) {
-      return false;
-    }
-    const uint32_t id = it->second;
-    ids_.erase(it);
-    // keys_[id] 保留不动：该节点已在索引里标记删除，不会再出现在结果里
-    index_->erase(id);
+bool VectorAnnIndex::erase_without_compaction(const std::string &key) {
+  std::unique_lock<std::shared_mutex> lock(mu_);
+  const auto it = ids_.find(key);
+  if (it == ids_.end()) {
+    return false;
   }
+  const uint32_t id = it->second;
+  ids_.erase(it);
+  // keys_[id] keeps pointing at the retired key: the node is tombstoned in the
+  // graph, so it can never be returned again.
+  index_->erase(id);
+  return true;
+}
 
+bool VectorAnnIndex::erase(const std::string &key) {
+  if (!erase_without_compaction(key)) {
+    return false;
+  }
   if (stats().tombstone_ratio() > compact_ratio_) {
     compact();
   }

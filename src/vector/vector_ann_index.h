@@ -90,6 +90,15 @@ public:
   bool erase(const std::string &key);
 
   /**
+   * @brief Erase the key and tombstone the node without ever compacting.
+   *
+   * Callers that already hold a lock must not trigger a full graph rebuild;
+   * ShardedCache's eviction hook is the main user, since it fires inside the
+   * shard lock.
+   */
+  bool erase_without_compaction(const std::string &key);
+
+  /**
    * @brief 近邻查询
    * @param query 维度必须等于构造时的 dim
    * @param k     返回条数上限
