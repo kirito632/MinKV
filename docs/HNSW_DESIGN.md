@@ -1,6 +1,6 @@
 # HNSW 向量索引设计
 
-> 状态：P1、P2.5 已实现；P2–P5 计划中
+> 状态：P1、P2、P2.5 已实现；P3–P5 计划中
 > 分支：`feat/hnsw-ann-index`
 > 适用代码：`src/vector/hnsw_index.{h,cpp}`、`tests/test_hnsw_index.cpp`
 
@@ -307,6 +307,22 @@ Tombstone 节点仍留在图里当导航路标，有时反而比「只留存活�
 实测 40% 删除后 recall 0.9975，compact 之后 0.9950。
 所以验收口径是「重建后质量不塌」，不是「重建后必然更好」。
 
+### 7.3 两个并发 bug（只有 TSan + 并发压测能抓到）
+
+**一、`compact()` 换代与并发建图冲突。** 为了不让写操作把检索阻塞一次建图的时长，
+`upsert` 把建图放在 `mu_` 之外。但 `compact()` 会在 `mu_` 独占下替换并析构旧索引，
+于是仍在旧对象里建图的线程会踩到已释放内存（TSan 报 use-after-free）。
+修法：索引用 `shared_ptr` 持有（在用对象不随换代析构），并在发布阶段校验代号——
+若期间发生过重建，就在当前代重新插入一次。同理，`erase` 必须与 `ids_` 的摘除
+放在同一把锁里，否则跨锁调用时该 id 可能已经属于另一代索引。
+
+**二、`memory_bytes()` 的加锁范围不对。** 它只拿了结构共享锁，却读上层邻接链表的
+`capacity()`；那些链表由条带锁保护，会与并发 `add_back_link` 的 `push_back` 撞上。
+修法：逐节点按其条带锁读取，且只对 `levels_[node] > 0` 的约 1/16 节点加锁。
+
+两条都属于「锁的粒度选对了、但覆盖范围漏了一块」：单线程测试、召回率测试全绿，
+只有 TSan + 并发压测能暴露。
+
 ---
 
 ## 8. 并行建图（P2.5，已实现）
@@ -374,8 +390,8 @@ setarch $(uname -m) -R /tmp/tsan_stress
 |---|---|---|
 | P1 | `HnswIndex` 算法层 + 单元测试 | ✅ 已提交 `ef44a4c` |
 | P2.5 | 并行建图（第 8 节） | ✅ 已实现，4 线程 3.58× |
-| P2 | `VectorAnnIndex`：key 映射、双实例（L2 按维度 + cosine 限 `vec:`） | 待做 |
-| P3 | 生命周期一致性：`LruCache::on_erase` + 各 hook + ghost 测试 | 待做 |
+| P2 | `VectorAnnIndex`：key 映射、双实例（L2 按维度 + cosine 限 `vec:`） | ✅ 已实现，含 TSan |
+| P3 | 生命周期一致性：`LruCache::on_erase` + 各 hook + ghost 测试 | 下一步 |
 | P4 | `/vector/search` 接入：`exact`/`ef`/`metric` 参数、`search_mode`、`scores` | 待做 |
 | P5 | `tests/benchmark_hnsw.cpp` 固化 A/B 数据 + 本文数据复现 | 待做 |
 
