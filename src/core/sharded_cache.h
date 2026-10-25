@@ -211,6 +211,14 @@ public:
     size_t ef_construction = 200; ///< build candidate width
     size_t ef_search = 64;        ///< query candidate width
     double compact_ratio = 0.3;   ///< tombstone ratio that triggers a rebuild
+    /// Optional key prefix.
+    ///
+    /// The startup scan can only judge a value by its length, so without this
+    /// a plain blob of the right size is indexed once and then eroded on its
+    /// first overwrite. Setting a prefix makes the rebuild rule coherent:
+    /// only keys under that namespace are rebuilt, and a plain put may only
+    /// add keys under it. Empty keeps the legacy length-only behaviour.
+    std::string key_prefix;
   };
 
   /**
@@ -1107,6 +1115,9 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
       if (value.size() != expected_bytes) {
         continue;
       }
+      if (!config.key_prefix.empty() && key.rfind(config.key_prefix, 0) != 0) {
+        continue;
+      }
       const float *raw = reinterpret_cast<const float *>(value.data());
       keys.push_back(key);
       vectors.insert(vectors.end(), raw, raw + config.dim);
@@ -1208,7 +1219,13 @@ void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &val
       // inserted as a 128d vector, which benchmark_kv_overhead measured at
       // ~23000x the cost of a normal put.
       const bool is_graph_key = key.rfind("vec:", 0) == 0;
-      if (value.size() != expected_bytes || (!typed && !is_graph_key)) {
+      // A configured prefix is an explicit ownership contract: keys under it
+      // may enter through a plain put as well, which is what makes a restart
+      // rebuild meaningful.
+      const bool matches_prefix =
+          !ann_config_.key_prefix.empty() && key.rfind(ann_config_.key_prefix, 0) == 0;
+      if (value.size() != expected_bytes ||
+          (!typed && !is_graph_key && !matches_prefix)) {
         // Retire an earlier version so a key that stopped being a vector
         // stops being returned. Probe first: the exclusive lock is only worth
         // taking when there is something to erase.
