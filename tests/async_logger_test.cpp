@@ -84,6 +84,26 @@ void test_log_levels() {
   std::cout << "日志级别测试完成" << std::endl;
 }
 
+void test_repeated_start_stop() {
+  std::cout << "=== 重复启动/停止测试 ===" << std::endl;
+
+  AsyncLogger logger("/tmp/minkv_async_logger_repeat_start");
+  logger.start();
+  logger.start();
+
+  const char message[] = "repeated start should not terminate\n";
+  logger.append(message, sizeof(message) - 1);
+
+  logger.stop();
+  logger.stop();
+
+  logger.start();
+  logger.start();
+  logger.stop();
+
+  std::cout << "重复启动/停止测试完成" << std::endl;
+}
+
 void test_performance_comparison() {
   std::cout << "=== 性能对比测试 ===" << std::endl;
 
@@ -128,6 +148,9 @@ int main() {
   std::cout << std::endl;
 
   test_concurrent_logging();
+  std::cout << std::endl;
+
+  test_repeated_start_stop();
   std::cout << std::endl;
 
   test_performance_comparison();
