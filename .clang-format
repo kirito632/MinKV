@@ -1,0 +1,123 @@
+---
+# ============================================================
+# MinKV .clang-format
+# 基于 Google 风格定制，适配 C++17 + AVX2 高性能项目
+# ============================================================
+
+# === 基础语言标准 ===
+Language: Cpp
+BasedOnStyle: Google
+
+# === 缩进 ===
+IndentWidth: 2
+ContinuationIndentWidth: 4
+AccessModifierOffset: -2          # public: 缩进 1 级（相对类名缩进 2 格）
+IndentCaseLabels: true            # case 与 switch 对齐
+IndentPPDirectives: None          # 预处理指令不额外缩进
+IndentGotoLabels: false
+IndentRequiresClause: true
+
+# === 花括号 ===
+BreakBeforeBraces: Attach         # 花括号附加在语句末尾（K&R 风格）
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+# === 命名空间 ===
+FixNamespaceComments: true        # 自动补全 // namespace minkv
+NamespaceIndentation: None        # 命名空间内不额外缩进
+CompactNamespaces: false          # 不压缩嵌套 namespace
+
+# === 指针/引用对齐 ===
+PointerAlignment: Left            # float* a（星号靠左）
+ReferenceAlignment: Left          # float& a
+
+# === 列宽 ===
+ColumnLimit: 90                   # 90 列换行（适合分屏对比代码）
+PenaltyExcessCharacter: 100
+PenaltyBreakComment: 300
+PenaltyBreakString: 1000
+PenaltyReturnTypeOnItsOwnLine: 200
+
+# === 对齐 ===
+AlignAfterOpenBracket: Align      # 函数参数换行后对齐括号
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: AlignAfterOperator
+AlignTrailingComments: true       # 行尾注释自动对齐
+
+# === 空格 ===
+SpaceAfterCStyleCast: false       # (float)v 无空格
+SpaceAfterTemplateKeyword: true   # template <...>
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements  # if(...) 无空格，if (...) 有空格
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: false             # <int> 无空格
+SpacesInContainerLiterals: false  # {1,2,3} 无空格
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# === 函数声明/定义 ===
+AlwaysBreakAfterReturnType: None  # 返回类型不单独换行
+AlwaysBreakTemplateDeclarations: Yes
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 4
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackParameters: false          # 函数参数不压缩打包（每个参数一行）
+BinPackArguments: false
+
+# === 注释 ===
+ReflowComments: true              # 自动重排注释
+CommentPragmas: '^ IWYU pragma:' # 保留 IWYU 标记
+
+# === 空行 ===
+MaxEmptyLinesToKeep: 2
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# === 排序 ===
+IncludeBlocks: Regroup            # 分组排序 include
+IncludeCategories:
+  - Regex:           '^<.*\.h>'
+    Priority:        1
+    SortPriority:    0
+    CaseSensitive:   false
+  - Regex:           '^<.*>'
+    Priority:        2
+    SortPriority:    0
+    CaseSensitive:   false
+  - Regex:           '^".*\.h"'
+    Priority:        3
+    SortPriority:    0
+    CaseSensitive:   false
+  - Regex:           '^".*"'
+    Priority:        4
+    SortPriority:    0
+    CaseSensitive:   false
+  - Regex:           '.*'
+    Priority:        5
+    SortPriority:    0
+    CaseSensitive:   false
+IncludeIsMainRegex: '(Test)?$'
+
+# === 其他 ===
+AllowShortEnumsOnASingleLine: true
+AllowShortLambdasOnASingleLine: Inline
+BitFieldColonSpacing: Both
+InsertBraces: false
+InsertNewlineAtEOF: true
+SeparateDefinitionBlocks: Always
+SortUsingDeclarations: true
+SortIncludes: CaseInsensitive
+
+# === 宏 ===
+MacroBlockBegin: ''
+MacroBlockEnd: ''
+
+# === 禁用格式化的区域 ===
+# 对 SIMD intrinsic 代码块禁用格式化，避免破坏指令对齐
+...
