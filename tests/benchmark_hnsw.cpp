@@ -478,7 +478,9 @@ int run_real(const char *train_path, const char *query_path, size_t M,
 
   // Ground truth from one contiguous scan; also the honest latency rival.
   std::vector<std::vector<uint32_t>> truth;
+  std::vector<double> kth_distance;
   truth.reserve(queries.count);
+  kth_distance.reserve(queries.count);
   std::vector<double> dense_ms;
   std::vector<std::pair<float, uint32_t>> scored(train.count);
   for (size_t q = 0; q < queries.count; ++q) {
@@ -498,6 +500,10 @@ int run_real(const char *train_path, const char *query_path, size_t M,
       ids.push_back(scored[i].second);
     }
     truth.push_back(std::move(ids));
+    // Distance of the k-th exact neighbour. Overlapping text chunks and
+    // duplicate images produce exact ties, and comparing id sets would count
+    // those ties as misses, so the tolerance recall below uses this bound.
+    kth_distance.push_back(static_cast<double>(scored[k - 1].first));
   }
   const Latency dense = summarise(dense_ms);
 
@@ -516,12 +522,13 @@ int run_real(const char *train_path, const char *query_path, size_t M,
   std::printf("\nreal data: %s N=%zu dim=%zu queries=%zu M=%zu k=%zu build=%.2fs\n",
               train_path, train.count, train.dim, queries.count, M, k, build_s);
   std::printf("dense exact P50=%.3f P99=%.3f ms\n", dense.p50_ms, dense.p99_ms);
-  std::printf("%5s | %9s | %8s %8s %8s | %10s | %8s %8s\n", "ef", "recall@k", "P50", "P95",
-              "P99", "dist/query", "vsDense", "dP99");
+  std::printf("%5s | %9s %9s | %8s %8s %8s | %10s | %8s %8s\n", "ef", "recall@k", "tol@1%",
+              "P50", "P95", "P99", "dist/query", "vsDense", "dP99");
 
   for (size_t ef : ef_list) {
     std::vector<double> ann_ms;
     double recall_sum = 0.0;
+    double tolerance_sum = 0.0;
 #ifdef HNSW_TRACE_DISTANCE
     minkv::vector::trace_reset_distance_calls();
 #endif
@@ -535,16 +542,24 @@ int run_real(const char *train_path, const char *query_path, size_t M,
 
       const std::set<uint32_t> expected(truth[q].begin(), truth[q].end());
       size_t matched = 0;
+      size_t within_tolerance = 0;
+      const double bound = kth_distance[q] * 1.01 + 1e-6;
       for (const auto &hit : hits) {
         if (expected.count(static_cast<uint32_t>(std::stoul(hit.first.substr(1)))) != 0) {
           ++matched;
         }
+        // A hit is equally correct if its distance matches the k-th exact one.
+        if (static_cast<double>(hit.second) <= bound) {
+          ++within_tolerance;
+        }
       }
       recall_sum += expected.empty() ? 1.0 : static_cast<double>(matched) / expected.size();
+      tolerance_sum += static_cast<double>(within_tolerance) / static_cast<double>(k);
     }
 
     const Latency ann = summarise(ann_ms);
     const double recall = recall_sum / static_cast<double>(queries.count);
+    const double tolerance_recall = tolerance_sum / static_cast<double>(queries.count);
 #ifdef HNSW_TRACE_DISTANCE
     char distance_text[32];
     std::snprintf(distance_text, sizeof(distance_text), "%.0f",
@@ -553,8 +568,8 @@ int run_real(const char *train_path, const char *query_path, size_t M,
 #else
     const char *distance_text = "n/a";
 #endif
-    std::printf("%5zu | %9.4f | %8.3f %8.3f %8.3f | %10s | %7.1fx %7.1fx\n", ef, recall,
-                ann.p50_ms, ann.p95_ms, ann.p99_ms, distance_text,
+    std::printf("%5zu | %9.4f %9.4f | %8.3f %8.3f %8.3f | %10s | %7.1fx %7.1fx\n", ef, recall,
+                tolerance_recall, ann.p50_ms, ann.p95_ms, ann.p99_ms, distance_text,
                 ann.p50_ms > 0.0 ? dense.p50_ms / ann.p50_ms : 0.0,
                 ann.p99_ms > 0.0 ? dense.p99_ms / ann.p99_ms : 0.0);
     std::fflush(stdout);
