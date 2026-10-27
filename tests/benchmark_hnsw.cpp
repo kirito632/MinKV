@@ -41,6 +41,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "core/sharded_cache.h"
@@ -599,9 +600,217 @@ int run_real(const char *train_path, const char *query_path, size_t M,
   return 0;
 }
 
+// ---------------------------------------------------------------------
+// qrels mode: does the approximation error change ranked relevance?
+//
+// recall@k only says how much of the exact top-k the index recovered. NDCG and
+// MRR say whether the documents the dataset actually marks relevant ended up
+// near the top - a different question, and the one a retrieval system is
+// judged on.
+// ---------------------------------------------------------------------
+
+struct Qrels {
+  std::vector<std::vector<std::pair<uint32_t, int>>> grades; // [query] -> (doc, grade)
+};
+
+bool load_qrels(const char *path, size_t query_count, Qrels &out) {
+  out.grades.assign(query_count, {});
+  std::ifstream input(path);
+  if (!input) {
+    std::printf("cannot open %s\n", path);
+    return false;
+  }
+  size_t query = 0;
+  size_t doc = 0;
+  int grade = 0;
+  size_t rows = 0;
+  while (input >> query >> doc >> grade) {
+    if (query >= query_count) {
+      continue;
+    }
+    out.grades[query].emplace_back(static_cast<uint32_t>(doc), grade);
+    ++rows;
+  }
+  std::printf("loaded %zu judgements over %zu queries\n", rows, query_count);
+  return rows > 0;
+}
+
+/// NDCG@k and MRR of one ranking, given that query's judgements.
+double ndcg_at_k(const std::vector<uint32_t> &ranked,
+                 const std::vector<std::pair<uint32_t, int>> &grades, size_t k,
+                 double &mrr) {
+  std::unordered_map<uint32_t, int> rel;
+  rel.reserve(grades.size() * 2);
+  for (const auto &[doc, grade] : grades) {
+    rel[doc] = grade;
+  }
+
+  double dcg = 0.0;
+  for (size_t i = 0; i < ranked.size() && i < k; ++i) {
+    const auto it = rel.find(ranked[i]);
+    const double gain = it == rel.end() ? 0.0 : static_cast<double>(it->second);
+    dcg += (std::pow(2.0, gain) - 1.0) / std::log2(static_cast<double>(i) + 2.0);
+  }
+
+  std::vector<int> ideal;
+  ideal.reserve(grades.size());
+  for (const auto &[doc, grade] : grades) {
+    ideal.push_back(grade);
+  }
+  std::sort(ideal.rbegin(), ideal.rend());
+  double idcg = 0.0;
+  for (size_t i = 0; i < ideal.size() && i < k; ++i) {
+    idcg += (std::pow(2.0, static_cast<double>(ideal[i])) - 1.0) /
+            std::log2(static_cast<double>(i) + 2.0);
+  }
+
+  mrr = 0.0;
+  for (size_t i = 0; i < ranked.size() && i < k; ++i) {
+    const auto it = rel.find(ranked[i]);
+    if (it != rel.end() && it->second > 0) {
+      mrr = 1.0 / (static_cast<double>(i) + 1.0);
+      break;
+    }
+  }
+  return idcg > 0.0 ? dcg / idcg : 0.0;
+}
+
+int run_qrels(const char *corpus_path, const char *query_path, const char *qrels_path,
+              size_t M, const std::vector<size_t> &ef_list, size_t k) {
+  RawData corpus;
+  RawData queries;
+  if (!load_raw(corpus_path, corpus, 0) || !load_raw(query_path, queries, 0)) {
+    return 1;
+  }
+  if (corpus.dim != queries.dim) {
+    std::printf("dimension mismatch\n");
+    return 1;
+  }
+  Qrels qrels;
+  if (!load_qrels(qrels_path, queries.count, qrels)) {
+    return 1;
+  }
+
+  Cache cache(corpus.count / kShards + 64, kShards);
+  fill_cache(cache, corpus.flat, corpus.count, corpus.dim);
+
+  // Exact ranking: what the retrieval system would return without any index.
+  std::vector<std::vector<uint32_t>> exact(queries.count);
+  std::vector<double> exact_ms;
+  std::vector<std::pair<float, uint32_t>> scored(corpus.count);
+  double ndcg_exact_sum = 0.0;
+  double mrr_exact_sum = 0.0;
+  size_t judged = 0;
+  for (size_t q = 0; q < queries.count; ++q) {
+    const float *query = queries.flat.data() + q * corpus.dim;
+    const auto start = Clock::now();
+    for (size_t i = 0; i < corpus.count; ++i) {
+      scored[i] = {VectorOps::L2DistanceSquare(query, corpus.flat.data() + i * corpus.dim,
+                                               corpus.dim),
+                   static_cast<uint32_t>(i)};
+    }
+    std::partial_sort(scored.begin(), scored.begin() + static_cast<long>(k), scored.end());
+    exact_ms.push_back(
+        std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+    exact[q].reserve(k);
+    for (size_t i = 0; i < k; ++i) {
+      exact[q].push_back(scored[i].second);
+    }
+    if (!qrels.grades[q].empty()) {
+      double mrr = 0.0;
+      ndcg_exact_sum += ndcg_at_k(exact[q], qrels.grades[q], k, mrr);
+      mrr_exact_sum += mrr;
+      ++judged;
+    }
+  }
+  const Latency exact_latency = summarise(exact_ms);
+  const double ndcg_exact = judged ? ndcg_exact_sum / static_cast<double>(judged) : 0.0;
+  const double mrr_exact = judged ? mrr_exact_sum / static_cast<double>(judged) : 0.0;
+
+  Cache::AnnConfig config;
+  config.dim = corpus.dim;
+  config.M = M;
+  config.M0 = M * 2;
+  const auto build_start = Clock::now();
+  if (!cache.enable_ann_index(config)) {
+    std::printf("enable_ann_index failed\n");
+    return 1;
+  }
+  const double build_s =
+      std::chrono::duration<double>(Clock::now() - build_start).count();
+  const auto index_stats = cache.ann_stats();
+  const double index_mb = index_stats.empty()
+                              ? 0.0
+                              : static_cast<double>(index_stats[0].memory_bytes) /
+                                    (1024.0 * 1024.0);
+
+  std::printf("\nqrels: corpus=%zu dim=%zu queries=%zu judged=%zu k=%zu M=%zu build=%.2fs "
+              "index=%.1f MB\n",
+              corpus.count, corpus.dim, queries.count, judged, k, M, build_s, index_mb);
+  std::printf("exact baseline: NDCG@%zu=%.4f MRR=%.4f  P50=%.3f ms\n", k, ndcg_exact, mrr_exact,
+              exact_latency.p50_ms);
+  std::printf("%5s | %9s | %9s %9s | %8s %8s %8s | %7s\n", "ef", "recall@k", "NDCG@k", "MRR",
+              "P50", "P95", "P99", "vsDense");
+
+  for (size_t ef : ef_list) {
+    std::vector<double> ann_ms;
+    double recall_sum = 0.0;
+    double ndcg_sum = 0.0;
+    double mrr_sum = 0.0;
+    for (size_t q = 0; q < queries.count; ++q) {
+      std::vector<float> query(queries.flat.begin() + static_cast<long>(q * corpus.dim),
+                               queries.flat.begin() + static_cast<long>((q + 1) * corpus.dim));
+      const auto start = Clock::now();
+      const auto hits = cache.vectorSearchScored(query, k, ef);
+      ann_ms.push_back(
+          std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+
+      std::vector<uint32_t> ranked;
+      ranked.reserve(hits.size());
+      for (const auto &hit : hits) {
+        ranked.push_back(static_cast<uint32_t>(std::stoul(hit.first.substr(1))));
+      }
+      const std::set<uint32_t> expected(exact[q].begin(), exact[q].end());
+      size_t matched = 0;
+      for (uint32_t id : ranked) {
+        if (expected.count(id) != 0) {
+          ++matched;
+        }
+      }
+      recall_sum += expected.empty() ? 1.0 : static_cast<double>(matched) / expected.size();
+      if (!qrels.grades[q].empty()) {
+        double mrr = 0.0;
+        ndcg_sum += ndcg_at_k(ranked, qrels.grades[q], k, mrr);
+        mrr_sum += mrr;
+      }
+    }
+
+    const Latency ann = summarise(ann_ms);
+    std::printf("%5zu | %9.4f | %9.4f %9.4f | %8.3f %8.3f %8.3f | %6.1fx\n", ef,
+                recall_sum / static_cast<double>(queries.count),
+                judged ? ndcg_sum / static_cast<double>(judged) : 0.0,
+                judged ? mrr_sum / static_cast<double>(judged) : 0.0, ann.p50_ms, ann.p95_ms,
+                ann.p99_ms,
+                ann.p50_ms > 0.0 ? exact_latency.p50_ms / ann.p50_ms : 0.0);
+    std::fflush(stdout);
+  }
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc > 1 && std::string(argv[1]) == "qrels") {
+    // benchmark_hnsw qrels <corpus.bin> <query.bin> <qrels.txt> <M> <ef,ef,...>
+    if (argc < 7) {
+      std::printf("usage: %s qrels <corpus.bin> <query.bin> <qrels.txt> <M> <ef,ef,...>\n",
+                  argv[0]);
+      return 2;
+    }
+    return run_qrels(argv[2], argv[3], argv[4], static_cast<size_t>(std::stoul(argv[5])),
+                     parse_list(argv[6]), 10);
+  }
+
   if (argc > 1 && std::string(argv[1]) == "real") {
     // benchmark_hnsw real <train.bin> <query.bin> <M> <ef,ef,...> [max_train] [max_q] [rounds]
     if (argc < 6) {
