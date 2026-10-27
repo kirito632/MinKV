@@ -459,7 +459,7 @@ bool load_raw(const char *path, RawData &out, size_t max_rows) {
 
 int run_real(const char *train_path, const char *query_path, size_t M,
              const std::vector<size_t> &ef_list, size_t max_train, size_t max_queries,
-             size_t k) {
+             size_t k, size_t rounds) {
   RawData train;
   RawData queries;
   if (!load_raw(train_path, train, max_train)) {
@@ -534,53 +534,67 @@ int run_real(const char *train_path, const char *query_path, size_t M,
               "P50", "P95", "P99", "dist/query", "vsDense", "dP99");
 
   for (size_t ef : ef_list) {
-    std::vector<double> ann_ms;
-    double recall_sum = 0.0;
-    double tolerance_sum = 0.0;
+    // Several rounds over the same index and the same queries: the first round
+    // pays for cold caches and page faults, and production latency is not the
+    // first-round number. Per-round percentiles also show how much the figure
+    // moves, which a single median hides.
+    std::vector<double> round_p50;
+    for (size_t round = 0; round < rounds; ++round) {
+      std::vector<double> ann_ms;
+      double recall_sum = 0.0;
+      double tolerance_sum = 0.0;
 #ifdef HNSW_TRACE_DISTANCE
-    minkv::vector::trace_reset_distance_calls();
+      minkv::vector::trace_reset_distance_calls();
 #endif
-    for (size_t q = 0; q < queries.count; ++q) {
-      const float *query = queries.flat.data() + q * train.dim;
-      const auto start = Clock::now();
-      const auto hits = cache.vectorSearchScored(
-          std::vector<float>(query, query + train.dim), k, ef);
-      ann_ms.push_back(
-          std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+      for (size_t q = 0; q < queries.count; ++q) {
+        const float *query = queries.flat.data() + q * train.dim;
+        const auto start = Clock::now();
+        const auto hits = cache.vectorSearchScored(
+            std::vector<float>(query, query + train.dim), k, ef);
+        ann_ms.push_back(
+            std::chrono::duration<double, std::milli>(Clock::now() - start).count());
 
-      const std::set<uint32_t> expected(truth[q].begin(), truth[q].end());
-      size_t matched = 0;
-      size_t within_tolerance = 0;
-      const double bound = kth_distance[q] * 1.01 + 1e-6;
-      for (const auto &hit : hits) {
-        if (expected.count(static_cast<uint32_t>(std::stoul(hit.first.substr(1)))) != 0) {
-          ++matched;
+        const std::set<uint32_t> expected(truth[q].begin(), truth[q].end());
+        size_t matched = 0;
+        size_t within_tolerance = 0;
+        const double bound = kth_distance[q] * 1.01 + 1e-6;
+        for (const auto &hit : hits) {
+          if (expected.count(static_cast<uint32_t>(std::stoul(hit.first.substr(1)))) != 0) {
+            ++matched;
+          }
+          // A hit is equally correct if its distance matches the k-th exact one.
+          if (static_cast<double>(hit.second) <= bound) {
+            ++within_tolerance;
+          }
         }
-        // A hit is equally correct if its distance matches the k-th exact one.
-        if (static_cast<double>(hit.second) <= bound) {
-          ++within_tolerance;
-        }
+        recall_sum += expected.empty() ? 1.0 : static_cast<double>(matched) / expected.size();
+        tolerance_sum += static_cast<double>(within_tolerance) / static_cast<double>(k);
       }
-      recall_sum += expected.empty() ? 1.0 : static_cast<double>(matched) / expected.size();
-      tolerance_sum += static_cast<double>(within_tolerance) / static_cast<double>(k);
-    }
 
-    const Latency ann = summarise(ann_ms);
-    const double recall = recall_sum / static_cast<double>(queries.count);
-    const double tolerance_recall = tolerance_sum / static_cast<double>(queries.count);
+      const Latency ann = summarise(ann_ms);
+      round_p50.push_back(ann.p50_ms);
+      const double recall = recall_sum / static_cast<double>(queries.count);
+      const double tolerance_recall = tolerance_sum / static_cast<double>(queries.count);
 #ifdef HNSW_TRACE_DISTANCE
-    char distance_text[32];
-    std::snprintf(distance_text, sizeof(distance_text), "%.0f",
-                  static_cast<double>(minkv::vector::trace_distance_calls()) /
-                      static_cast<double>(queries.count));
+      char distance_text[32];
+      std::snprintf(distance_text, sizeof(distance_text), "%.0f",
+                    static_cast<double>(minkv::vector::trace_distance_calls()) /
+                        static_cast<double>(queries.count));
 #else
-    const char *distance_text = "n/a";
+      const char *distance_text = "n/a";
 #endif
-    std::printf("%5zu | %9.4f %9.4f | %8.3f %8.3f %8.3f | %10s | %7.1fx %7.1fx\n", ef, recall,
-                tolerance_recall, ann.p50_ms, ann.p95_ms, ann.p99_ms, distance_text,
-                ann.p50_ms > 0.0 ? dense.p50_ms / ann.p50_ms : 0.0,
-                ann.p99_ms > 0.0 ? dense.p99_ms / ann.p99_ms : 0.0);
-    std::fflush(stdout);
+      std::printf("%5zu r%-2zu | %9.4f %9.4f | %8.3f %8.3f %8.3f | %10s | %7.1fx %7.1fx\n",
+                  ef, round, recall, tolerance_recall, ann.p50_ms, ann.p95_ms, ann.p99_ms,
+                  distance_text, ann.p50_ms > 0.0 ? dense.p50_ms / ann.p50_ms : 0.0,
+                  ann.p99_ms > 0.0 ? dense.p99_ms / ann.p99_ms : 0.0);
+      std::fflush(stdout);
+    }
+    if (rounds > 1) {
+      const auto [lo, hi] = std::minmax_element(round_p50.begin(), round_p50.end());
+      std::printf("      | P50 spread over %zu rounds: %.3f .. %.3f ms (%.0f%%)\n", rounds,
+                  *lo, *hi, *lo > 0.0 ? (*hi - *lo) / *lo * 100.0 : 0.0);
+      std::fflush(stdout);
+    }
   }
   return 0;
 }
@@ -589,16 +603,18 @@ int run_real(const char *train_path, const char *query_path, size_t M,
 
 int main(int argc, char **argv) {
   if (argc > 1 && std::string(argv[1]) == "real") {
-    // benchmark_hnsw real <train.bin> <query.bin> <M> <ef,ef,...> [max_train] [max_q]
+    // benchmark_hnsw real <train.bin> <query.bin> <M> <ef,ef,...> [max_train] [max_q] [rounds]
     if (argc < 6) {
-      std::printf("usage: %s real <train.bin> <query.bin> <M> <ef,ef,...> [max_train] [max_q]\n",
+      std::printf("usage: %s real <train.bin> <query.bin> <M> <ef,ef,...> [max_train] [max_q] "
+                  "[rounds]\n",
                   argv[0]);
       return 2;
     }
     const size_t max_train = argc > 6 ? static_cast<size_t>(std::stoul(argv[6])) : 0;
     const size_t max_queries = argc > 7 ? static_cast<size_t>(std::stoul(argv[7])) : 20;
+    const size_t rounds = argc > 8 ? static_cast<size_t>(std::stoul(argv[8])) : 1;
     return run_real(argv[2], argv[3], static_cast<size_t>(std::stoul(argv[4])),
-                    parse_list(argv[5]), max_train, max_queries, 10);
+                    parse_list(argv[5]), max_train, max_queries, 10, rounds);
   }
 
   if (argc > 1 && std::string(argv[1]) == "concurrent") {
