@@ -212,18 +212,27 @@ public:
    *   graph it was given. Raising it cannot rescue a graph that does not link
    *   the right neighbourhood.
    *
-   * Measured on this repository (docs/HNSW_DESIGN.md section 6.11), 3.2K real
-   * text embeddings at 256 dimensions, medians of three runs:
+   * Measured in docs/HNSW_DESIGN.md section 6.11 on three text corpora
+   * (256-dimensional potion-base-8M embeddings, medians of three runs). On the
+   * independent 50K corpus:
    *
-   *   M=16  ef=16..64   recall@10 0.9535..0.9585   build 0.36 s   3.7 MB
-   *   M=24  ef=32       recall@10 0.9825           build 0.65 s   3.9 MB
-   *   M=32  ef=32       recall@10 0.9835           build 1.08 s   4.1 MB
+   *   M=16   ef=16/32/64   recall@10 0.9550 / 0.9785 / 0.9905   build 14.5 s
+   *   M=24   ef=16/32/64   recall@10 0.9710 / 0.9880 / 0.9940   build 23.8 s
+   *   M=32   ef=16/32/64   recall@10 0.9735 / 0.9875 / 0.9940   build 38.1 s
    *
-   * So on high-intrinsic-dimension data the recall ceiling is set by M, and
-   * widening ef within M=16 buys about half a point. The defaults below are
-   * cost-optimised starting points, not recall-optimal ones: text-embedding
-   * and GraphRAG workloads should ask for M=24..32 explicitly, and any
-   * unfamiliar distribution should be measured rather than assumed.
+   * The lesson is that ef_search is the cheaper lever at scale: at comparable
+   * latency, M=16 with a wider ef matches M=32 with a narrow one, and raising
+   * M costs 1.6x-2.6x the build time for a few tenths of a recall point once
+   * ef is wide. Index memory barely moves (56.7 -> 62.8 MB) because the vector
+   * copies dominate, unlike the graph links.
+   *
+   * A small 3.2K corpus showed the opposite - M=16 saturated at 0.96 no matter
+   * how wide ef got - which is why a parameter choice must be measured on the
+   * target corpus rather than inferred from one dataset.
+   *
+   * The defaults below are cost-optimised starting points: M=16 with
+   * ef_search 32..64 covers the corpora measured here. Raise M only when an ef
+   * sweep on your own data has already plateaued below the recall target.
    */
   struct AnnConfig {
     size_t dim = 0;               ///< indexed dimension, must be > 0
