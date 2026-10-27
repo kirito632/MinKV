@@ -635,6 +635,50 @@ bool load_qrels(const char *path, size_t query_count, Qrels &out) {
   return rows > 0;
 }
 
+double ndcg_at_k(const std::vector<uint32_t> &ranked,
+                 const std::vector<std::pair<uint32_t, int>> &grades, size_t k,
+                 double &mrr);
+
+/// Hand-checked cases, so a broken metric cannot quietly look plausible.
+bool sanity_check_ndcg() {
+  const std::vector<std::pair<uint32_t, int>> grades = {{0, 2}, {1, 1}};
+  const double log2_2 = 1.0;
+  const double log2_3 = std::log2(3.0);
+  const double idcg3 = (std::pow(2.0, 2.0) - 1.0) / log2_2 + (std::pow(2.0, 1.0) - 1.0) / log2_3;
+
+  bool ok = true;
+  double mrr = 0.0;
+
+  // Ideal ranking: NDCG 1, first relevant at rank 1.
+  double ndcg = ndcg_at_k({0, 1}, grades, 3, mrr);
+  ok = ok && std::fabs(ndcg - 1.0) < 1e-9 && std::fabs(mrr - 1.0) < 1e-9;
+
+  // Swapped: still both relevant, but the higher grade sits second.
+  ndcg = ndcg_at_k({1, 0}, grades, 3, mrr);
+  const double expected = (1.0 / log2_2 + 3.0 / log2_3) / idcg3;
+  ok = ok && std::fabs(ndcg - expected) < 1e-9 && std::fabs(mrr - 1.0) < 1e-9;
+
+  // Empty ranking: no gain, no reciprocal rank, and no divide by zero.
+  ndcg = ndcg_at_k({}, grades, 3, mrr);
+  ok = ok && std::fabs(ndcg) < 1e-12 && std::fabs(mrr) < 1e-12;
+
+  // Only an unjudged document: zero on both.
+  ndcg = ndcg_at_k({2}, grades, 3, mrr);
+  ok = ok && std::fabs(ndcg) < 1e-12 && std::fabs(mrr) < 1e-12;
+
+  // Short list with k=1: only the first position counts.
+  ndcg = ndcg_at_k({1, 0}, grades, 1, mrr);
+  ok = ok && std::fabs(ndcg - 1.0 / 3.0) < 1e-9 && std::fabs(mrr - 1.0) < 1e-9;
+
+  // A shorter list than k must not shift later ranks: two docs at k=3 score
+  // exactly what the ideal two-document list scores.
+  ndcg = ndcg_at_k({0, 1}, grades, 3, mrr);
+  ok = ok && std::fabs(ndcg - 1.0) < 1e-9;
+
+  std::printf("ndcg sanity check: %s\n", ok ? "PASS" : "FAIL");
+  return ok;
+}
+
 /// NDCG@k and MRR of one ranking, given that query's judgements.
 double ndcg_at_k(const std::vector<uint32_t> &ranked,
                  const std::vector<std::pair<uint32_t, int>> &grades, size_t k,
@@ -690,6 +734,17 @@ int run_qrels(const char *corpus_path, const char *query_path, const char *qrels
   if (!load_qrels(qrels_path, queries.count, qrels)) {
     return 1;
   }
+  if (!sanity_check_ndcg()) {
+    return 1;
+  }
+  size_t unjudged = 0;
+  for (const auto &grade_list : qrels.grades) {
+    if (grade_list.empty()) {
+      ++unjudged;
+    }
+  }
+  std::printf("queries without judgements: %zu (excluded from NDCG/MRR, still counted in "
+              "recall)\n", unjudged);
 
   Cache cache(corpus.count / kShards + 64, kShards);
   fill_cache(cache, corpus.flat, corpus.count, corpus.dim);
@@ -749,14 +804,16 @@ int run_qrels(const char *corpus_path, const char *query_path, const char *qrels
               corpus.count, corpus.dim, queries.count, judged, k, M, build_s, index_mb);
   std::printf("exact baseline: NDCG@%zu=%.4f MRR=%.4f  P50=%.3f ms\n", k, ndcg_exact, mrr_exact,
               exact_latency.p50_ms);
-  std::printf("%5s | %9s | %9s %9s | %8s %8s %8s | %7s\n", "ef", "recall@k", "NDCG@k", "MRR",
-              "P50", "P95", "P99", "vsDense");
+  std::printf("%5s | %9s | %9s %9s | %8s %8s %8s | %7s | %s\n", "ef", "recall@k", "NDCG@k",
+              "MRR", "P50", "P95", "P99", "vsDense", "returned");
 
   for (size_t ef : ef_list) {
     std::vector<double> ann_ms;
     double recall_sum = 0.0;
     double ndcg_sum = 0.0;
     double mrr_sum = 0.0;
+    size_t min_returned = k;
+    size_t short_lists = 0;
     for (size_t q = 0; q < queries.count; ++q) {
       std::vector<float> query(queries.flat.begin() + static_cast<long>(q * corpus.dim),
                                queries.flat.begin() + static_cast<long>((q + 1) * corpus.dim));
@@ -769,6 +826,13 @@ int run_qrels(const char *corpus_path, const char *query_path, const char *qrels
       ranked.reserve(hits.size());
       for (const auto &hit : hits) {
         ranked.push_back(static_cast<uint32_t>(std::stoul(hit.first.substr(1))));
+      }
+      // A short list is a different failure from a wrong one: the missing
+      // positions simply score no gain (they are not shifted up), but it is
+      // worth knowing whether it ever happens.
+      min_returned = std::min(min_returned, ranked.size());
+      if (ranked.size() < k) {
+        ++short_lists;
       }
       const std::set<uint32_t> expected(exact[q].begin(), exact[q].end());
       size_t matched = 0;
@@ -786,12 +850,12 @@ int run_qrels(const char *corpus_path, const char *query_path, const char *qrels
     }
 
     const Latency ann = summarise(ann_ms);
-    std::printf("%5zu | %9.4f | %9.4f %9.4f | %8.3f %8.3f %8.3f | %6.1fx\n", ef,
-                recall_sum / static_cast<double>(queries.count),
+    std::printf("%5zu | %9.4f | %9.4f %9.4f | %8.3f %8.3f %8.3f | %6.1fx | min=%zu short=%zu\n",
+                ef, recall_sum / static_cast<double>(queries.count),
                 judged ? ndcg_sum / static_cast<double>(judged) : 0.0,
                 judged ? mrr_sum / static_cast<double>(judged) : 0.0, ann.p50_ms, ann.p95_ms,
-                ann.p99_ms,
-                ann.p50_ms > 0.0 ? exact_latency.p50_ms / ann.p50_ms : 0.0);
+                ann.p99_ms, ann.p50_ms > 0.0 ? exact_latency.p50_ms / ann.p50_ms : 0.0,
+                min_returned, short_lists);
     std::fflush(stdout);
   }
   return 0;
