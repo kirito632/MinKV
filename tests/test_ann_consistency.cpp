@@ -348,6 +348,49 @@ int main() {
     assert(stats[0].live <= cache.size());
   }
 
+  // ---------------------------------------------------------------
+  // 9. Enabling under write load must refuse, not publish a partial index.
+  //
+  // The rebuild snapshots the cache and then spends seconds building. A write
+  // that lands inside that window is invisible to the build, so publishing the
+  // result would leave a silently incomplete index. The contract is therefore
+  // "enable while quiescent"; the implementation enforces it instead of
+  // trusting callers.
+  // ---------------------------------------------------------------
+  {
+    constexpr size_t kDim = 32;
+    Cache cache(1024, 8);
+    for (size_t i = 0; i < 4000; ++i) {
+      cache.vectorPut("v" + std::to_string(i), random_vector(gen, kDim, 1.0f));
+    }
+
+    std::atomic<bool> stop {false};
+    std::atomic<size_t> writes {0};
+    std::thread writer([&]() {
+      while (!stop.load()) {
+        cache.put("noise", "one-byte-value");
+        cache.remove("noise");
+        writes.fetch_add(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    });
+
+    Cache::AnnConfig config;
+    config.dim = kDim;
+    const bool enabled = cache.enable_ann_index(config);
+
+    stop.store(true);
+    writer.join();
+
+    std::printf("%-22s enable returned %s after %zu concurrent writes\n", "enable-race",
+                enabled ? "true" : "false", writes.load());
+    assert(!enabled);                    // refused, rather than silently partial
+    assert(!cache.ann_enabled());        // nothing was published
+    assert(cache.ann_stats().empty());   // and no half-built instance is visible
+    // The cache still answers, through the exact path.
+    assert(cache.vectorSearchScored(random_vector(gen, kDim, 1.0f), 5, 0).size() == 5);
+  }
+
   std::printf("=== all consistency tests passed ===\n");
   return 0;
 }

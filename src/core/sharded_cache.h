@@ -402,6 +402,7 @@ public:
    * 仅供 recover_from_disk 调用，此时无并发写入。
    */
   void put_for_recovery(const K &key, const V &value) {
+    note_mutation();
     size_t shard_idx = get_shard_index(key);
     shards_[shard_idx]->put(key, value, 0);
   }
@@ -410,6 +411,7 @@ public:
    * @brief 恢复专用删除：直接删分片，不触发 WAL
    */
   void remove_for_recovery(const K &key) {
+    note_mutation();
     size_t shard_idx = get_shard_index(key);
     shards_[shard_idx]->remove(key);
   }
@@ -522,6 +524,12 @@ private:
   std::unique_ptr<vector::VectorAnnIndex> ann_cosine_;
   AnnConfig ann_config_;
   std::atomic<bool> ann_enabled_ {false};
+  /// Bumped by every mutation. enable_ann_index snapshots this around the
+  /// rebuild: if it moved, writes landed in the window the build cannot see,
+  /// and publishing would leave a silently incomplete index.
+  std::atomic<uint64_t> write_epoch_ {0};
+
+  void note_mutation() { write_epoch_.fetch_add(1, std::memory_order_acq_rel); }
 
   void ann_on_put(const K &key, const V &value, bool typed);
   void ann_on_erase(const K &key);
@@ -600,6 +608,7 @@ template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
                                                const V &value,
                                                int64_t ttl_ms) {
+  note_mutation();
   const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
 
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
@@ -648,6 +657,7 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
 template <typename K, typename V, bool EnableCacheAlign>
 template <typename F>
 V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&updater) {
+  note_mutation();
   const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
 
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
@@ -703,6 +713,7 @@ V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&update
 
 template <typename K, typename V, bool EnableCacheAlign>
 bool ShardedCache<K, V, EnableCacheAlign>::remove(const K &key) {
+  note_mutation();
   const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
 
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
@@ -771,6 +782,7 @@ template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::clear() {
   std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
 
+  note_mutation();
   ann_on_clear();
 
   for (size_t i = 0; i < shards_.size(); ++i) {
@@ -1140,6 +1152,8 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
     std::vector<float> graph_vectors;
 
     const auto all_data = export_all_data();
+    // Anything written from here on is invisible to the build below.
+    const uint64_t epoch_after_snapshot = write_epoch_.load(std::memory_order_acquire);
     const size_t expected_bytes = config.dim * sizeof(float);
     for (const auto &[key, value] : all_data) {
       if (value.size() != expected_bytes) {
@@ -1163,6 +1177,14 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
     }
     if (!graph_keys.empty()) {
       cosine_index->build(graph_keys, graph_vectors.data(), graph_keys.size(), threads);
+    }
+
+    if (write_epoch_.load(std::memory_order_acquire) != epoch_after_snapshot) {
+      std::fprintf(stderr,
+                   "[ANN] enable_ann_index aborted: the cache was mutated while the index "
+                   "was being built, so the result would be silently incomplete. Enable at "
+                   "startup, or quiesce writes first.\n");
+      return false;
     }
 
     {
