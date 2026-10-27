@@ -519,8 +519,16 @@ int run_real(const char *train_path, const char *query_path, size_t M,
   const double build_s =
       std::chrono::duration<double>(Clock::now() - build_start).count();
 
-  std::printf("\nreal data: %s N=%zu dim=%zu queries=%zu M=%zu k=%zu build=%.2fs\n",
-              train_path, train.count, train.dim, queries.count, M, k, build_s);
+  const auto index_stats = cache.ann_stats();
+  const double index_mb =
+      index_stats.empty()
+          ? 0.0
+          : static_cast<double>(index_stats[0].memory_bytes) / (1024.0 * 1024.0);
+
+  std::printf("\nreal data: %s N=%zu dim=%zu queries=%zu M=%zu M0=%zu k=%zu build=%.2fs "
+              "index=%.1f MB\n",
+              train_path, train.count, train.dim, queries.count, M, config.M0, k, build_s,
+              index_mb);
   std::printf("dense exact P50=%.3f P99=%.3f ms\n", dense.p50_ms, dense.p99_ms);
   std::printf("%5s | %9s %9s | %8s %8s %8s | %10s | %8s %8s\n", "ef", "recall@k", "tol@1%",
               "P50", "P95", "P99", "dist/query", "vsDense", "dP99");

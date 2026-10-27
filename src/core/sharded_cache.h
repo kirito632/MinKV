@@ -203,6 +203,27 @@ public:
    * One ShardedCache indexes one dimension only. Queries for any other
    * dimension fall back to the exact scan, so a dimension is never silently
    * omitted from results.
+   *
+   * `M` and `ef_search` are not independent knobs and must be tuned together:
+   *
+   * - `M` is the graph connectivity - how many neighbours each node keeps. It
+   *   decides whether the right candidates are reachable at all.
+   * - `ef_search` is the exploration width - how far the search walks on the
+   *   graph it was given. Raising it cannot rescue a graph that does not link
+   *   the right neighbourhood.
+   *
+   * Measured on this repository (docs/HNSW_DESIGN.md section 6.11), 3.2K real
+   * text embeddings at 256 dimensions, medians of three runs:
+   *
+   *   M=16  ef=16..64   recall@10 0.9535..0.9585   build 0.36 s   3.7 MB
+   *   M=24  ef=32       recall@10 0.9825           build 0.65 s   3.9 MB
+   *   M=32  ef=32       recall@10 0.9835           build 1.08 s   4.1 MB
+   *
+   * So on high-intrinsic-dimension data the recall ceiling is set by M, and
+   * widening ef within M=16 buys about half a point. The defaults below are
+   * cost-optimised starting points, not recall-optimal ones: text-embedding
+   * and GraphRAG workloads should ask for M=24..32 explicitly, and any
+   * unfamiliar distribution should be measured rather than assumed.
    */
   struct AnnConfig {
     size_t dim = 0;               ///< indexed dimension, must be > 0
