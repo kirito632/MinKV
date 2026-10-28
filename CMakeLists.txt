@@ -1,16 +1,29 @@
 cmake_minimum_required(VERSION 3.10)
 project(MinKV VERSION 0.1.0)
 
+# ==========================================
+# 【重要】默认 Release 构建
+# 性能基准测试数据（18M QPS）用 `cmake -DCMAKE_BUILD_TYPE=Release
+#       -DCMAKE_CXX_FLAGS="-O2 -march=native -mavx2 -mfma"` 测得
+# 如需 Debug，显式指定: cmake -DCMAKE_BUILD_TYPE=Debug ..
+# ==========================================
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release")
+    message(STATUS "Defaulting to Release build. Use -DCMAKE_BUILD_TYPE=Debug for debug.")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ==========================================
-# 【关键】启用 AVX2 和 FMA 指令集
-# 这是向量化优化的必要条件
+# 【关键】启用 CPU 本地优化 + SIMD 指令集
+# -march=native:     启用当前 CPU 所有优化（指令集、调度、cache 大小等）
+# -mavx2 -mfma:     显式启用 AVX2+FMA（冗余安全，与 -march=native 重叠但无冲突）
+# 注意: 基准测试的 18M QPS 数据是用 `-O2 -march=native -mavx2 -mfma` 测得的
 # ==========================================
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-mavx2 -mfma)
+    add_compile_options(-march=native -mavx2 -mfma)
 elseif(MSVC)
     add_compile_options(/arch:AVX2)
 endif()
@@ -97,10 +110,35 @@ add_executable(test_vector_integration tests/test_vector_integration.cpp ${SOURC
 # target_link_libraries(simple_fix_test pthread)
 
 # ==========================================
+# GCM 延迟追踪编译选项（性能验证用）
+# 启用后输出 GCM 无效唤醒率、锁竞争耗时等诊断日志
+# 用法: cmake -DGCM_LATENCY_TRACE=ON ..
+# ==========================================
+option(GCM_LATENCY_TRACE "Enable GCM latency trace (validation logs)" OFF)
+if(GCM_LATENCY_TRACE)
+    add_compile_definitions(GCM_LATENCY_TRACE)
+    message(STATUS "GCM_LATENCY_TRACE enabled - validation logs active")
+endif()
+
+# ==========================================
 # 综合压力测试 (Comprehensive Benchmark)
+# 18M QPS 数据用 -O2 -march=native -mavx2 -mfma 测得
+# 优化级由 CMAKE_BUILD_TYPE 统一控制
 # ==========================================
 add_executable(comprehensive_benchmark src/tests/comprehensive_benchmark.cpp ${SOURCES})
 target_link_libraries(comprehensive_benchmark pthread)
+
+# ==========================================
+# 定向性能诊断测试 (Focused Perf Test)
+# ==========================================
+add_executable(focused_perf_test src/tests/focused_perf_test.cpp ${SOURCES})
+target_link_libraries(focused_perf_test pthread)
+
+# ==========================================
+# 微基准测试 (Micro Benchmark)
+# ==========================================
+add_executable(micro_benchmark src/tests/micro_benchmark.cpp)
+target_link_libraries(micro_benchmark pthread)
 
 # ==========================================
 # WAL性能对比测试 (WAL Performance Benchmark)
@@ -125,6 +163,12 @@ target_link_libraries(expiration_exception_test pthread)
 # ==========================================
 add_executable(group_commit_test tests/group_commit_test.cpp ${SOURCES})
 target_link_libraries(group_commit_test pthread)
+
+add_executable(test_sharded_cache_constructor
+    tests/unit/test_sharded_cache_constructor.cpp
+    ${SOURCES}
+)
+target_link_libraries(test_sharded_cache_constructor pthread)
 
 # ==========================================
 # 快照系统测试 (Snapshot Test) - 暂时禁用，因为 snapshot.h 不存在

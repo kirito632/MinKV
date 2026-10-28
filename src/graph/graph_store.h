@@ -43,10 +43,10 @@ using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
  *   3. 维护邻接表的一致性（AddEdge 时同步更新 adj:out / adj:in）
  *
  * 分阶段实现：
- *   Phase 1 — Node/Edge CRUD（本文件已完成）
- *   Phase 2 — 邻接表维护（AddEdge/DeleteEdge 补全邻接表更新）
- *   Phase 3 — K-hop BFS、路径查询
- *   Phase 4 — Embedding 存取、向量检索、GraphRAG
+ *   Node/Edge CRUD（本文件已完成）
+ *   邻接表维护（AddEdge/DeleteEdge 补全邻接表更新）
+ *   K-hop BFS、路径查询
+ *   Embedding 存取、向量检索、GraphRAG
  */
 class GraphStore {
 public:
@@ -60,7 +60,6 @@ public:
   explicit GraphStore(std::shared_ptr<GraphKVStore> kv_store,
                       size_t n_threads = std::thread::hardware_concurrency());
 
-  // ── Phase 1: Node CRUD ────────────────────────────────────────────────────
 
   /** 添加节点；若 node_id 已存在则覆盖 */
   void AddNode(const Node &node);
@@ -80,11 +79,10 @@ public:
    */
   void DeleteNode(const std::string &node_id);
 
-  // ── Phase 1: Edge CRUD ────────────────────────────────────────────────────
 
   /**
    * 添加有向边
-   * Phase 1 只写边数据；Phase 2 补全邻接表更新（adj:out / adj:in）
+   * 只写边数据；补全邻接表更新（adj:out / adj:in）
    */
   void AddEdge(const Edge &edge);
 
@@ -95,12 +93,12 @@ public:
 
   /**
    * 删除边
-   * Phase 1 只删边数据；Phase 2 补全邻接表清理
+   * 只删边数据；补全邻接表清理
    */
-  void DeleteEdge(const std::string &src_id, const std::string &dst_id,
+  void DeleteEdge(const std::string &src_id,
+                  const std::string &dst_id,
                   const std::string &label);
 
-  // ── Phase 2: Adjacency ────────────────────────────────────────────────────
 
   /** 返回 node_id 的所有出边邻居（直接读 adj:out:{node_id}） */
   std::vector<std::string> GetOutNeighbors(const std::string &node_id) const;
@@ -108,7 +106,6 @@ public:
   /** 返回 node_id 的所有入边前驱（直接读 adj:in:{node_id}） */
   std::vector<std::string> GetInNeighbors(const std::string &node_id) const;
 
-  // ── Phase 3: Graph Query ──────────────────────────────────────────────────
 
   /**
    * K-hop BFS 遍历
@@ -117,8 +114,8 @@ public:
    * 返回值：{node_id -> hop_distance}，不含起始节点自身。
    * k=0 时返回空 map。
    */
-  std::unordered_map<std::string, int>
-  KHopNeighbors(const std::string &start_id, int k) const;
+  std::unordered_map<std::string, int> KHopNeighbors(const std::string &start_id,
+                                                     int k) const;
 
   /**
    * 最短路径查询（BFS）
@@ -131,14 +128,12 @@ public:
                                     const std::string &dst_id,
                                     int max_hops = INT_MAX) const;
 
-  // ── Phase 4: Embedding & Vector Search ───────────────────────────────────
 
   /**
    * 存储节点的 embedding 向量
    * 格式：float[] 的 raw bytes，与 VectorOps::Serialize 兼容
    */
-  void SetNodeEmbedding(const std::string &node_id,
-                        const std::vector<float> &embedding);
+  void SetNodeEmbedding(const std::string &node_id, const std::vector<float> &embedding);
 
   /**
    * 读取节点的 embedding 向量
@@ -153,23 +148,22 @@ public:
    * 返回值：{node_id, cosine_similarity}，按相似度降序排列。
    * 维度不匹配的节点会被跳过。
    */
-  std::vector<std::pair<std::string, float>>
-  SearchSimilarNodes(const std::vector<float> &query_embedding,
-                     int top_k) const;
+  std::vector<std::pair<std::string, float>> SearchSimilarNodes(
+      const std::vector<float> &query_embedding, int top_k) const;
 
-  // ── Phase 4: GraphRAG ─────────────────────────────────────────────────────
 
   /**
    * GraphRAG 两阶段查询
    *
-   * Phase 1：SearchSimilarNodes 找到 vector_top_k 个入口节点
-   * Phase 2：对每个入口节点做 KHopNeighbors(hop_depth) 扩展上下文
-   * Phase 3：加载所有涉及节点的完整属性，去重后返回
+   * SearchSimilarNodes 找到 vector_top_k 个入口节点
+   * 对每个入口节点做 KHopNeighbors(hop_depth) 扩展上下文
+   * 加载所有涉及节点的完整属性，去重后返回
    *
    * 用途：把图结构知识注入 LLM 的 prompt，提升回答质量
    */
   std::vector<Node> GraphRAGQuery(const std::vector<float> &query_embedding,
-                                  int vector_top_k, int hop_depth) const;
+                                  int vector_top_k,
+                                  int hop_depth) const;
 
   /**
    * GraphRAG 两阶段查询 (批量并发版)
@@ -184,11 +178,10 @@ public:
    *  2. 结果合并: 使用 std::unordered_set 去重所有入口节点
    *  3. 并发图遍历: 对所有入口节点并发执行 KHopNeighbors
    */
-  std::vector<Node>
-  GraphRAGQuery(const std::vector<std::vector<float>> &query_embeddings,
-                int vector_top_k, int hop_depth) const;
+  std::vector<Node> GraphRAGQuery(const std::vector<std::vector<float>> &query_embeddings,
+                                  int vector_top_k,
+                                  int hop_depth) const;
 
-  // ── 一致性修复 ────────────────────────────────────────────────────────────
 
   /**
    * 重建邻接表（崩溃恢复用）
@@ -201,12 +194,11 @@ public:
 private:
   std::shared_ptr<GraphKVStore> kv_; // 底层 KV 存储，所有图数据都在这里
 
-  // 并发 BFS 线程池（GraphRAGQuery Phase 2 使用）
+  // 并发 BFS 线程池
   // n_threads <= 1 时为 nullptr，退化为串行
   std::unique_ptr<minkv::base::ThreadPool> thread_pool_;
 
-  // ── Key 构造辅助函数 ──────────────────────────────────────────────────────
-  //
+
   // 规则：node_id / label 中的 ':' 需要转义为 '\:'，防止 Key 解析歧义。
   // 例如 node_id="a:b" -> EscapeId 后变成 "a\:b"，拼出的 Key 不会被误分割。
 
@@ -217,7 +209,8 @@ private:
   static std::string NodeKey(const std::string &node_id);
 
   /** 边数据 Key：e:{src}:{dst}:{label} */
-  static std::string EdgeKey(const std::string &src, const std::string &dst,
+  static std::string EdgeKey(const std::string &src,
+                             const std::string &dst,
                              const std::string &label);
 
   /** 出边邻接表 Key：adj:out:{node_id} */
@@ -236,17 +229,14 @@ private:
    * 避免 DeleteEdge 全表扫描。
    * Value 是 uint64_t 的十进制字符串，通过 update_in_place 原子增减。
    */
-  static std::string EdgeCountKey(const std::string &src,
-                                  const std::string &dst);
+  static std::string EdgeCountKey(const std::string &src, const std::string &dst);
 
-  // ── 邻接表内部辅助 ────────────────────────────────────────────────────────
 
   /** 从 KV 读取邻接表并反序列化；Key 不存在时返回空列表 */
   std::vector<std::string> LoadAdjList(const std::string &kv_key) const;
 
   /** 将邻接表序列化后写入 KV */
-  void SaveAdjList(const std::string &kv_key,
-                   const std::vector<std::string> &list);
+  void SaveAdjList(const std::string &kv_key, const std::vector<std::string> &list);
 
   /** 向邻接表追加一个 id（自动去重） */
   void AdjListAdd(const std::string &kv_key, const std::string &id);
@@ -254,7 +244,6 @@ private:
   /** 从邻接表移除一个 id；列表变空时删除整个 Key */
   void AdjListRemove(const std::string &kv_key, const std::string &id);
 
-  // ── 边计数器辅助 ──────────────────────────────────────────────────────────
 
   /**
    * 原子递增边计数器（update_in_place 保证并发安全）

@@ -26,15 +26,12 @@ namespace graph {
  */
 class GraphSerializer {
 public:
-  // ── Node ──────────────────────────────────────────────────────────────────
-
   /** 将 Node 结构体序列化为二进制字符串，写入 KV 时使用 */
   static std::string SerializeNode(const Node &node);
 
   /** 从二进制字符串还原 Node 结构体，读取 KV 后使用；数据损坏时抛异常 */
   static Node DeserializeNode(const std::string &data);
 
-  // ── Edge ──────────────────────────────────────────────────────────────────
 
   /** 将 Edge 结构体序列化为二进制字符串 */
   static std::string SerializeEdge(const Edge &edge);
@@ -42,7 +39,6 @@ public:
   /** 从二进制字符串还原 Edge 结构体；数据损坏时抛异常 */
   static Edge DeserializeEdge(const std::string &data);
 
-  // ── Adjacency List ────────────────────────────────────────────────────────
 
   /**
    * 将邻居 ID 列表序列化为 JSON 数组字符串
@@ -67,16 +63,14 @@ public:
    * @param old_val  KV 读取结果，nullopt 表示 Key 不存在
    * @return 反序列化后的邻居 ID 列表
    */
-  static std::vector<std::string>
-  DeserializeAdjList(const std::optional<std::string> &old_val) {
+  static std::vector<std::string> DeserializeAdjList(
+      const std::optional<std::string> &old_val) {
     if (!old_val.has_value() || old_val->empty())
       return {};
     return DeserializeAdjList(*old_val);
   }
 
 private:
-  // ── 内部工具函数 ──────────────────────────────────────────────────────────
-
   /** 向 buf 末尾追加一个 uint32_t（小端序，4 字节） */
   static void AppendUint32LE(std::string &buf, uint32_t val);
 

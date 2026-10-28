@@ -1,6 +1,7 @@
 #pragma once
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -10,7 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,8 +41,7 @@ struct LogEntry {
   std::string key;      // 键
   std::string value;    // 值（DELETE 时为空）
   int64_t timestamp_ms; // 时间戳（毫秒，保留用于调试/审计）
-  uint64_t lsn{
-      0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
+  uint64_t lsn {0}; // Log Sequence Number，严格单调递增，由 ShardedCache::next_lsn() 分配
 
   // 计算校验和（key + value，lsn 不参与）
   uint32_t compute_checksum() const;
@@ -52,17 +52,17 @@ struct LogEntry {
  *
  * 核心功能：
  * 1. 异步日志写入：日志先写到内存缓冲，后台线程定期 fsync
- * 2. 快照支持：定期创建快照，加速恢复
- * 3. 宕机恢复：从快照 + 日志重放恢复数据
+ * 2. Checkpoint 协作：支持按 snapshot_lsn 过滤重放和清理旧 WAL
+ * 3. 宕机恢复：按 WAL 文件序号顺序重放日志
  *
- * 线程安全：所有操作都是线程安全的
+ * 线程安全：append/flush/rotate 的共享缓冲访问由内部锁保护
  */
 class WriteAheadLog {
 public:
   /**
    * @brief 构造函数
    *
-   * @param data_dir 数据目录（存放 wal.log 和 snapshot.bin）
+   * @param data_dir 数据目录（存放 wal_<index>.log 和 snapshots/）
    * @param buffer_size 日志缓冲区大小（字节），默认 1MB
    * @param fsync_interval_ms 后台 fsync 间隔（毫秒），默认 1000ms
    */
@@ -101,6 +101,11 @@ public:
   std::vector<LogEntry> read_all();
 
   /**
+   * @brief 读取指定 WAL 文件中的全部日志条目
+   */
+  std::vector<LogEntry> read_file(const std::string &filepath) const;
+
+  /**
    * @brief 读取快照之后的日志（按 LSN 过滤）
    *
    * @param snapshot_lsn 快照时刻的 LSN（来自 SnapshotHeader::wal_lsn）
@@ -109,33 +114,19 @@ public:
   std::vector<LogEntry> read_after_snapshot(uint64_t snapshot_lsn);
 
   /**
-   * @brief 创建快照
+   * @brief 轮转到新的 WAL 文件
    *
-   * 将当前的内存数据序列化到快照文件。
-   * 快照文件名：snapshot_<timestamp>.bin
+   * 调用方应保证没有并发 append/flush 正在进行。
    *
-   * @param data 要快照的数据（key-value 对）
-   * @return 快照 ID（时间戳），失败返回 0
+   * @return 轮转前的 WAL 文件路径
    */
-  template <typename K, typename V>
-  int64_t create_snapshot(const std::map<K, V> &data);
-
-  /**
-   * @brief 读取最新快照
-   *
-   * 扫描 snapshot_dir_，找文件名最大的 snapshot_*.bin（字典序 = 时间序），
-   * 读取并校验 SnapshotHeader，提取 wal_lsn 和数据。
-   *
-   * @param data 输出参数，快照数据
-   * @return 快照时刻的 wal_lsn；无快照或读取失败返回 0，data 不被修改
-   */
-  template <typename K, typename V>
-  uint64_t read_latest_snapshot(std::map<K, V> &data);
+  std::string rotate();
 
   /**
    * @brief 强制 fsync 到磁盘
    *
    * 通常不需要调用，后台线程会自动 fsync。
+   * fsync_interval_ms == 0 的同步模式不会启动后台线程，每次 append 会直接 fsync。
    * 用于关键操作后确保数据持久化。
    *
    * @return 是否成功
@@ -146,13 +137,14 @@ public:
    * @brief 启动后台 fsync 线程
    *
    * 后台线程定期将缓冲区数据 fsync 到磁盘。
+   * fsync_interval_ms == 0 时直接返回；重复调用安全。
    */
   void start_background_fsync();
 
   /**
    * @brief 停止后台 fsync 线程
    *
-   * 调用此方法会等待后台线程退出。
+   * 调用此方法会等待后台线程退出；重复调用安全。
    */
   void stop_background_fsync();
 
@@ -162,14 +154,44 @@ public:
   size_t get_log_size() const;
 
   /**
+   * @brief 获取当前活动 WAL 文件路径
+   */
+  std::string current_wal_path() const;
+
+  /**
+   * @brief 列出数据目录下所有 WAL 文件（按 WAL 序号升序）
+   */
+  std::vector<std::string> list_wal_files() const;
+
+  /**
+   * @brief 删除所有已完全被 snapshot_lsn 覆盖的旧 WAL 文件
+   */
+  void cleanup_logs_up_to(uint64_t snapshot_lsn);
+
+  /**
+   * @brief 序列化日志条目为二进制字符串
+   *
+   * 输出格式与 WAL 文件一致，供 GroupCommitManager 在 hot path 直接写入。
+   * 返回 std::string 而非 std::vector<uint8_t>，与 GCM 的 CommitRequest::data 类型一致，
+   * 避免类型转换拷贝。
+   *
+   * @param entry 日志条目
+   * @return 二进制序列化结果
+   */
+  static std::string serialize_entry(const LogEntry &entry);
+  // 返回 nullopt 表示校验和不匹配（条目损坏）
+  static std::optional<LogEntry> deserialize_entry(const uint8_t *data, size_t size);
+
+  /**
    * @brief 获取缓冲区中待 fsync 的字节数
    */
   size_t get_buffer_size() const;
 
   /**
-   * @brief 清空所有日志和快照
+   * @brief 清空当前 WAL 文件和内存缓冲区
    *
-   * 谨慎使用！这会删除所有持久化数据。
+   * 谨慎使用！这会丢弃当前活动 WAL 文件中的持久化数据。
+   * 不会删除历史 WAL 文件或快照文件。
    */
   void clear_all();
 
@@ -177,6 +199,7 @@ private:
   std::string data_dir_;     // 数据目录
   std::string wal_file_;     // WAL 文件路径
   std::string snapshot_dir_; // 快照目录
+  uint64_t wal_file_index_ {1};
 
   size_t buffer_size_;        // 缓冲区大小
   int64_t fsync_interval_ms_; // fsync 间隔
@@ -184,240 +207,25 @@ private:
   std::vector<uint8_t> buffer_;     // 内存缓冲区
   mutable std::mutex buffer_mutex_; // 缓冲区互斥锁
 
-  std::ofstream wal_stream_; // WAL 文件输出流（仅构造时打开，实际读取由
-                             // read_all() 内部独立 ifstream 完成）
-  int wal_fd_{-1}; // WAL 文件描述符（用于 write + fsync）
+  int wal_fd_ {-1}; // WAL 文件描述符（用于 write + fsync）
 
   // 后台 fsync 线程
   std::thread fsync_thread_;
-  mutable std::atomic<bool> fsync_running_{false};
+  mutable std::atomic<bool> fsync_running_ {false};
+  std::mutex fsync_lifecycle_mutex_;
   std::condition_variable fsync_cv_;
   std::mutex fsync_cv_mutex_;
 
   // 辅助函数
   static int64_t current_time_ms();
+  static std::string wal_filename_for_index(uint64_t index);
+  static bool parse_wal_index(const std::string &filename, uint64_t &index);
   void fsync_thread_main();
   bool write_to_buffer(const LogEntry &entry);
   bool flush_buffer_to_disk();
-
-  // 序列化/反序列化
-  static std::vector<uint8_t> serialize_entry(const LogEntry &entry);
-  // 返回 nullopt 表示校验和不匹配（条目损坏）
-  static std::optional<LogEntry> deserialize_entry(const uint8_t *data,
-                                                   size_t size);
+  void reopen_wal_file_locked(const std::string &filepath);
 };
 
-// ============ 模板实现 ============
-
-// SnapshotHeader 与 SimpleCheckpointManager 保持一致的快照文件格式
-struct WalSnapshotHeader {
-  char magic[4];    // 'M','K','V','S'
-  uint32_t version; // 1
-  uint32_t record_count;
-  uint64_t wal_lsn; // 快照时刻的 LSN
-  uint64_t timestamp;
-  uint32_t checksum;
-  char reserved[32];
-};
-
-template <typename K, typename V>
-int64_t WriteAheadLog::create_snapshot(const std::map<K, V> &data) {
-  int64_t snapshot_id = current_time_ms();
-  std::string snapshot_file =
-      snapshot_dir_ + "/snapshot_" + std::to_string(snapshot_id) + ".bin";
-
-  // [writev优化] 使用 raw fd + writev 替代 ofstream，减少系统调用
-  int fd = ::open(snapshot_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0) {
-    return 0;
-  }
-
-  auto close_fd = [&]() {
-    if (fd >= 0) {
-      ::close(fd);
-      fd = -1;
-    }
-  };
-
-  // [writev] 写入快照 ID + 数据个数（一次系统调用）
-  struct iovec header_iov[2];
-  header_iov[0].iov_base = &snapshot_id;
-  header_iov[0].iov_len = sizeof(snapshot_id);
-  uint32_t count = data.size();
-  header_iov[1].iov_base = &count;
-  header_iov[1].iov_len = sizeof(count);
-  if (::writev(fd, header_iov, 2) !=
-      static_cast<ssize_t>(sizeof(snapshot_id) + sizeof(count))) {
-    close_fd();
-    std::filesystem::remove(snapshot_file);
-    return 0;
-  }
-
-  // [writev优化] 每个KV对用4个iovec片段一次写入
-  struct iovec iov[4];
-  for (const auto &[key, value] : data) {
-    std::string key_str = minkv::serialize(key);
-    uint32_t key_len = key_str.size();
-
-    std::string value_str = minkv::serialize(value);
-    uint32_t value_len = value_str.size();
-
-    iov[0].iov_base = &key_len;
-    iov[0].iov_len = sizeof(key_len);
-    iov[1].iov_base = const_cast<char *>(key_str.data());
-    iov[1].iov_len = key_len;
-    iov[2].iov_base = &value_len;
-    iov[2].iov_len = sizeof(value_len);
-    iov[3].iov_base = const_cast<char *>(value_str.data());
-    iov[3].iov_len = value_len;
-
-    ssize_t expected =
-        key_len + value_len + sizeof(key_len) + sizeof(value_len);
-    if (::writev(fd, iov, 4) != expected) {
-      close_fd();
-      std::filesystem::remove(snapshot_file);
-      return 0;
-    }
-  }
-
-  close_fd();
-  return snapshot_id;
-}
-
-template <typename K, typename V>
-uint64_t WriteAheadLog::read_latest_snapshot(std::map<K, V> &data) {
-  namespace fs = std::filesystem;
-
-  // 1. 扫描 snapshot_dir_，找文件名最大的 snapshot_*.bin（字典序 = 时间序）
-  std::vector<std::string> files;
-  try {
-    if (!fs::exists(snapshot_dir_))
-      return 0;
-    for (const auto &entry : fs::directory_iterator(snapshot_dir_)) {
-      if (!entry.is_regular_file())
-        continue;
-      std::string name = entry.path().filename().string();
-      if (name.size() > 9 && name.substr(0, 9) == "snapshot_" &&
-          name.size() > 4 && name.substr(name.size() - 4) == ".bin") {
-        files.push_back(name);
-      }
-    }
-  } catch (...) {
-    return 0;
-  }
-  if (files.empty())
-    return 0;
-
-  std::string latest = *std::max_element(files.begin(), files.end());
-  std::string full_path = snapshot_dir_ + "/" + latest;
-
-  // [preadv优化] 使用 raw fd + preadv 替代 ifstream
-  int fd = ::open(full_path.c_str(), O_RDONLY);
-  if (fd < 0)
-    return 0;
-
-  auto close_fd = [&]() {
-    if (fd >= 0) {
-      ::close(fd);
-      fd = -1;
-    }
-  };
-
-  // 2. 读取并校验 SnapshotHeader
-  WalSnapshotHeader header{};
-  struct iovec header_iov;
-  header_iov.iov_base = &header;
-  header_iov.iov_len = sizeof(header);
-  if (::preadv(fd, &header_iov, 1, 0) != static_cast<ssize_t>(sizeof(header))) {
-    close_fd();
-    return 0;
-  }
-
-  if (std::string(header.magic, 4) != "MKVS") {
-    close_fd();
-    return 0;
-  }
-  if (header.version != 1) {
-    close_fd();
-    return 0;
-  }
-
-  // 校验 checksum
-  uint32_t stored = header.checksum;
-  uint32_t calc = 0;
-  calc ^= header.version;
-  calc ^= header.record_count;
-  calc ^= static_cast<uint32_t>(header.wal_lsn);
-  calc ^= static_cast<uint32_t>(header.wal_lsn >> 32);
-  calc ^= static_cast<uint32_t>(header.timestamp);
-  calc ^= static_cast<uint32_t>(header.timestamp >> 32);
-  for (int i = 0; i < 4; ++i)
-    calc ^= static_cast<uint32_t>(static_cast<uint8_t>(header.magic[i]))
-            << (i * 8);
-  if (stored != calc) {
-    close_fd();
-    return 0;
-  }
-
-  uint64_t snapshot_lsn = header.wal_lsn;
-
-  // 3. [preadv优化] 读取 record_count 条 length-prefixed key/value
-  std::map<K, V> tmp;
-  off_t file_offset = sizeof(WalSnapshotHeader);
-  struct iovec iov[2];
-
-  for (uint32_t i = 0; i < header.record_count; ++i) {
-    // 先读 key_len (4B)
-    uint32_t key_len = 0;
-    struct iovec keylen_iov;
-    keylen_iov.iov_base = &key_len;
-    keylen_iov.iov_len = sizeof(key_len);
-    if (::preadv(fd, &keylen_iov, 1, file_offset) !=
-        static_cast<ssize_t>(sizeof(key_len))) {
-      close_fd();
-      return 0;
-    }
-    file_offset += sizeof(key_len);
-
-    // 再读 val_len (4B)
-    uint32_t val_len = 0;
-    struct iovec vallen_iov;
-    vallen_iov.iov_base = &val_len;
-    vallen_iov.iov_len = sizeof(val_len);
-    if (::preadv(fd, &vallen_iov, 1, file_offset) !=
-        static_cast<ssize_t>(sizeof(val_len))) {
-      close_fd();
-      return 0;
-    }
-    file_offset += sizeof(val_len);
-
-    // [preadv] 一次读取 key + value 到两个缓冲区
-    std::string key_str(key_len, '\0');
-    std::string val_str(val_len, '\0');
-
-    iov[0].iov_base = &key_str[0];
-    iov[0].iov_len = key_len;
-    iov[1].iov_base = &val_str[0];
-    iov[1].iov_len = val_len;
-
-    ssize_t expected = static_cast<ssize_t>(key_len + val_len);
-    if (::preadv(fd, iov, 2, file_offset) != expected) {
-      close_fd();
-      return 0;
-    }
-    file_offset += key_len + val_len;
-
-    K key = minkv::deserialize<K>(key_str);
-    V val = minkv::deserialize<V>(val_str);
-    tmp[key] = val;
-  }
-
-  close_fd();
-
-  // 4. 全部读取成功后才写入 data
-  data = std::move(tmp);
-  return snapshot_lsn;
-}
 
 } // namespace db
 } // namespace minkv

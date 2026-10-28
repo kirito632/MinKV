@@ -12,7 +12,7 @@
 
 ## 🚀 核心特性
 
-- **极致并发** — Sharded Locking 架构（默认 32 个独立分片），大幅减少多线程锁竞争。
+- **极致并发** — Sharded Locking 架构（当前 comprehensive benchmark 使用 128 个独立分片），大幅减少多线程锁竞争。
 - **读多写少优化** — `std::shared_mutex` 读写锁配合 **Lazy LRU Promotion**，99% 的 `get` 操作近乎无锁。
 - **工业级可靠性** — 支持 TTL 自动过期、容量上限、LRU 淘汰，以及带 Group Commit 的 **WAL 持久化**，保证崩溃一致性。
 - **SIMD 加速向量检索** — AVX2 优化的余弦相似度计算，高维 Embedding 场景 4.58 倍加速。
@@ -21,108 +21,18 @@
 
 ---
 
-## 📊 性能压测
-
-> 测试环境：腾讯云竞价实例，上海8区，4核8线程，Ubuntu 22.04，g++ 11  
-> 编译参数：`-O2 -march=native -mavx2 -mfma`  
-> （注：`-O2` 优于 `-O3`——激进内联导致热路径函数体膨胀，L1 指令缓存压力增大，同台机器实测 `-O3` 比 `-O2` 慢约 20%。）
-
-### 核心指标一览
-
-| 指标 | 数值 |
-| :--- | :--- |
-| 峰值吞吐量 | **508万 QPS**（2线程，32分片，R90W10） |
-| P99 延迟 | **2.81 μs** |
-| WAL 持久化开销（8线程） | **10.6%**（Group Commit，10ms 间隔） |
-| 分片优化收益 | **+77%**（1分片 → 32分片） |
-| SIMD 加速比 | **4.58x**（512维 L2 距离，AVX2） |
-
----
-
-### 1. 并发吞吐量（R90W10，32分片）
-
-![QPS vs Threads](docs/images/01_qps_vs_threads.png)
-
-峰值 QPS 在 **2线程时达到 508万**。超过 2 线程后性能下降，原因是 100K key 范围超出 L3 缓存容量，内存带宽成为瓶颈，而非锁竞争。
-
-| 线程数 | QPS | P50 (μs) | P95 (μs) | P99 (μs) | 命中率 |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| 1 | 372万 | 0.20 | 0.50 | 0.66 | 10% |
-| **2** | **508万** | **0.29** | **0.59** | **2.81** | **10%** |
-| 4 | 393万 | 0.52 | 3.26 | 8.85 | 11% |
-| 8 | 310万 | 1.02 | 10.45 | 18.52 | 13% |
-| 16 | 286万 | 1.44 | 25.85 | 51.65 | 16% |
-
----
-
-### 2. P99 尾延迟
-
-![P99 Latency](docs/images/05_p99_latency.png)
-
-超过 2 线程后 P99 急剧上升，16线程时峰值达 **51.65 μs**。
-
----
-
-### 3. 分片数消融测试（8线程，W70R30）
-
-![Shard Ablation](docs/images/04_shard_ablation.png)
-
-**32分片最优**，相比 1 分片提升 +77%。4 分片起性能趋于饱和，16~64 分片差异在 1% 以内。
-
-| 分片数 | QPS | 相对性能 |
-| :---: | :---: | :---: |
-| 1 | 171万 | 0.57x |
-| 4 | 299万 | 0.99x |
-| 8 | 302万 | 0.99x |
-| **32** | **304万** | **1.00x** |
-| 64 | 299万 | 0.99x |
-
----
-
-### 4. WAL 持久化开销（Group Commit，10ms 间隔）
-
-![WAL Overhead](docs/images/02_wal_overhead.png)
-
-`fsync` 开销随线程数增加而降低，从 **1线程 34.9% 降至 8线程 10.6%**，得益于 Group Commit 批量合并写入。Group Commit 比逐次同步刷盘快 **199倍**（同步刷盘约 1.6万 QPS）。
-
-1线程损耗偏高（34.9%）是因为 WAL 后台刷盘线程与主线程竞争同一物理核；8线程数据（10.6%）更能代表多核生产环境的实际表现。
-
-| 线程数 | 纯内存 QPS | Group Commit QPS | 损耗 |
-| :---: | :---: | :---: | :---: |
-| 1 | 342万 | 223万 | 34.9% |
-| 2 | 394万 | 302万 | 23.4% |
-| 4 | 376万 | 311万 | 17.4% |
-| 8 | 309万 | 276万 | **10.6%** |
-
----
-
-### 5. SIMD 向量化优化（512维 L2 距离，10万次查询）
-
-![SIMD Speedup](docs/images/03_simd_speedup.png)
-
-AVX2 SIMD 实现 **4.58 倍 QPS 加速**（1873万 vs 409万），平均延迟从 0.24 μs 降至 0.05 μs。实际效率为理论上限（8x）的 57.2%，差距来自内存带宽限制、水平求和开销和 cache miss。
-
-| 版本 | QPS | 平均延迟 | 加速比 |
-| :---: | :---: | :---: | :---: |
-| 标量版本（逐元素循环） | 409万 | 0.24 μs | 1.00x |
-| **AVX2 SIMD** | **1873万** | **0.05 μs** | **4.58x** |
-
-> 系统级 KV 操作影响为 ±3%（Amdahl 定律：向量计算仅占 KV 总耗时 1~2%，瓶颈在哈希查找和锁管理）。
-
----
-
 ## 🛠 快速开始
 
 只需包含头文件即可集成：
 
 ```cpp
-#include "db/sharded_cache.h"
+#include "core/sharded_cache.h"
 #include <string>
 #include <iostream>
 
 int main() {
-    // 每分片容量 10000 × 32 分片 = 总容量 320,000
-    minkv::db::ShardedCache<std::string, std::string> cache(10000, 32);
+    // 每个分片最多保存 1000 个条目，共 16 个分片
+    minkv::db::ShardedCache<std::string, std::string> cache(1000, 16);
 
     // 写入数据（TTL 单位：毫秒）
     cache.put("user:1001", "Robinson", 5000); // 5秒后过期
@@ -142,21 +52,23 @@ int main() {
 
 ---
 
+## 📊 性能摘要
+
+测试环境：腾讯云上海区，4核8线程，Ubuntu 22.04，g++ 11，编译参数 `-O2 -march=native -mavx2 -mfma`。完整压测数据和图表见 [`docs/tests/comprehensive_benchmark.md`](docs/tests/comprehensive_benchmark.md)。
+
+| 场景 | 结果 |
+| :--- | :--- |
+| KV R90W10 hit-heavy | **2415万 QPS**（256分片，8线程） |
+| KV R90W10 miss-heavy | **2011万 QPS**（128分片，8线程） |
+| P99 延迟 | **2.40 μs** hit-heavy / **4.13 μs** miss-heavy |
+| WAL ON | **1413万 QPS**，约 **32.8%** 吞吐损耗 |
+| SIMD L2 distance | **4.58x** AVX2 加速 |
+
+---
+
 ## 🕸 Graph-on-KV 与 GraphRAG
 
-MinKV 在 `ShardedCache<string, string>` 之上构建了完整的图数据库层。所有图数据（节点、边、邻接表、Embedding）共用同一个 KV 实例，无需额外存储引擎。
-
-### Key 前缀空间设计
-
-```
-n:{node_id}           → 节点二进制序列化
-e:{src}:{dst}:{label} → 边二进制序列化
-adj:out:{node_id}     → 出边邻接表（二进制长度前缀数组）
-adj:in:{node_id}      → 入边邻接表
-vec:{node_id}         → Embedding raw bytes（float[]）
-```
-
-### 使用示例
+MinKV 在 `ShardedCache<string, string>` 之上提供 Graph-on-KV 层，节点、边、邻接表和 Embedding 共用同一个 KV 实例。它适合用作轻量知识图谱存储，或在 GraphRAG 场景中执行“向量检索 -> K-hop 图扩展”的两阶段查询。
 
 ```cpp
 #include "graph/graph_store.h"
@@ -168,52 +80,17 @@ using GraphKVStore = minkv::db::ShardedCache<std::string, std::string>;
 auto kv = std::make_shared<GraphKVStore>(65536, 16);
 GraphStore gs(kv);
 
-// 构建知识图谱
 gs.AddNode({"Elon_Musk", R"({"role":"CEO"})"});
 gs.AddNode({"SpaceX",    R"({"type":"company"})"});
-gs.AddNode({"Starship",  R"({"type":"rocket"})"});  // 无需 Embedding
-
-gs.SetNodeEmbedding("Elon_Musk", embed("Elon Musk founder entrepreneur"));
-gs.SetNodeEmbedding("SpaceX",    embed("aerospace rocket launch"));
+gs.AddNode({"Starship",  R"({"type":"rocket"})"});
 
 gs.AddEdge({"Elon_Musk", "SpaceX",  "founded"});
 gs.AddEdge({"SpaceX",    "Starship", "product"});
 
-// GraphRAG 查询：向量检索 → 并发 K-hop BFS 扩展
 auto results = gs.GraphRAGQuery(query_vec, /*top_k=*/3, /*hop_depth=*/2);
-// 返回：Elon_Musk + SpaceX（向量检索）+ Starship（图遍历）
-// Starship 没有 Embedding，纯向量检索永远找不到它
 ```
 
-### GraphRAG 准确性（对照实验）
-
-| 方法 | 无 Embedding 节点的召回率 |
-|------|--------------------------|
-| 纯向量检索 | **0%** |
-| GraphRAG（2-hop） | **42.6%** |
-
-`Starship`、`GPT4`、`AWS` 等节点没有 Embedding，向量检索无法找到它们。GraphRAG 通过图遍历沿关系链将其召回。
-
-### 性能优化
-
-- **二进制邻接表** — 用长度前缀二进制编码替换 JSON，消除 Hub Node（高出度节点）的序列化/反序列化开销。
-- **线程池并发 BFS** — 多个入口节点的 BFS 并行执行，固定大小线程池消除 `std::async` 的线程创建开销，P99 延迟从 **467ms 降至 10ms**。
-- **崩溃可恢复** — 写入顺序保证边数据先于邻接表，`RebuildAdjacencyList()` 扫描所有 `e:` Key 重建邻接表，支持崩溃后一致性修复。
-
-### 编译与运行测试
-
-```bash
-cmake -S MinKV -B MinKV/build -DCMAKE_BUILD_TYPE=Release
-cmake --build MinKV/build --target demo_graphrag test_graphrag_accuracy -j$(nproc)
-
-# GraphRAG 演示（Elon Musk → SpaceX → Starship 关系链）
-./MinKV/build/bin/demo_graphrag 2>/dev/null
-
-# 准确性测试：GraphRAG vs 纯向量检索
-./MinKV/build/bin/test_graphrag_accuracy 2>/dev/null
-```
-
----
+关键实现包括二进制邻接表、线程池并发 BFS，以及崩溃后可通过 `RebuildAdjacencyList()` 重建邻接关系。GraphRAG 对照实验和运行方式见 [`docs/tests/graph_function_test.md`](docs/tests/graph_function_test.md)。
 
 ---
 
@@ -226,7 +103,7 @@ cmake --build MinKV/build --target demo_graphrag test_graphrag_accuracy -j$(npro
 ### MinKV 的解法
 
 **1. 分片（Sharding）**  
-按 Hash 将 key 分散到 32 个独立 Bucket，每个 Bucket 有独立的锁，访问不同 key 的线程互不阻塞。消融测试验证相比单分片提升 **+77%**。
+按 Hash 将 key 分散到多个独立 Bucket，每个 Bucket 有独立的锁，访问不同 key 的线程互不阻塞。当前 O2 comprehensive benchmark 使用 128 个默认分片，分片扩展测试中 1→256 分片最高提升约 **16x**。
 
 **2. 读写锁（Reader-Writer Lock）**  
 真实缓存流量约 99% 是读。`std::shared_mutex` 允许多个读者同时进入，只有写者需要独占，这是实现高读吞吐的基础。
@@ -235,7 +112,7 @@ cmake --build MinKV/build --target demo_graphrag test_graphrag_accuracy -j$(npro
 传统 LRU 每次读取都要修改链表（本质是写操作）。MinKV 引入 Lazy Promotion：1秒内重复访问不移动链表，将 99% 的 `get` 还原为纯读锁操作，彻底释放读写锁的威力。
 
 **4. Group Commit WAL**  
-后台线程每 10ms 批量 `fsync`，将多次写入的磁盘 I/O 摊销到一次，在保证崩溃一致性的前提下将持久化开销控制在多线程场景约 10%。
+后台线程按批次合并 WAL entry，并在每个 batch 中执行 `append + fsync`。当前 8 线程 R90W10 miss-heavy 下 WAL ON 达 **1413万 QPS**，较纯内存下降 **32.8%**。
 
 ---
 

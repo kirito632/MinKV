@@ -54,7 +54,7 @@ public:
 
   /**
    * 析构函数：通知所有 worker 退出，等待它们完成当前任务
-   * RAII 保证：即使抛异常也能正确清理线程
+   * 即使抛异常也能正确清理线程
    */
   ~ThreadPool() {
     {
@@ -89,8 +89,7 @@ public:
     auto bound = std::bind(std::forward<F>(fn), std::forward<Args>(args)...);
 
     // packaged_task 持有任务和 promise，future 从它这里取
-    auto task =
-        std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
+    auto task = std::make_shared<std::packaged_task<ReturnType()>>(std::move(bound));
     std::future<ReturnType> fut = task->get_future();
 
     {

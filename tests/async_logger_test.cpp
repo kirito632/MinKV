@@ -20,8 +20,7 @@ void test_basic_logging() {
   double pi = 3.14159;
   std::string name = "MinKV";
 
-  LOG_INFO << "测试数据类型: count=" << count << ", pi=" << pi
-           << ", name=" << name;
+  LOG_INFO << "测试数据类型: count=" << count << ", pi=" << pi << ", name=" << name;
 
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   std::cout << "基础日志测试完成" << std::endl;
@@ -50,8 +49,8 @@ void test_concurrent_logging() {
   }
 
   auto end_time = std::chrono::high_resolution_clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end_time - start_time);
+  auto duration =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
   int total_logs = thread_count * logs_per_thread;
   double qps = (double)total_logs / duration.count() * 1000;
@@ -84,6 +83,26 @@ void test_log_levels() {
   std::cout << "日志级别测试完成" << std::endl;
 }
 
+void test_repeated_start_stop() {
+  std::cout << "=== 重复启动/停止测试 ===" << std::endl;
+
+  AsyncLogger logger("/tmp/minkv_async_logger_repeat_start");
+  logger.start();
+  logger.start();
+
+  const char message[] = "repeated start should not terminate\n";
+  logger.append(message, sizeof(message) - 1);
+
+  logger.stop();
+  logger.stop();
+
+  logger.start();
+  logger.start();
+  logger.stop();
+
+  std::cout << "重复启动/停止测试完成" << std::endl;
+}
+
 void test_performance_comparison() {
   std::cout << "=== 性能对比测试 ===" << std::endl;
 
@@ -102,18 +121,16 @@ void test_performance_comparison() {
   }
   auto async_time = std::chrono::high_resolution_clock::now();
 
-  auto cout_duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      cout_time - start_time);
-  auto async_duration = std::chrono::duration_cast<std::chrono::microseconds>(
-      async_time - cout_time);
+  auto cout_duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(cout_time - start_time);
+  auto async_duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(async_time - cout_time);
 
   std::cout << "性能对比结果:" << std::endl;
   std::cout << "  cout耗时: " << cout_duration.count() << "μs" << std::endl;
-  std::cout << "  异步日志耗时: " << async_duration.count() << "μs"
-            << std::endl;
-  std::cout << "  性能提升: "
-            << (double)cout_duration.count() / async_duration.count() << "x"
-            << std::endl;
+  std::cout << "  异步日志耗时: " << async_duration.count() << "μs" << std::endl;
+  std::cout << "  性能提升: " << (double)cout_duration.count() / async_duration.count()
+            << "x" << std::endl;
 }
 
 int main() {
@@ -128,6 +145,9 @@ int main() {
   std::cout << std::endl;
 
   test_concurrent_logging();
+  std::cout << std::endl;
+
+  test_repeated_start_stop();
   std::cout << std::endl;
 
   test_performance_comparison();

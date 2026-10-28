@@ -23,12 +23,13 @@
 
 namespace fs = std::filesystem;
 using Cache = minkv::db::ShardedCache<std::string, std::string>;
-using CheckpointMgr =
-    minkv::db::SimpleCheckpointManager<std::string, std::string>;
+using CheckpointMgr = minkv::db::SimpleCheckpointManager<std::string, std::string>;
 
 // ─── 工具 ────────────────────────────────────────────────────────────────────
 
-static void cleanup_dir(const std::string &dir) { fs::remove_all(dir); }
+static void cleanup_dir(const std::string &dir) {
+  fs::remove_all(dir);
+}
 
 static void pass(const std::string &name) {
   std::cout << "  [PASS] " << name << "\n";
@@ -37,6 +38,18 @@ static void pass(const std::string &name) {
 static void fail(const std::string &name, const std::string &reason) {
   std::cerr << "  [FAIL] " << name << ": " << reason << "\n";
   std::exit(1);
+}
+
+static bool wait_for_wal_entries(Cache &cache, size_t expected, int timeout_ms = 1000) {
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (cache.read_wal_after_lsn(0).size() >= expected) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return cache.read_wal_after_lsn(0).size() >= expected;
 }
 
 // ─── Test 1: LSN 单调递增
@@ -55,13 +68,16 @@ void test_lsn_monotonic() {
     cache.put("k" + std::to_string(i), "v" + std::to_string(i));
     uint64_t cur = cache.current_lsn();
     if (cur <= prev && i > 0) {
-      fail("lsn_monotonic", "LSN 未单调递增: prev=" + std::to_string(prev) +
-                                " cur=" + std::to_string(cur));
+      fail(
+          "lsn_monotonic",
+          "LSN 未单调递增: prev=" + std::to_string(prev) + " cur=" + std::to_string(cur));
     }
     prev = cur;
   }
 
   // 读取 WAL 验证文件中 lsn 也单调递增
+  if (!wait_for_wal_entries(cache, 100))
+    fail("lsn_monotonic", "WAL 条目未在超时内落盘");
   auto entries = cache.read_wal_after_lsn(0);
   if (entries.size() != 100)
     fail("lsn_monotonic", "WAL 条目数不对: " + std::to_string(entries.size()));
@@ -94,10 +110,11 @@ void test_serialization_roundtrip() {
   cache.put("empty_val", "");
   cache.remove("hello");
 
+  if (!wait_for_wal_entries(cache, 4))
+    fail("serialization_roundtrip", "WAL 条目未在超时内落盘");
   auto entries = cache.read_wal_after_lsn(0);
   if (entries.size() != 4)
-    fail("serialization_roundtrip",
-         "条目数不对: " + std::to_string(entries.size()));
+    fail("serialization_roundtrip", "条目数不对: " + std::to_string(entries.size()));
 
   // 验证 lsn 字段被正确读回
   for (const auto &e : entries) {
@@ -131,6 +148,8 @@ void test_read_after_snapshot_filter() {
   for (int i = 0; i < 10; ++i)
     cache.put("k" + std::to_string(i), "v" + std::to_string(i));
 
+  if (!wait_for_wal_entries(cache, 10))
+    fail("read_after_snapshot_filter", "WAL 条目未在超时内落盘");
   auto all = cache.read_wal_after_lsn(0);
   if (all.size() != 10)
     fail("read_after_snapshot_filter", "全量读取数量不对");
@@ -278,8 +297,7 @@ void test_fast_stop() {
                      .count();
 
   if (elapsed > 500)
-    fail("fast_stop",
-         "stop 耗时过长: " + std::to_string(elapsed) + "ms (应 < 500ms)");
+    fail("fast_stop", "stop 耗时过长: " + std::to_string(elapsed) + "ms (应 < 500ms)");
 
   cleanup_dir(dir);
   pass("stop_background_fsync 快速退出（" + std::to_string(elapsed) + "ms）");
@@ -322,6 +340,204 @@ void test_recovery_no_snapshot() {
   pass("无快照时全量 WAL 恢复");
 }
 
+// ─── Test 8: WAL rotate 后多日志文件恢复 ─────────────────────────────────────
+
+void test_wal_rotate_recovery() {
+  std::cout << "\n[Test 8] WAL rotate 后多日志文件恢复\n";
+  const std::string dir = "/tmp/minkv_test_rotate_recovery";
+  cleanup_dir(dir);
+
+  {
+    Cache cache(1000);
+    cache.enable_persistence(dir, 0);
+
+    CheckpointMgr::CheckpointConfig cfg;
+    cfg.data_dir = dir;
+    CheckpointMgr ckpt(&cache, cfg);
+
+    for (int i = 0; i < 10; ++i)
+      cache.put("pre_" + std::to_string(i), "v" + std::to_string(i));
+
+    if (!ckpt.checkpoint_now())
+      fail("wal_rotate_recovery", "checkpoint_now 失败");
+
+    for (int i = 0; i < 10; ++i)
+      cache.put("post_" + std::to_string(i), "v" + std::to_string(i));
+  }
+
+  size_t wal_count = 0;
+  for (const auto &entry : fs::directory_iterator(dir)) {
+    if (!entry.is_regular_file())
+      continue;
+    auto name = entry.path().filename().string();
+    if (name.rfind("wal_", 0) == 0 && name.size() > 4 &&
+        name.substr(name.size() - 4) == ".log") {
+      wal_count++;
+    }
+  }
+  if (wal_count == 0)
+    fail("wal_rotate_recovery", "未生成 WAL 文件");
+
+  {
+    Cache cache(1000);
+    cache.enable_persistence(dir, 0);
+
+    CheckpointMgr::CheckpointConfig cfg;
+    cfg.data_dir = dir;
+    CheckpointMgr ckpt(&cache, cfg);
+
+    if (!ckpt.recover_from_disk())
+      fail("wal_rotate_recovery", "recover_from_disk 失败");
+
+    for (int i = 0; i < 10; ++i) {
+      auto v = cache.get("pre_" + std::to_string(i));
+      if (!v.has_value() || v.value() != "v" + std::to_string(i))
+        fail("wal_rotate_recovery", "checkpoint 前数据恢复错误");
+    }
+    for (int i = 0; i < 10; ++i) {
+      auto v = cache.get("post_" + std::to_string(i));
+      if (!v.has_value() || v.value() != "v" + std::to_string(i))
+        fail("wal_rotate_recovery", "checkpoint 后数据恢复错误");
+    }
+  }
+
+  cleanup_dir(dir);
+  pass("WAL rotate 后多日志文件恢复");
+}
+
+// ─── Test 9: snapshot.tmp 未完成时忽略并使用旧 snapshot + WAL 恢复 ──────────
+
+void test_ignore_incomplete_snapshot_tmp() {
+  std::cout << "\n[Test 9] 忽略未完成 snapshot.tmp\n";
+  const std::string dir = "/tmp/minkv_test_snapshot_tmp";
+  cleanup_dir(dir);
+
+  {
+    Cache cache(1000);
+    cache.enable_persistence(dir, 0);
+
+    CheckpointMgr::CheckpointConfig cfg;
+    cfg.data_dir = dir;
+    CheckpointMgr ckpt(&cache, cfg);
+
+    for (int i = 0; i < 5; ++i)
+      cache.put("base_" + std::to_string(i), "v" + std::to_string(i));
+
+    if (!ckpt.checkpoint_now())
+      fail("ignore_incomplete_snapshot_tmp", "第一次 checkpoint 失败");
+
+    for (int i = 0; i < 5; ++i)
+      cache.put("delta_" + std::to_string(i), "v" + std::to_string(i));
+
+    std::string snapshots_dir = dir + "/snapshots";
+    std::string latest_snapshot;
+    for (const auto &entry : fs::directory_iterator(snapshots_dir)) {
+      if (!entry.is_regular_file())
+        continue;
+      auto name = entry.path().filename().string();
+      if (name.rfind("snapshot_", 0) == 0 && name.size() > 4 &&
+          name.substr(name.size() - 4) == ".bin") {
+        latest_snapshot = entry.path().string();
+      }
+    }
+    if (latest_snapshot.empty())
+      fail("ignore_incomplete_snapshot_tmp", "未找到已完成 snapshot");
+
+    std::string tmp_path = snapshots_dir + "/snapshot_999999.bin.tmp";
+    fs::copy_file(latest_snapshot, tmp_path, fs::copy_options::overwrite_existing);
+  }
+
+  {
+    Cache cache(1000);
+    cache.enable_persistence(dir, 0);
+
+    CheckpointMgr::CheckpointConfig cfg;
+    cfg.data_dir = dir;
+    CheckpointMgr ckpt(&cache, cfg);
+
+    if (!ckpt.recover_from_disk())
+      fail("ignore_incomplete_snapshot_tmp", "recover_from_disk 失败");
+
+    for (int i = 0; i < 5; ++i) {
+      auto v = cache.get("base_" + std::to_string(i));
+      if (!v.has_value() || v.value() != "v" + std::to_string(i))
+        fail("ignore_incomplete_snapshot_tmp", "base 数据恢复错误");
+    }
+    for (int i = 0; i < 5; ++i) {
+      auto v = cache.get("delta_" + std::to_string(i));
+      if (!v.has_value() || v.value() != "v" + std::to_string(i))
+        fail("ignore_incomplete_snapshot_tmp", "delta 数据恢复错误");
+    }
+  }
+
+  cleanup_dir(dir);
+  pass("忽略未完成 snapshot.tmp");
+}
+
+// ─── Test 10: snapshot 文件名按数字 LSN 排序 ────────────────────────────────
+
+void test_snapshot_lsn_numeric_order() {
+  std::cout << "\n[Test 10] snapshot 文件名按数字 LSN 排序\n";
+  const std::string dir = "/tmp/minkv_test_snapshot_numeric_order";
+  cleanup_dir(dir);
+
+  {
+    Cache cache(1000);
+    cache.enable_persistence(dir, 0);
+
+    CheckpointMgr::CheckpointConfig cfg;
+    cfg.data_dir = dir;
+    cfg.auto_cleanup = false;
+    cfg.keep_snapshot_count = 1;
+    CheckpointMgr ckpt(&cache, cfg);
+
+    for (int i = 0; i < 9; ++i)
+      cache.put("k" + std::to_string(i), "v" + std::to_string(i));
+
+    if (!ckpt.checkpoint_now())
+      fail("snapshot_lsn_numeric_order", "LSN 9 checkpoint 失败");
+
+    const std::string snapshots_dir = dir + "/snapshots";
+    fs::rename(ckpt.get_stats().last_snapshot_file, snapshots_dir + "/snapshot_9.bin");
+
+    cache.put("k9", "v9");
+    if (!ckpt.checkpoint_now())
+      fail("snapshot_lsn_numeric_order", "LSN 10 checkpoint 失败");
+
+    fs::rename(ckpt.get_stats().last_snapshot_file, snapshots_dir + "/snapshot_10.bin");
+    ckpt.cleanup_old_snapshots();
+  }
+
+  for (const auto &entry : fs::directory_iterator(dir)) {
+    if (!entry.is_regular_file())
+      continue;
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("wal_", 0) == 0 && name.size() > 4 &&
+        name.substr(name.size() - 4) == ".log") {
+      fs::remove(entry.path());
+    }
+  }
+
+  {
+    Cache cache(1000);
+    cache.enable_persistence(dir, 0);
+
+    CheckpointMgr::CheckpointConfig cfg;
+    cfg.data_dir = dir;
+    CheckpointMgr ckpt(&cache, cfg);
+
+    if (!ckpt.recover_from_disk())
+      fail("snapshot_lsn_numeric_order", "recover_from_disk 失败");
+
+    auto v = cache.get("k9");
+    if (!v.has_value() || v.value() != "v9")
+      fail("snapshot_lsn_numeric_order", "没有选择 LSN 最大的 snapshot_10.bin");
+  }
+
+  cleanup_dir(dir);
+  pass("snapshot 文件名按数字 LSN 排序");
+}
+
 // ─── main
 // ─────────────────────────────────────────────────────────────────────
 
@@ -337,6 +553,9 @@ int main() {
   test_basic_regression();
   test_fast_stop();
   test_recovery_no_snapshot();
+  test_wal_rotate_recovery();
+  test_ignore_incomplete_snapshot_tmp();
+  test_snapshot_lsn_numeric_order();
 
   std::cout << "\n========================================\n";
   std::cout << "  All tests PASSED\n";

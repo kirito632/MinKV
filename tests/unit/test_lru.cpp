@@ -1,9 +1,11 @@
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <random>
 #include <thread>
+#include <unordered_set>
 
-#include "../../core/lru_cache.h"
+#include "../../src/core/lru_cache.h"
 
 using namespace minkv::db;
 
@@ -54,6 +56,67 @@ int main() {
   auto permanent = cache.get("permanent");
   assert(permanent.has_value() && permanent.value() == "forever");
   std::cout << "[Pass] Permanent key (TTL=0) never expires" << std::endl;
+
+  // Test 5: Bounded sampling should not degrade into full-scan deletion
+  minkv::db::LruCache<std::string, std::string> expiration_cache(32);
+  for (int i = 0; i < 10; ++i) {
+    expiration_cache.put("expired_" + std::to_string(i), "value", 20);
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
+
+  std::mt19937 rng(12345);
+  auto sampled_keys = expiration_cache.sample_keys(3, rng);
+  assert(sampled_keys.size() == 3);
+
+  size_t sampled_removed = expiration_cache.expire_keys(sampled_keys);
+  assert(sampled_removed == sampled_keys.size());
+
+  size_t remaining_removed = expiration_cache.cleanup_expired_keys();
+  assert(remaining_removed == 7);
+  assert(expiration_cache.size() == 0);
+  std::cout << "[Pass] Sampled expiration only removes sampled expired keys" << std::endl;
+
+  // Test 6: sample_size > cache_size should return all keys once without looping
+  minkv::db::LruCache<std::string, std::string> small_cache(8);
+  for (int i = 0; i < 7; ++i) {
+    small_cache.put("small_" + std::to_string(i), "value");
+  }
+
+  auto oversized_sample = small_cache.sample_keys(100, rng);
+  assert(oversized_sample.size() == 7);
+  std::unordered_set<std::string> unique_keys(oversized_sample.begin(),
+                                              oversized_sample.end());
+  assert(unique_keys.size() == oversized_sample.size());
+  std::cout << "[Pass] sample_keys caps sample size to cache size" << std::endl;
+
+  // Test 7: empty cache sampling / expiration should be no-op
+  minkv::db::LruCache<std::string, std::string> empty_cache(4);
+  auto empty_sample = empty_cache.sample_keys(10, rng);
+  assert(empty_sample.empty());
+  assert(empty_cache.expire_keys(empty_sample) == 0);
+  assert(empty_cache.cleanup_expired_keys() == 0);
+  assert(empty_cache.size() == 0);
+  std::cout << "[Pass] Empty cache sampled expiration is a no-op" << std::endl;
+
+  // Test 8: zero-capacity cache should be a safe no-op on put
+  minkv::db::LruCache<std::string, std::string> zero_capacity_cache(0);
+  zero_capacity_cache.put("key", "value");
+  assert(zero_capacity_cache.size() == 0);
+  assert(!zero_capacity_cache.get("key").has_value());
+  std::cout << "[Pass] Zero-capacity cache put is a safe no-op" << std::endl;
+
+  // Test 9: cleanup thread should be stopped by LruCache destructor.
+  auto cleanup_raii_start = std::chrono::steady_clock::now();
+  {
+    minkv::db::LruCache<std::string, std::string> cleanup_raii_cache(4);
+    cleanup_raii_cache.put("cleanup_key", "value", 10);
+    cleanup_raii_cache.start_cleanup_thread(5000);
+    cleanup_raii_cache.start_cleanup_thread(5000);
+  }
+  auto cleanup_raii_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - cleanup_raii_start);
+  assert(cleanup_raii_elapsed < std::chrono::milliseconds(1000));
+  std::cout << "[Pass] Cleanup thread stops automatically on destruction" << std::endl;
 
   std::cout << "All tests passed!" << std::endl;
   return 0;
