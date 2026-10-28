@@ -8,6 +8,7 @@
  * 按仓库惯例用 assert，因此不要加 -DNDEBUG 编译。
  */
 
+#include <cstdlib>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -22,6 +23,21 @@
 
 #include "vector/vector_ann_index.h"
 #include "vector/vector_ops.h"
+
+// CHECK() vanishes under -DNDEBUG, and these tests establish their
+// preconditions by calling into the cache inside it. CHECK always evaluates, so
+// a Release build exercises the same paths as a Debug build instead of
+// dereferencing whatever the skipped call was supposed to set up.
+#define CHECK(cond)                                                            \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::fprintf(stderr, "CHECK failed: %s (%s:%d)\n", #cond, __FILE__,      \
+                   __LINE__);                                                  \
+      std::abort();                                                            \
+    }                                                                          \
+  } while (false)
+
+
 
 using minkv::vector::AnnMatch;
 using minkv::vector::AnnMetric;
@@ -118,9 +134,9 @@ int main() {
     config.dim = kDim;
     VectorAnnIndex index(config);
     for (size_t i = 0; i < kCount; ++i) {
-      assert(index.upsert("k" + std::to_string(i), database[i]));
+      CHECK(index.upsert("k" + std::to_string(i), database[i]));
     }
-    assert(index.size() == kCount);
+    CHECK(index.size() == kCount);
 
     double recall_sum = 0.0;
     constexpr size_t kQueries = 30;
@@ -132,12 +148,12 @@ int main() {
         query[d] = center[d] + noise[d];
       }
       const std::vector<AnnMatch> got = index.search(query, 10, 64);
-      assert(got.size() == 10);
+      CHECK(got.size() == 10);
       for (size_t i = 1; i < got.size(); ++i) {
-        assert(got[i - 1].score <= got[i].score);
+        CHECK(got[i - 1].score <= got[i].score);
       }
       for (const AnnMatch &match : got) {
-        assert(!match.key.empty());
+        CHECK(!match.key.empty());
       }
       recall_sum += recall_at_k(got, brute_force(database, query, 10, config.metric));
     }
@@ -150,8 +166,8 @@ int main() {
                 stats.tombstones,
                 static_cast<double>(stats.memory_bytes) / (1024.0 * 1024.0),
                 stats.max_level);
-    assert(recall >= 0.95);
-    assert(stats.tombstones == 0);
+    CHECK(recall >= 0.95);
+    CHECK(stats.tombstones == 0);
   }
 
   // ---------------------------------------------------------------
@@ -164,26 +180,26 @@ int main() {
 
     std::vector<float> before(kDim, 1.0f);
     std::vector<float> after(kDim, -1.0f);
-    assert(index.upsert("same", before));
+    CHECK(index.upsert("same", before));
     const std::vector<AnnMatch> first_hit = index.search(before, 1, 32);
-    assert(!first_hit.empty());
-    assert(first_hit.front().key == "same");
+    CHECK(!first_hit.empty());
+    CHECK(first_hit.front().key == "same");
 
-    assert(index.upsert("same", after));
-    assert(index.size() == 1);
+    CHECK(index.upsert("same", after));
+    CHECK(index.size() == 1);
 
     // 旧向量已退役：同一个 key 仍可能作为「唯一的存活节点」被返回，
     // 但它与 before 的距离必须很大，说明索引里留的是新向量。
     const std::vector<AnnMatch> stale = index.search(before, 3, 32);
     for (const AnnMatch &match : stale) {
       if (match.key == "same") {
-        assert(match.score > 1.0f);
+        CHECK(match.score > 1.0f);
       }
     }
     const std::vector<AnnMatch> new_hit = index.search(after, 1, 32);
-    assert(!new_hit.empty());
-    assert(new_hit.front().key == "same");
-    assert(new_hit.front().score < 1e-3f);
+    CHECK(!new_hit.empty());
+    CHECK(new_hit.front().key == "same");
+    CHECK(new_hit.front().score < 1e-3f);
     std::printf("%-22s replaced, stale score=%.2f new score=%.4f\n",
                 "update-semantics",
                 stale.empty() ? -1.0f : stale.front().score,
@@ -197,13 +213,13 @@ int main() {
     HnswConfig config;
     config.dim = kDim;
     VectorAnnIndex index(config);
-    assert(!index.upsert("", std::vector<float>(kDim, 0.5f)));          // 空 key
-    assert(!index.upsert("short", std::vector<float>(kDim - 1, 0.5f))); // 维度不符
-    assert(!index.upsert("long", std::vector<float>(kDim + 1, 0.5f)));
-    assert(index.size() == 0);
-    assert(
+    CHECK(!index.upsert("", std::vector<float>(kDim, 0.5f)));          // 空 key
+    CHECK(!index.upsert("short", std::vector<float>(kDim - 1, 0.5f))); // 维度不符
+    CHECK(!index.upsert("long", std::vector<float>(kDim + 1, 0.5f)));
+    CHECK(index.size() == 0);
+    CHECK(
         index.search(std::vector<float>(kDim - 1, 0.5f), 5, 32).empty()); // 查询维度不符
-    assert(index.search(std::vector<float>(kDim, 0.5f), 5, 32).empty()); // 空索引
+    CHECK(index.search(std::vector<float>(kDim, 0.5f), 5, 32).empty()); // 空索引
     std::printf("%-22s rejected empty key / wrong dim\n", "validation");
   }
 
@@ -218,14 +234,14 @@ int main() {
     for (size_t i = 0; i < kCount; ++i) {
       index.upsert("k" + std::to_string(i), database[i]);
     }
-    assert(!index.erase("does-not-exist"));
+    CHECK(!index.erase("does-not-exist"));
 
     for (size_t i = 0; i < kCount; ++i) {
       if (i % 2 == 0) {
-        assert(index.erase("k" + std::to_string(i)));
+        CHECK(index.erase("k" + std::to_string(i)));
       }
     }
-    assert(index.size() == kCount / 2);
+    CHECK(index.size() == kCount / 2);
 
     const auto after_erase = index.stats();
     std::printf("%-22s live=%zu tomb=%zu ratio=%.3f (threshold=0.3)\n",
@@ -236,8 +252,8 @@ int main() {
     // 真正的不变式：每次 erase 之后 Tombstone 占比不超过阈值。
     // 中途会触发过若干次重建，但重建后继续删除仍会累积少量 Tombstone，
     // 所以这里不能断言「最终一定为 0」。
-    assert(after_erase.live == kCount / 2);
-    assert(after_erase.tombstone_ratio() <= 0.3 + 1e-9);
+    CHECK(after_erase.live == kCount / 2);
+    CHECK(after_erase.tombstone_ratio() <= 0.3 + 1e-9);
 
     // 存活 key 仍可检索，已删除 key 不再出现
     const std::vector<float> &center = centers[pick(gen)];
@@ -248,7 +264,7 @@ int main() {
     }
     for (const AnnMatch &match : index.search(query, 20, 64)) {
       const size_t id = static_cast<size_t>(std::stoul(match.key.substr(1)));
-      assert(id % 2 != 0); // 只剩奇数 id
+      CHECK(id % 2 != 0); // 只剩奇数 id
     }
   }
 
@@ -269,8 +285,8 @@ int main() {
       l2_index.upsert("k" + std::to_string(i), database[i]);
       cosine_index.upsert("k" + std::to_string(i), database[i]);
     }
-    assert(l2_index.size() == 200);
-    assert(cosine_index.size() == 200);
+    CHECK(l2_index.size() == 200);
+    CHECK(cosine_index.size() == 200);
 
     // 同方向、不同长度：COSINE 距离≈0，L2 距离显著 > 0
     std::vector<float> scaled(kDim);
@@ -279,11 +295,11 @@ int main() {
     }
     const std::vector<AnnMatch> cosine_hit = cosine_index.search(scaled, 1, 32);
     const std::vector<AnnMatch> l2_hit = l2_index.search(scaled, 1, 32);
-    assert(!cosine_hit.empty() && !l2_hit.empty());
-    assert(cosine_hit.front().key == "k7");
-    assert(cosine_hit.front().score < 1e-4f);
-    assert(l2_hit.front().key == "k7");
-    assert(l2_hit.front().score > 1.0f);
+    CHECK(!cosine_hit.empty() && !l2_hit.empty());
+    CHECK(cosine_hit.front().key == "k7");
+    CHECK(cosine_hit.front().score < 1e-4f);
+    CHECK(l2_hit.front().key == "k7");
+    CHECK(l2_hit.front().score > 1.0f);
     std::printf("%-22s cosine=%.6f  l2=%.3f (同一 key，两种语义)\n",
                 "dual-instance",
                 cosine_hit.front().score,
@@ -331,7 +347,7 @@ int main() {
       std::vector<float> query(32, 0.25f);
       while (!stop.load()) {
         for (const AnnMatch &match : index.search(query, 5, 32)) {
-          assert(!match.key.empty());
+          CHECK(!match.key.empty());
         }
         queries.fetch_add(1);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -344,7 +360,7 @@ int main() {
     stop.store(true);
     reader.join();
 
-    assert(index.size() == kThreads * kPerThread);
+    CHECK(index.size() == kThreads * kPerThread);
     std::printf("%-22s %zu keys, %zu concurrent searches\n",
                 "concurrency",
                 index.size(),
@@ -371,21 +387,21 @@ int main() {
 
     VectorAnnIndex index(config);
     const size_t built = index.build(keys, flat.data(), kBuildCount, 4);
-    assert(built == kBuildCount);
-    assert(index.size() == kBuildCount);
+    CHECK(built == kBuildCount);
+    CHECK(index.size() == kBuildCount);
     // 已非空时再 build 应被拒绝
-    assert(index.build(keys, flat.data(), kBuildCount, 4) == 0);
+    CHECK(index.build(keys, flat.data(), kBuildCount, 4) == 0);
 
     const std::vector<AnnMatch> hits = index.search(database[3], 1, 32);
-    assert(!hits.empty());
+    CHECK(!hits.empty());
     std::printf("%-22s built=%zu, search ok (top=%s)\n",
                 "bulk-build",
                 built,
                 hits.front().key.c_str());
 
     index.clear();
-    assert(index.size() == 0);
-    assert(index.search(database[3], 1, 32).empty());
+    CHECK(index.size() == 0);
+    CHECK(index.search(database[3], 1, 32).empty());
     std::printf("%-22s cleared, search empty\n", "clear");
   }
 

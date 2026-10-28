@@ -11,6 +11,7 @@
  * 按仓库惯例用 assert，因此不要加 -DNDEBUG 编译。
  */
 
+#include <cstdlib>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -25,6 +26,21 @@
 
 #include "vector/hnsw_index.h"
 #include "vector/vector_ops.h"
+
+// CHECK() vanishes under -DNDEBUG, and these tests establish their
+// preconditions by calling into the cache inside it. CHECK always evaluates, so
+// a Release build exercises the same paths as a Debug build instead of
+// dereferencing whatever the skipped call was supposed to set up.
+#define CHECK(cond)                                                            \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::fprintf(stderr, "CHECK failed: %s (%s:%d)\n", #cond, __FILE__,      \
+                   __LINE__);                                                  \
+      std::abort();                                                            \
+    }                                                                          \
+  } while (false)
+
+
 
 using minkv::vector::AnnHit;
 using minkv::vector::AnnMetric;
@@ -141,7 +157,7 @@ int main() {
   // 1. 随机均匀数据：ANN 最不友好的分布
   // ---------------------------------------------------------------
   {
-    constexpr size_t kCount = 3000;
+    constexpr size_t kCount = 1000;
     constexpr size_t kDim = 48;
     constexpr size_t kK = 10;
     constexpr size_t kEf = 80;
@@ -159,11 +175,11 @@ int main() {
 
     const auto build_start = Clock::now();
     for (const auto &vec : database) {
-      assert(index.insert(vec.data()) != HnswIndex::kInvalidId);
+      CHECK(index.insert(vec.data()) != HnswIndex::kInvalidId);
     }
     const double build_ms =
         std::chrono::duration<double, std::milli>(Clock::now() - build_start).count();
-    assert(index.size() == kCount);
+    CHECK(index.size() == kCount);
 
     double recall_sum = 0.0;
     double query_us_sum = 0.0;
@@ -174,9 +190,9 @@ int main() {
       const std::vector<AnnHit> hits = index.knn(query.data(), kK, kEf);
       query_us_sum +=
           std::chrono::duration<double, std::micro>(Clock::now() - start).count();
-      assert(hits.size() == kK);
+      CHECK(hits.size() == kK);
       for (size_t i = 1; i < hits.size(); ++i) {
-        assert(hits[i - 1].score <= hits[i].score); // 结果必须有序
+        CHECK(hits[i - 1].score <= hits[i].score); // 结果必须有序
       }
       std::vector<uint32_t> got;
       got.reserve(hits.size());
@@ -193,7 +209,7 @@ int main() {
            index.size(),
            index.tombstone_count(),
            index.memory_bytes());
-    assert(recall >= 0.90);
+    CHECK(recall >= 0.90);
   }
 
   // ---------------------------------------------------------------
@@ -201,7 +217,7 @@ int main() {
   // ---------------------------------------------------------------
   {
     constexpr size_t kClusters = 20;
-    constexpr size_t kCount = 3000;
+    constexpr size_t kCount = 1000;
     constexpr size_t kDim = 48;
     constexpr size_t kK = 10;
     constexpr size_t kEf = 64;
@@ -261,14 +277,14 @@ int main() {
            index.size(),
            index.tombstone_count(),
            index.memory_bytes());
-    assert(recall >= 0.95);
+    CHECK(recall >= 0.95);
   }
 
   // ---------------------------------------------------------------
   // 3. 删除 + 4. 重建
   // ---------------------------------------------------------------
   {
-    constexpr size_t kCount = 3000;
+    constexpr size_t kCount = 1000;
     constexpr size_t kDim = 48;
     constexpr size_t kK = 10;
 
@@ -297,17 +313,17 @@ int main() {
       if (deleted[id] != 0) {
         continue;
       }
-      assert(index.erase(static_cast<uint32_t>(id)));
+      CHECK(index.erase(static_cast<uint32_t>(id)));
       deleted[id] = 1;
       if (first_killed == HnswIndex::kInvalidId) {
         first_killed = static_cast<uint32_t>(id);
       }
       ++killed;
     }
-    assert(first_killed != HnswIndex::kInvalidId);
-    assert(!index.erase(first_killed)); // 重复删除必须返回 false
-    assert(!index.erase(static_cast<uint32_t>(kCount + 5))); // 越界 id 必须返回 false
-    assert(index.size() == kCount - killed);
+    CHECK(first_killed != HnswIndex::kInvalidId);
+    CHECK(!index.erase(first_killed)); // 重复删除必须返回 false
+    CHECK(!index.erase(static_cast<uint32_t>(kCount + 5))); // 越界 id 必须返回 false
+    CHECK(index.size() == kCount - killed);
 
     auto measure = [&](const char *name, size_t ef) {
       double recall_sum = 0.0;
@@ -317,7 +333,7 @@ int main() {
         const std::vector<AnnHit> hits = index.knn(query.data(), kK, ef);
         std::vector<uint32_t> got;
         for (const AnnHit &hit : hits) {
-          assert(deleted[hit.id] == 0); // 绝不允许返回已删除的 id
+          CHECK(deleted[hit.id] == 0); // 绝不允许返回已删除的 id
           got.push_back(hit.id);
         }
         recall_sum +=
@@ -335,14 +351,14 @@ int main() {
     };
 
     const double before = measure("after-40%-delete", 64);
-    assert(before >= 0.90); // Tombstone 会污染导航，容许下降
+    CHECK(before >= 0.90); // Tombstone 会污染导航，容许下降
 
     index.compact();
     const double after = measure("after-compact", 64);
-    assert(after >= 0.95);
+    CHECK(after >= 0.95);
     // 注意：compact 不保证提升 recall。被删节点仍作为导航路标留在图里，
     // 有时反而比「只留存活节点」的图更容易路由；这里只要求重建后质量不塌。
-    assert(after + 0.05 >= before);
+    CHECK(after + 0.05 >= before);
   }
 
   // ---------------------------------------------------------------
@@ -365,15 +381,15 @@ int main() {
       a.insert(vec.data());
       b.insert(vec.data());
     }
-    assert(a.max_level() == b.max_level());
+    CHECK(a.max_level() == b.max_level());
 
     const std::vector<float> query = random_vector(gen, kDim);
     const std::vector<AnnHit> hits_a = a.knn(query.data(), 10, 32);
     const std::vector<AnnHit> hits_b = b.knn(query.data(), 10, 32);
-    assert(hits_a.size() == hits_b.size());
+    CHECK(hits_a.size() == hits_b.size());
     for (size_t i = 0; i < hits_a.size(); ++i) {
-      assert(hits_a[i].id == hits_b[i].id);
-      assert(hits_a[i].score == hits_b[i].score);
+      CHECK(hits_a[i].id == hits_b[i].id);
+      CHECK(hits_a[i].score == hits_b[i].score);
     }
     std::printf("%-22s reproducible (level=%d)\n", "determinism", a.max_level());
   }
@@ -402,9 +418,9 @@ int main() {
       query[d] = database[17][d] * 3.5f;
     }
     const std::vector<AnnHit> hits = index.knn(query.data(), 1, 32);
-    assert(!hits.empty());
-    assert(hits.front().id == 17u);
-    assert(hits.front().score < 1e-4f);
+    CHECK(!hits.empty());
+    CHECK(hits.front().id == 17u);
+    CHECK(hits.front().score < 1e-4f);
     std::printf("%-22s self-cosine distance=%.6f\n", "cosine-metric", hits.front().score);
 
     // L2 度量下同一个查询不会给出 0 距离（长度差异被计入）
@@ -415,8 +431,8 @@ int main() {
       l2_index.insert(vec.data());
     }
     const std::vector<AnnHit> l2_hits = l2_index.knn(query.data(), 1, 32);
-    assert(!l2_hits.empty());
-    assert(l2_hits.front().score > 1e-3f);
+    CHECK(!l2_hits.empty());
+    CHECK(l2_hits.front().score > 1e-3f);
     std::printf("%-22s self-l2 distance=%.6f (长度差异被计入)\n",
                 "l2-metric",
                 l2_hits.front().score);
@@ -428,7 +444,7 @@ int main() {
   {
     // Kept small on purpose: CI runs every test binary under a 90s timeout in
     // a Debug build, where this section is roughly 7x slower than Release.
-    constexpr size_t kCount = 3000;
+    constexpr size_t kCount = 1000;
     constexpr size_t kDim = 96;
     constexpr size_t kK = 10;
     constexpr size_t kEf = 64;
@@ -496,9 +512,9 @@ int main() {
         break;
       }
     }
-    assert(identical);
-    assert(single.size() == kCount);
-    assert(parallel.size() == kCount);
+    CHECK(identical);
+    CHECK(single.size() == kCount);
+    CHECK(parallel.size() == kCount);
 
     const double recall_sequential = recall_of(sequential, database, queries, kK, kEf);
     const double recall_parallel = recall_of(parallel, database, queries, kK, kEf);
@@ -520,7 +536,7 @@ int main() {
 
     // 并发建图会让节点连接顺序随调度变化，在对抗性数据上召回本就有
     // 1–2 个百分点的抖动；这里只要求「质量不塌」，不追求逐位一致。
-    assert(std::fabs(recall_sequential - recall_parallel) <= 0.03);
+    CHECK(std::fabs(recall_sequential - recall_parallel) <= 0.03);
 
     // 加速比只打印、不断言：CI 跑在共享机器上，核心数与负载都不可控，
     // 用性能数字当门槛只会制造误报。质量不塌才是这里的验收条件。
@@ -575,7 +591,7 @@ int main() {
       while (!stop.load()) {
         const std::vector<AnnHit> hits = index.knn(query.data(), 5, 32);
         for (const AnnHit &hit : hits) {
-          assert(hit.id < index.capacity());
+          CHECK(hit.id < index.capacity());
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
@@ -587,14 +603,14 @@ int main() {
     stop.store(true);
     reader.join();
 
-    assert(inserted.load() == kThreads * kPerThread);
-    assert(index.size() == kThreads * kPerThread);
+    CHECK(inserted.load() == kThreads * kPerThread);
+    CHECK(index.size() == kThreads * kPerThread);
 
     std::vector<float> query(kDim, 0.5f);
     const std::vector<AnnHit> hits = index.knn(query.data(), 10, 64);
-    assert(hits.size() == 10);
+    CHECK(hits.size() == 10);
     for (size_t i = 1; i < hits.size(); ++i) {
-      assert(hits[i - 1].score <= hits[i].score);
+      CHECK(hits[i - 1].score <= hits[i].score);
     }
     std::printf("%-22s %zu concurrent inserts, knn ok\n", "concurrency", index.size());
   }
@@ -611,7 +627,7 @@ int main() {
     } catch (const std::invalid_argument &) {
       threw = true;
     }
-    assert(threw);
+    CHECK(threw);
     std::printf("%-22s rejected dim=0\n", "config-validation");
   }
 

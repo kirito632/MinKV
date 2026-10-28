@@ -10,6 +10,7 @@
  * assert-based like the rest of the repository, so do not build with -DNDEBUG.
  */
 
+#include <cstdlib>
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -22,6 +23,21 @@
 #include <vector>
 
 #include "core/sharded_cache.h"
+
+// CHECK() vanishes under -DNDEBUG, and these tests establish their
+// preconditions by calling into the cache inside it. CHECK always evaluates, so
+// a Release build exercises the same paths as a Debug build instead of
+// dereferencing whatever the skipped call was supposed to set up.
+#define CHECK(cond)                                                            \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::fprintf(stderr, "CHECK failed: %s (%s:%d)\n", #cond, __FILE__,      \
+                   __LINE__);                                                  \
+      std::abort();                                                            \
+    }                                                                          \
+  } while (false)
+
+
 
 namespace {
 
@@ -40,7 +56,7 @@ std::vector<float> random_vector(std::mt19937 &gen, size_t dim, float spread) {
 void assert_no_ghost(Cache &cache, const std::vector<float> &query, size_t k) {
   for (const auto &hit : cache.vectorSearchScored(query, k, 64)) {
     const std::vector<float> stored = cache.vectorGet(hit.first);
-    assert(stored.size() == query.size());
+    CHECK(stored.size() == query.size());
   }
 }
 
@@ -60,8 +76,8 @@ int main() {
     Cache cache(256, 8);
     Cache::AnnConfig config;
     config.dim = kDim;
-    assert(cache.enable_ann_index(config));
-    assert(cache.ann_enabled());
+    CHECK(cache.enable_ann_index(config));
+    CHECK(cache.ann_enabled());
 
     std::vector<std::vector<float>> database;
     database.reserve(kCount);
@@ -78,7 +94,7 @@ int main() {
         value += 0.05f;
       }
       const std::vector<std::string> exact = cache.vectorSearchExact(query, 10);
-      assert(exact.size() == 10);
+      CHECK(exact.size() == 10);
       const std::set<std::string> truth(exact.begin(), exact.end());
 
       const auto approximate = cache.vectorSearchScored(query, 10, 64);
@@ -98,9 +114,9 @@ int main() {
                 recall,
                 stats.empty() ? 0 : stats[0].live,
                 stats.empty() ? 0 : stats[0].tombstones);
-    assert(recall >= 0.95);
-    assert(!stats.empty());
-    assert(stats[0].live == kCount);
+    CHECK(recall >= 0.95);
+    CHECK(!stats.empty());
+    CHECK(stats[0].live == kCount);
   }
 
   // ---------------------------------------------------------------
@@ -113,12 +129,12 @@ int main() {
     Cache cache(4, 16);
     Cache::AnnConfig config;
     config.dim = kDim;
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
 
     for (size_t i = 0; i < 400; ++i) {
       cache.vectorPut("e" + std::to_string(i), random_vector(gen, kDim, 1.0f));
     }
-    assert(cache.size() <= kCapacity);
+    CHECK(cache.size() <= kCapacity);
 
     for (size_t q = 0; q < 30; ++q) {
       assert_no_ghost(cache, random_vector(gen, kDim, 1.0f), 10);
@@ -130,7 +146,7 @@ int main() {
                 stats.empty() ? 0 : stats[0].live,
                 stats.empty() ? 0 : stats[0].tombstones);
     // The index must not hold far more live entries than the cache can store.
-    assert(stats[0].live <= cache.size() + 8);
+    CHECK(stats[0].live <= cache.size() + 8);
   }
 
   // ---------------------------------------------------------------
@@ -141,7 +157,7 @@ int main() {
     Cache cache(64, 4);
     Cache::AnnConfig config;
     config.dim = kDim;
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
 
     for (size_t i = 0; i < 40; ++i) {
       cache.vectorPut("t" + std::to_string(i), random_vector(gen, kDim, 1.0f), 1);
@@ -151,7 +167,7 @@ int main() {
     const std::vector<float> query = random_vector(gen, kDim, 1.0f);
     const auto results = cache.vectorSearchScored(query, 10, 64);
     std::printf("%-22s expired results=%zu\n", "ttl-expiry", results.size());
-    assert(results.empty()); // everything expired: nothing may be returned
+    CHECK(results.empty()); // everything expired: nothing may be returned
   }
 
   // ---------------------------------------------------------------
@@ -162,19 +178,19 @@ int main() {
     Cache cache(128, 4);
     Cache::AnnConfig config;
     config.dim = kDim;
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
 
     for (size_t i = 0; i < 60; ++i) {
       cache.vectorPut("r" + std::to_string(i), random_vector(gen, kDim, 1.0f));
     }
     for (size_t i = 0; i < 60; i += 2) {
-      assert(cache.remove("r" + std::to_string(i)));
+      CHECK(cache.remove("r" + std::to_string(i)));
     }
     for (size_t q = 0; q < 20; ++q) {
       const std::vector<float> query = random_vector(gen, kDim, 1.0f);
       for (const auto &hit : cache.vectorSearchScored(query, 10, 64)) {
         const size_t id = static_cast<size_t>(std::stoul(hit.first.substr(1)));
-        assert(id % 2 != 0); // only the odd ids survive
+        CHECK(id % 2 != 0); // only the odd ids survive
       }
       assert_no_ghost(cache, query, 10);
     }
@@ -191,7 +207,7 @@ int main() {
     Cache cache(128, 4);
     Cache::AnnConfig config;
     config.dim = kIndexedDim;
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
 
     for (size_t i = 0; i < 30; ++i) {
       cache.vectorPut("a" + std::to_string(i), random_vector(gen, kIndexedDim, 1.0f));
@@ -205,8 +221,8 @@ int main() {
                 "dimension-fallback",
                 approximate.size(),
                 exact.size());
-    assert(approximate.size() == 10);
-    assert(approximate.size() == exact.size());
+    CHECK(approximate.size() == 10);
+    CHECK(approximate.size() == exact.size());
   }
 
   // ---------------------------------------------------------------
@@ -217,17 +233,17 @@ int main() {
     Cache cache(128, 4);
     Cache::AnnConfig config;
     config.dim = kDim;
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
     for (size_t i = 0; i < 40; ++i) {
       cache.vectorPut("d" + std::to_string(i), random_vector(gen, kDim, 1.0f));
     }
     cache.disable_ann_index();
-    assert(!cache.ann_enabled());
-    assert(cache.ann_stats().empty());
+    CHECK(!cache.ann_enabled());
+    CHECK(cache.ann_stats().empty());
 
     const std::vector<float> query = random_vector(gen, kDim, 1.0f);
     const auto results = cache.vectorSearchScored(query, 10, 64);
-    assert(results.size() == 10); // still correct, just brute force now
+    CHECK(results.size() == 10); // still correct, just brute force now
     std::printf("%-22s disabled, exact path returned %zu\n", "disable", results.size());
   }
 
@@ -252,14 +268,14 @@ int main() {
     Cache::AnnConfig config;
     config.dim = kDim;
     config.key_prefix = "emb:";
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
 
     const auto stats = cache.ann_stats();
-    assert(!stats.empty());
+    CHECK(!stats.empty());
     std::printf("%-22s live=%zu (expected 40: only the prefixed keys)\n",
                 "prefix-rebuild",
                 stats[0].live);
-    assert(stats[0].live == 40);
+    CHECK(stats[0].live == 40);
 
     // A new prefixed key may still enter through a plain put; an unprefixed one
     // may not.
@@ -269,7 +285,7 @@ int main() {
     std::printf("%-22s live=%zu after one prefixed and one plain put\n",
                 "prefix-write",
                 after[0].live);
-    assert(after[0].live == 41);
+    CHECK(after[0].live == 41);
   }
 
   // ---------------------------------------------------------------
@@ -289,7 +305,7 @@ int main() {
     Cache cache(512, 8);
     Cache::AnnConfig config;
     config.dim = kDim;
-    assert(cache.enable_ann_index(config));
+    CHECK(cache.enable_ann_index(config));
 
     std::vector<std::vector<float>> seeds;
     for (size_t i = 0; i < 200; ++i) {
@@ -310,7 +326,7 @@ int main() {
         while (!stop.load()) {
           const auto &query = seeds[pick(local_gen)];
           for (const auto &hit : cache.vectorSearchScored(query, 5, 64)) {
-            assert(!cache.vectorGet(hit.first).empty()); // never a ghost
+            CHECK(!cache.vectorGet(hit.first).empty()); // never a ghost
           }
           reads.fetch_add(1);
         }
@@ -355,9 +371,9 @@ int main() {
                 reads.load(),
                 writes.load());
     const auto stats = cache.ann_stats();
-    assert(!stats.empty());
+    CHECK(!stats.empty());
     // Every indexed key must still be resident: the removal paths keep up.
-    assert(stats[0].live <= cache.size());
+    CHECK(stats[0].live <= cache.size());
   }
 
   // ---------------------------------------------------------------
@@ -398,11 +414,11 @@ int main() {
                 "enable-race",
                 enabled ? "true" : "false",
                 writes.load());
-    assert(!enabled);                  // refused, rather than silently partial
-    assert(!cache.ann_enabled());      // nothing was published
-    assert(cache.ann_stats().empty()); // and no half-built instance is visible
+    CHECK(!enabled);                  // refused, rather than silently partial
+    CHECK(!cache.ann_enabled());      // nothing was published
+    CHECK(cache.ann_stats().empty()); // and no half-built instance is visible
     // The cache still answers, through the exact path.
-    assert(cache.vectorSearchScored(random_vector(gen, kDim, 1.0f), 5, 0).size() == 5);
+    CHECK(cache.vectorSearchScored(random_vector(gen, kDim, 1.0f), 5, 0).size() == 5);
   }
 
   std::printf("=== all consistency tests passed ===\n");
