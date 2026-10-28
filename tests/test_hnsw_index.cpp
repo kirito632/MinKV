@@ -11,13 +11,13 @@
  * 按仓库惯例用 assert，因此不要加 -DNDEBUG 编译。
  */
 
-#include <cstdlib>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <stdexcept>
 #include <thread>
@@ -31,15 +31,13 @@
 // preconditions by calling into the cache inside it. CHECK always evaluates, so
 // a Release build exercises the same paths as a Debug build instead of
 // dereferencing whatever the skipped call was supposed to set up.
-#define CHECK(cond)                                                            \
-  do {                                                                         \
-    if (!(cond)) {                                                             \
-      std::fprintf(stderr, "CHECK failed: %s (%s:%d)\n", #cond, __FILE__,      \
-                   __LINE__);                                                  \
-      std::abort();                                                            \
-    }                                                                          \
+#define CHECK(cond)                                                                  \
+  do {                                                                               \
+    if (!(cond)) {                                                                   \
+      std::fprintf(stderr, "CHECK failed: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
+      std::abort();                                                                  \
+    }                                                                                \
   } while (false)
-
 
 
 using minkv::vector::AnnHit;
