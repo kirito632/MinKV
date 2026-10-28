@@ -109,7 +109,8 @@ bool VectorAnnIndex::erase(const std::string &key) {
   return true;
 }
 
-std::vector<AnnMatch> VectorAnnIndex::search(const std::vector<float> &query, size_t k,
+std::vector<AnnMatch> VectorAnnIndex::search(const std::vector<float> &query,
+                                             size_t k,
                                              size_t ef) const {
   std::vector<AnnMatch> matches;
   if (query.size() != config_.dim || k == 0) {
@@ -126,8 +127,10 @@ std::vector<AnnMatch> VectorAnnIndex::search(const std::vector<float> &query, si
   return matches;
 }
 
-size_t VectorAnnIndex::build(const std::vector<std::string> &keys, const float *flat,
-                             size_t count, size_t threads) {
+size_t VectorAnnIndex::build(const std::vector<std::string> &keys,
+                             const float *flat,
+                             size_t count,
+                             size_t threads) {
   if (flat == nullptr || count == 0 || keys.size() != count) {
     return 0;
   }
@@ -159,7 +162,9 @@ void VectorAnnIndex::clear() {
   keys_.clear();
 }
 
-void VectorAnnIndex::reserve(size_t expected) { index_->reserve(expected); }
+void VectorAnnIndex::reserve(size_t expected) {
+  index_->reserve(expected);
+}
 
 void VectorAnnIndex::compact() {
   std::unique_lock<std::shared_mutex> lock(mu_);

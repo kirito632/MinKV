@@ -35,7 +35,9 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-std::vector<float> random_vector(std::mt19937 &gen, size_t dim, float center = 0.0f,
+std::vector<float> random_vector(std::mt19937 &gen,
+                                 size_t dim,
+                                 float center = 0.0f,
                                  float spread = 1.0f) {
   std::normal_distribution<float> dist(center, spread);
   std::vector<float> vec(dim);
@@ -55,7 +57,8 @@ float point_distance(AnnMetric metric, const float *a, const float *b, size_t di
 /// 精确答案：只扫存活向量，结果按距离升序
 std::vector<uint32_t> brute_force(const std::vector<std::vector<float>> &database,
                                   const std::vector<uint8_t> &deleted,
-                                  const std::vector<float> &query, size_t k,
+                                  const std::vector<float> &query,
+                                  size_t k,
                                   AnnMetric metric) {
   std::vector<std::pair<float, uint32_t>> scored;
   scored.reserve(database.size());
@@ -63,12 +66,12 @@ std::vector<uint32_t> brute_force(const std::vector<std::vector<float>> &databas
     if (!deleted.empty() && deleted[id] != 0) {
       continue;
     }
-    scored.emplace_back(point_distance(metric, query.data(), database[id].data(),
-                                       query.size()),
-                        id);
+    scored.emplace_back(
+        point_distance(metric, query.data(), database[id].data(), query.size()), id);
   }
   const size_t take = std::min(k, scored.size());
-  std::partial_sort(scored.begin(), scored.begin() + static_cast<long>(take), scored.end());
+  std::partial_sort(
+      scored.begin(), scored.begin() + static_cast<long>(take), scored.end());
   std::vector<uint32_t> ids;
   ids.reserve(take);
   for (size_t i = 0; i < take; ++i) {
@@ -93,8 +96,11 @@ double recall_at_k(const std::vector<uint32_t> &approximate,
 }
 
 /// 对一组查询计算平均 Recall@k（精确答案来自暴力搜索）
-double recall_of(const HnswIndex &index, const std::vector<std::vector<float>> &database,
-                 const std::vector<std::vector<float>> &queries, size_t k, size_t ef) {
+double recall_of(const HnswIndex &index,
+                 const std::vector<std::vector<float>> &database,
+                 const std::vector<std::vector<float>> &queries,
+                 size_t k,
+                 size_t ef) {
   double sum = 0.0;
   for (const auto &query : queries) {
     std::vector<uint32_t> got;
@@ -106,11 +112,23 @@ double recall_of(const HnswIndex &index, const std::vector<std::vector<float>> &
   return sum / static_cast<double>(queries.size());
 }
 
-void report(const char *name, double recall, double build_ms, double query_us,
-            size_t live, size_t tombstones, size_t memory_bytes) {
-  std::printf("%-22s recall@10=%.4f  build=%7.1f ms  query=%8.1f us  live=%-6zu tomb=%-6zu mem=%.1f MB\n",
-              name, recall, build_ms, query_us, live, tombstones,
-              static_cast<double>(memory_bytes) / (1024.0 * 1024.0));
+void report(const char *name,
+            double recall,
+            double build_ms,
+            double query_us,
+            size_t live,
+            size_t tombstones,
+            size_t memory_bytes) {
+  std::printf(
+      "%-22s recall@10=%.4f  build=%7.1f ms  query=%8.1f us  live=%-6zu tomb=%-6zu "
+      "mem=%.1f MB\n",
+      name,
+      recall,
+      build_ms,
+      query_us,
+      live,
+      tombstones,
+      static_cast<double>(memory_bytes) / (1024.0 * 1024.0));
   std::fflush(stdout);
 }
 
@@ -154,7 +172,8 @@ int main() {
       const std::vector<float> query = random_vector(gen, kDim);
       const auto start = Clock::now();
       const std::vector<AnnHit> hits = index.knn(query.data(), kK, kEf);
-      query_us_sum += std::chrono::duration<double, std::micro>(Clock::now() - start).count();
+      query_us_sum +=
+          std::chrono::duration<double, std::micro>(Clock::now() - start).count();
       assert(hits.size() == kK);
       for (size_t i = 1; i < hits.size(); ++i) {
         assert(hits[i - 1].score <= hits[i].score); // 结果必须有序
@@ -167,8 +186,13 @@ int main() {
       recall_sum += recall_at_k(got, brute_force(database, {}, query, kK, config.metric));
     }
     const double recall = recall_sum / static_cast<double>(kQueries);
-    report("uniform-random", recall, build_ms, query_us_sum / kQueries, index.size(),
-           index.tombstone_count(), index.memory_bytes());
+    report("uniform-random",
+           recall,
+           build_ms,
+           query_us_sum / kQueries,
+           index.size(),
+           index.tombstone_count(),
+           index.memory_bytes());
     assert(recall >= 0.90);
   }
 
@@ -221,7 +245,8 @@ int main() {
       }
       const auto start = Clock::now();
       const std::vector<AnnHit> hits = index.knn(query.data(), kK, kEf);
-      query_us_sum += std::chrono::duration<double, std::micro>(Clock::now() - start).count();
+      query_us_sum +=
+          std::chrono::duration<double, std::micro>(Clock::now() - start).count();
       std::vector<uint32_t> got;
       for (const AnnHit &hit : hits) {
         got.push_back(hit.id);
@@ -229,8 +254,13 @@ int main() {
       recall_sum += recall_at_k(got, brute_force(database, {}, query, kK, config.metric));
     }
     const double recall = recall_sum / static_cast<double>(kQueries);
-    report("clustered", recall, build_ms, query_us_sum / kQueries, index.size(),
-           index.tombstone_count(), index.memory_bytes());
+    report("clustered",
+           recall,
+           build_ms,
+           query_us_sum / kQueries,
+           index.size(),
+           index.tombstone_count(),
+           index.memory_bytes());
     assert(recall >= 0.95);
   }
 
@@ -290,11 +320,16 @@ int main() {
           assert(deleted[hit.id] == 0); // 绝不允许返回已删除的 id
           got.push_back(hit.id);
         }
-        recall_sum += recall_at_k(got, brute_force(database, deleted, query, kK,
-                                                   config.metric));
+        recall_sum +=
+            recall_at_k(got, brute_force(database, deleted, query, kK, config.metric));
       }
       const double recall = recall_sum / static_cast<double>(kQueries);
-      report(name, recall, 0.0, 0.0, index.size(), index.tombstone_count(),
+      report(name,
+             recall,
+             0.0,
+             0.0,
+             index.size(),
+             index.tombstone_count(),
              index.memory_bytes());
       return recall;
     };
@@ -382,7 +417,8 @@ int main() {
     const std::vector<AnnHit> l2_hits = l2_index.knn(query.data(), 1, 32);
     assert(!l2_hits.empty());
     assert(l2_hits.front().score > 1e-3f);
-    std::printf("%-22s self-l2 distance=%.6f (长度差异被计入)\n", "l2-metric",
+    std::printf("%-22s self-l2 distance=%.6f (长度差异被计入)\n",
+                "l2-metric",
                 l2_hits.front().score);
   }
 
@@ -406,7 +442,8 @@ int main() {
     std::vector<std::vector<float>> database(kCount, std::vector<float>(kDim));
     for (size_t i = 0; i < kCount; ++i) {
       std::copy(flat.begin() + static_cast<long>(i * kDim),
-                flat.begin() + static_cast<long>((i + 1) * kDim), database[i].begin());
+                flat.begin() + static_cast<long>((i + 1) * kDim),
+                database[i].begin());
     }
     std::vector<std::vector<float>> queries(20, std::vector<float>(kDim));
     for (auto &query : queries) {
@@ -467,10 +504,18 @@ int main() {
     const double recall_parallel = recall_of(parallel, database, queries, kK, kEf);
     const double speedup = sequential_ms / parallel_ms;
 
-    std::printf("%-22s sequential=%7.1f ms  1-thread=%7.1f ms  4-thread=%7.1f ms  speedup=%.2fx\n",
-                "parallel-build", sequential_ms, single_ms, parallel_ms, speedup);
-    std::printf("%-22s recall seq=%.4f par=%.4f  delta=%.4f\n", "parallel-recall",
-                recall_sequential, recall_parallel,
+    std::printf(
+        "%-22s sequential=%7.1f ms  1-thread=%7.1f ms  4-thread=%7.1f ms  "
+        "speedup=%.2fx\n",
+        "parallel-build",
+        sequential_ms,
+        single_ms,
+        parallel_ms,
+        speedup);
+    std::printf("%-22s recall seq=%.4f par=%.4f  delta=%.4f\n",
+                "parallel-recall",
+                recall_sequential,
+                recall_parallel,
                 std::fabs(recall_sequential - recall_parallel));
 
     // 并发建图会让节点连接顺序随调度变化，在对抗性数据上召回本就有
@@ -481,7 +526,8 @@ int main() {
     // 用性能数字当门槛只会制造误报。质量不塌才是这里的验收条件。
     if (speedup < 1.5) {
       std::printf("%-22s WARN: speedup %.2fx below the 1.5x target (loaded machine?)\n",
-                  "parallel-build", speedup);
+                  "parallel-build",
+                  speedup);
     }
   }
 

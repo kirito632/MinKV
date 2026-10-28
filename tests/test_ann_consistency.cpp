@@ -93,8 +93,11 @@ int main() {
     }
     const double recall = recall_sum / kQueries;
     const auto stats = cache.ann_stats();
-    std::printf("%-22s recall@10=%.4f live=%zu tombstones=%zu\n", "ann-recall", recall,
-                stats.empty() ? 0 : stats[0].live, stats.empty() ? 0 : stats[0].tombstones);
+    std::printf("%-22s recall@10=%.4f live=%zu tombstones=%zu\n",
+                "ann-recall",
+                recall,
+                stats.empty() ? 0 : stats[0].live,
+                stats.empty() ? 0 : stats[0].tombstones);
     assert(recall >= 0.95);
     assert(!stats.empty());
     assert(stats[0].live == kCount);
@@ -121,8 +124,11 @@ int main() {
       assert_no_ghost(cache, random_vector(gen, kDim, 1.0f), 10);
     }
     const auto stats = cache.ann_stats();
-    std::printf("%-22s cache=%zu ann_live=%zu tombstones=%zu\n", "eviction", cache.size(),
-                stats.empty() ? 0 : stats[0].live, stats.empty() ? 0 : stats[0].tombstones);
+    std::printf("%-22s cache=%zu ann_live=%zu tombstones=%zu\n",
+                "eviction",
+                cache.size(),
+                stats.empty() ? 0 : stats[0].live,
+                stats.empty() ? 0 : stats[0].tombstones);
     // The index must not hold far more live entries than the cache can store.
     assert(stats[0].live <= cache.size() + 8);
   }
@@ -196,7 +202,9 @@ int main() {
     const auto approximate = cache.vectorSearchScored(other_query, 10, 64);
     const std::vector<std::string> exact = cache.vectorSearchExact(other_query, 10);
     std::printf("%-22s indexed_dim=8 query_dim=12 -> %zu results (exact=%zu)\n",
-                "dimension-fallback", approximate.size(), exact.size());
+                "dimension-fallback",
+                approximate.size(),
+                exact.size());
     assert(approximate.size() == 10);
     assert(approximate.size() == exact.size());
   }
@@ -248,7 +256,8 @@ int main() {
 
     const auto stats = cache.ann_stats();
     assert(!stats.empty());
-    std::printf("%-22s live=%zu (expected 40: only the prefixed keys)\n", "prefix-rebuild",
+    std::printf("%-22s live=%zu (expected 40: only the prefixed keys)\n",
+                "prefix-rebuild",
                 stats[0].live);
     assert(stats[0].live == 40);
 
@@ -257,7 +266,8 @@ int main() {
     cache.put("emb:new", blob);
     cache.put("plain:new", blob);
     const auto after = cache.ann_stats();
-    std::printf("%-22s live=%zu after one prefixed and one plain put\n", "prefix-write",
+    std::printf("%-22s live=%zu after one prefixed and one plain put\n",
+                "prefix-write",
                 after[0].live);
     assert(after[0].live == 41);
   }
@@ -340,8 +350,10 @@ int main() {
       reader.join();
     }
 
-    std::printf("%-22s %zu reads / %zu writes interleaved, no ghost\n", "mixed-concurrency",
-                reads.load(), writes.load());
+    std::printf("%-22s %zu reads / %zu writes interleaved, no ghost\n",
+                "mixed-concurrency",
+                reads.load(),
+                writes.load());
     const auto stats = cache.ann_stats();
     assert(!stats.empty());
     // Every indexed key must still be resident: the removal paths keep up.
@@ -382,11 +394,13 @@ int main() {
     stop.store(true);
     writer.join();
 
-    std::printf("%-22s enable returned %s after %zu concurrent writes\n", "enable-race",
-                enabled ? "true" : "false", writes.load());
-    assert(!enabled);                    // refused, rather than silently partial
-    assert(!cache.ann_enabled());        // nothing was published
-    assert(cache.ann_stats().empty());   // and no half-built instance is visible
+    std::printf("%-22s enable returned %s after %zu concurrent writes\n",
+                "enable-race",
+                enabled ? "true" : "false",
+                writes.load());
+    assert(!enabled);                  // refused, rather than silently partial
+    assert(!cache.ann_enabled());      // nothing was published
+    assert(cache.ann_stats().empty()); // and no half-built instance is visible
     // The cache still answers, through the exact path.
     assert(cache.vectorSearchScored(random_vector(gen, kDim, 1.0f), 5, 0).size() == 5);
   }

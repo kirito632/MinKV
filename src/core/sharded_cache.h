@@ -280,7 +280,8 @@ public:
    * @param ef search width, 0 means config.ef_search
    */
   std::vector<std::pair<K, float>> vectorSearchScored(const std::vector<float> &query,
-                                                      size_t k, size_t ef = 0,
+                                                      size_t k,
+                                                      size_t ef = 0,
                                                       bool exact = false);
 
   /// Exact nearest neighbours (brute force): ground truth, tests, fallback.
@@ -435,16 +436,19 @@ private:
     CacheStats getStats() const;
     void resetStats();
     void clear();
+
     /** @brief 返回该分片所有键值对的快照（加锁，用于导出/快照） */
     /// Register the removal callback (forwarded to LruCache).
     void set_on_erase(std::function<void(const K &)> callback) {
       cache_->set_on_erase(std::move(callback));
     }
+
     /// Whether the key exists and has not expired (does not promote it).
     bool contains(const K &key) const {
       std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
       return cache_->contains(key);
     }
+
     std::map<K, V> get_all() const;
 
     // 定期删除接口
@@ -1015,12 +1019,13 @@ std::vector<float> ShardedCache<K, V, EnableCacheAlign>::vectorGet(const K &key)
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vector_search_exact_scored(
+std::vector<std::pair<K, float>>
+ShardedCache<K, V, EnableCacheAlign>::vector_search_exact_scored(
     const std::vector<float> &query, size_t k) {
   std::vector<std::pair<K, float>> results;
   if (query.empty() || k == 0) {
     return results;
-    }
+  }
 
   // Max-heap: the top is the worst kept hit, so eviction is O(log k).
   using Entry = std::pair<float, K>;
@@ -1030,31 +1035,33 @@ std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vector_se
     if (isShardDisabled(shard_idx)) {
       continue;
     }
-      try {
+    try {
       const auto all_data = shards_[shard_idx]->get_all();
-        for (const auto &[key, raw_data] : all_data) {
+      for (const auto &[key, raw_data] : all_data) {
         if (raw_data.size() != query.size() * sizeof(float)) {
           continue; // dimension mismatch
-          }
+        }
         const float *vec = reinterpret_cast<const float *>(raw_data.data());
-        const float distance = VectorOps::L2DistanceSquare(query.data(), vec, query.size());
+        const float distance =
+            VectorOps::L2DistanceSquare(query.data(), vec, query.size());
         if (heap.size() < k) {
           heap.push({distance, key});
         } else if (distance < heap.top().first) {
-            heap.pop();
+          heap.pop();
           heap.push({distance, key});
         }
       }
     } catch (const std::exception &e) {
-      std::cerr << "[VectorSearch] Shard " << shard_idx << " error: " << e.what() << std::endl;
-          }
-        }
+      std::cerr << "[VectorSearch] Shard " << shard_idx << " error: " << e.what()
+                << std::endl;
+    }
+  }
 
   results.reserve(heap.size());
-        while (!heap.empty()) {
+  while (!heap.empty()) {
     results.emplace_back(heap.top().second, heap.top().first);
-          heap.pop();
-        }
+    heap.pop();
+  }
   std::reverse(results.begin(), results.end()); // ascending distance
   return results;
 }
@@ -1105,7 +1112,7 @@ std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vectorSea
       }
       const size_t width = ef == 0 ? ann_config_.ef_search : ef;
       approximate = ann_l2_->search(query, k, width);
-      }
+    }
 
     // Index lock released; re-check existence in the cache. Eviction and index
     // maintenance leave a very short window where the graph still holds a key
@@ -1140,7 +1147,8 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
     vector::HnswConfig cosine_config = l2_config;
     cosine_config.metric = vector::AnnMetric::COSINE;
 
-    auto l2_index = std::make_unique<vector::VectorAnnIndex>(l2_config, config.compact_ratio);
+    auto l2_index =
+        std::make_unique<vector::VectorAnnIndex>(l2_config, config.compact_ratio);
     auto cosine_index =
         std::make_unique<vector::VectorAnnIndex>(cosine_config, config.compact_ratio);
 
@@ -1169,7 +1177,7 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
         graph_keys.push_back(key);
         graph_vectors.insert(graph_vectors.end(), raw, raw + config.dim);
       }
-  }
+    }
 
     const size_t threads = std::max<size_t>(1, std::thread::hardware_concurrency());
     if (!keys.empty()) {
@@ -1180,10 +1188,11 @@ bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &con
     }
 
     if (write_epoch_.load(std::memory_order_acquire) != epoch_after_snapshot) {
-      std::fprintf(stderr,
-                   "[ANN] enable_ann_index aborted: the cache was mutated while the index "
-                   "was being built, so the result would be silently incomplete. Enable at "
-                   "startup, or quiesce writes first.\n");
+      std::fprintf(
+          stderr,
+          "[ANN] enable_ann_index aborted: the cache was mutated while the index "
+          "was being built, so the result would be silently incomplete. Enable at "
+          "startup, or quiesce writes first.\n");
       return false;
     }
 
@@ -1253,7 +1262,8 @@ std::vector<vector::AnnStats> ShardedCache<K, V, EnableCacheAlign>::ann_stats() 
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &value,
+void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key,
+                                                      const V &value,
                                                       bool typed) {
   if (!ann_enabled_.load(std::memory_order_acquire)) {
     return;
@@ -1282,7 +1292,7 @@ void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key, const V &val
         // stops being returned. Probe first: the exclusive lock is only worth
         // taking when there is something to erase.
         if (ann_l2_->contains(key)) {
-        ann_l2_->erase_without_compaction(key);
+          ann_l2_->erase_without_compaction(key);
         }
         if (ann_cosine_ && ann_cosine_->contains(key)) {
           ann_cosine_->erase_without_compaction(key);

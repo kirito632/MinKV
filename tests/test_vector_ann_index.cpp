@@ -38,7 +38,8 @@ float point_distance(AnnMetric metric, const float *a, const float *b, size_t di
 }
 
 std::vector<std::string> brute_force(const std::vector<std::vector<float>> &database,
-                                     const std::vector<float> &query, size_t k,
+                                     const std::vector<float> &query,
+                                     size_t k,
                                      AnnMetric metric) {
   std::vector<std::pair<float, std::string>> scored;
   scored.reserve(database.size());
@@ -48,7 +49,8 @@ std::vector<std::string> brute_force(const std::vector<std::vector<float>> &data
         "k" + std::to_string(i));
   }
   const size_t take = std::min(k, scored.size());
-  std::partial_sort(scored.begin(), scored.begin() + static_cast<long>(take), scored.end());
+  std::partial_sort(
+      scored.begin(), scored.begin() + static_cast<long>(take), scored.end());
   std::vector<std::string> keys;
   keys.reserve(take);
   for (size_t i = 0; i < take; ++i) {
@@ -57,7 +59,8 @@ std::vector<std::string> brute_force(const std::vector<std::vector<float>> &data
   return keys;
 }
 
-double recall_at_k(const std::vector<AnnMatch> &got, const std::vector<std::string> &exact) {
+double recall_at_k(const std::vector<AnnMatch> &got,
+                   const std::vector<std::string> &exact) {
   if (exact.empty()) {
     return 1.0;
   }
@@ -71,7 +74,10 @@ double recall_at_k(const std::vector<AnnMatch> &got, const std::vector<std::stri
   return static_cast<double>(hits) / static_cast<double>(exact.size());
 }
 
-std::vector<float> random_vector(std::mt19937 &gen, size_t dim, float center, float spread) {
+std::vector<float> random_vector(std::mt19937 &gen,
+                                 size_t dim,
+                                 float center,
+                                 float spread) {
   std::normal_distribution<float> dist(center, spread);
   std::vector<float> vec(dim);
   for (float &value : vec) {
@@ -138,8 +144,12 @@ int main() {
     const double recall = recall_sum / kQueries;
     const auto stats = index.stats();
     std::printf("%-22s recall@10=%.4f live=%zu tomb=%zu mem=%.2f MB maxlevel=%d\n",
-                "basic-recall", recall, stats.live, stats.tombstones,
-                static_cast<double>(stats.memory_bytes) / (1024.0 * 1024.0), stats.max_level);
+                "basic-recall",
+                recall,
+                stats.live,
+                stats.tombstones,
+                static_cast<double>(stats.memory_bytes) / (1024.0 * 1024.0),
+                stats.max_level);
     assert(recall >= 0.95);
     assert(stats.tombstones == 0);
   }
@@ -174,8 +184,10 @@ int main() {
     assert(!new_hit.empty());
     assert(new_hit.front().key == "same");
     assert(new_hit.front().score < 1e-3f);
-    std::printf("%-22s replaced, stale score=%.2f new score=%.4f\n", "update-semantics",
-                stale.empty() ? -1.0f : stale.front().score, new_hit.front().score);
+    std::printf("%-22s replaced, stale score=%.2f new score=%.4f\n",
+                "update-semantics",
+                stale.empty() ? -1.0f : stale.front().score,
+                new_hit.front().score);
   }
 
   // ---------------------------------------------------------------
@@ -185,12 +197,13 @@ int main() {
     HnswConfig config;
     config.dim = kDim;
     VectorAnnIndex index(config);
-    assert(!index.upsert("", std::vector<float>(kDim, 0.5f)));        // 空 key
+    assert(!index.upsert("", std::vector<float>(kDim, 0.5f)));          // 空 key
     assert(!index.upsert("short", std::vector<float>(kDim - 1, 0.5f))); // 维度不符
     assert(!index.upsert("long", std::vector<float>(kDim + 1, 0.5f)));
     assert(index.size() == 0);
-    assert(index.search(std::vector<float>(kDim - 1, 0.5f), 5, 32).empty()); // 查询维度不符
-    assert(index.search(std::vector<float>(kDim, 0.5f), 5, 32).empty());    // 空索引
+    assert(
+        index.search(std::vector<float>(kDim - 1, 0.5f), 5, 32).empty()); // 查询维度不符
+    assert(index.search(std::vector<float>(kDim, 0.5f), 5, 32).empty()); // 空索引
     std::printf("%-22s rejected empty key / wrong dim\n", "validation");
   }
 
@@ -215,8 +228,11 @@ int main() {
     assert(index.size() == kCount / 2);
 
     const auto after_erase = index.stats();
-    std::printf("%-22s live=%zu tomb=%zu ratio=%.3f (threshold=0.3)\n", "auto-compact",
-                after_erase.live, after_erase.tombstones, after_erase.tombstone_ratio());
+    std::printf("%-22s live=%zu tomb=%zu ratio=%.3f (threshold=0.3)\n",
+                "auto-compact",
+                after_erase.live,
+                after_erase.tombstones,
+                after_erase.tombstone_ratio());
     // 真正的不变式：每次 erase 之后 Tombstone 占比不超过阈值。
     // 中途会触发过若干次重建，但重建后继续删除仍会累积少量 Tombstone，
     // 所以这里不能断言「最终一定为 0」。
@@ -268,8 +284,10 @@ int main() {
     assert(cosine_hit.front().score < 1e-4f);
     assert(l2_hit.front().key == "k7");
     assert(l2_hit.front().score > 1.0f);
-    std::printf("%-22s cosine=%.6f  l2=%.3f (同一 key，两种语义)\n", "dual-instance",
-                cosine_hit.front().score, l2_hit.front().score);
+    std::printf("%-22s cosine=%.6f  l2=%.3f (同一 key，两种语义)\n",
+                "dual-instance",
+                cosine_hit.front().score,
+                l2_hit.front().score);
   }
 
   // ---------------------------------------------------------------
@@ -299,7 +317,8 @@ int main() {
           for (float &value : vec) {
             value = dist(gen);
           }
-          if (!index.upsert("w" + std::to_string(worker) + "-" + std::to_string(i), vec)) {
+          if (!index.upsert("w" + std::to_string(worker) + "-" + std::to_string(i),
+                            vec)) {
             std::printf("  [warn] upsert failed\n");
           }
         }
@@ -326,7 +345,9 @@ int main() {
     reader.join();
 
     assert(index.size() == kThreads * kPerThread);
-    std::printf("%-22s %zu keys, %zu concurrent searches\n", "concurrency", index.size(),
+    std::printf("%-22s %zu keys, %zu concurrent searches\n",
+                "concurrency",
+                index.size(),
                 queries.load());
   }
 
@@ -357,7 +378,9 @@ int main() {
 
     const std::vector<AnnMatch> hits = index.search(database[3], 1, 32);
     assert(!hits.empty());
-    std::printf("%-22s built=%zu, search ok (top=%s)\n", "bulk-build", built,
+    std::printf("%-22s built=%zu, search ok (top=%s)\n",
+                "bulk-build",
+                built,
                 hits.front().key.c_str());
 
     index.clear();

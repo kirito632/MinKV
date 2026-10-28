@@ -534,7 +534,8 @@ std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodes(
 
   // Fast path: the cosine index holds exactly the "vec:" entries, which turns
   // the previous export-the-whole-KV-and-scan into a graph walk.
-  if (const auto indexed = kv_->vectorSearchGraph(query_embedding, static_cast<size_t>(top_k))) {
+  if (const auto indexed =
+          kv_->vectorSearchGraph(query_embedding, static_cast<size_t>(top_k))) {
     std::vector<std::pair<std::string, float>> results;
     results.reserve(indexed->size());
     for (const auto &hit : *indexed) {

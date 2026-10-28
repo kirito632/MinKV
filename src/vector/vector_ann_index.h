@@ -15,9 +15,9 @@ namespace vector {
  * @brief 索引运行统计
  */
 struct AnnStats {
-  size_t live = 0;          ///< 当前可被检索到的 key 数
-  size_t tombstones = 0;    ///< 已删除但仍占槽位的节点数
-  size_t memory_bytes = 0;  ///< 索引自身内存（不含 KV 里的向量副本）
+  size_t live = 0;         ///< 当前可被检索到的 key 数
+  size_t tombstones = 0;   ///< 已删除但仍占槽位的节点数
+  size_t memory_bytes = 0; ///< 索引自身内存（不含 KV 里的向量副本）
   int max_level = -1;
 
   /// Tombstone 占（存活 + Tombstone）的比例
@@ -112,7 +112,9 @@ public:
    * @param k     返回条数上限
    * @param ef    搜索队列宽度，实际使用 max(ef, k)
    */
-  std::vector<AnnMatch> search(const std::vector<float> &query, size_t k, size_t ef) const;
+  std::vector<AnnMatch> search(const std::vector<float> &query,
+                               size_t k,
+                               size_t ef) const;
 
   /**
    * @brief 批量构建（仅允许在空索引上调用）
@@ -123,7 +125,9 @@ public:
    * @param threads 建图线程数，0/1 表示单线程
    * @return 成功收录的 key 数；参数非法或索引非空时返回 0
    */
-  size_t build(const std::vector<std::string> &keys, const float *flat, size_t count,
+  size_t build(const std::vector<std::string> &keys,
+               const float *flat,
+               size_t count,
                size_t threads);
 
   /// 清空全部内容
@@ -137,6 +141,7 @@ public:
 
   AnnStats stats() const;
   size_t size() const;
+
   const HnswConfig &config() const { return config_; }
 
 private:
@@ -144,7 +149,7 @@ private:
   mutable std::shared_mutex mu_;
   std::shared_ptr<HnswIndex> index_; ///< shared_ptr：换代的旧索引由在用者延迟释放
   std::unordered_map<std::string, uint32_t> ids_; ///< 只含存活 key
-  std::vector<std::string> keys_;                 ///< id → key；空串表示尚未发布
+  std::vector<std::string> keys_; ///< id → key；空串表示尚未发布
   double compact_ratio_;
   /// Counter-only tombstone check: never walks the graph for memory accounting.
   bool should_compact() const;

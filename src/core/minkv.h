@@ -171,8 +171,11 @@ public:
    *
    * @return false when dim is 0 or the cache refused to build the index
    */
-  bool enableAnnIndex(size_t dim, size_t M = 16, size_t M0 = 32,
-                      size_t ef_construction = 200, size_t ef_search = 64) {
+  bool enableAnnIndex(size_t dim,
+                      size_t M = 16,
+                      size_t M0 = 32,
+                      size_t ef_construction = 200,
+                      size_t ef_search = 64) {
     typename db::ShardedCache<K, V>::AnnConfig config;
     config.dim = dim;
     config.M = M;
@@ -183,12 +186,17 @@ public:
   }
 
   void disableAnnIndex() { cache_->disable_ann_index(); }
+
   bool annEnabled() const { return cache_->ann_enabled(); }
-  bool annMatchesDimension(size_t dim) const { return cache_->ann_matches_dimension(dim); }
+
+  bool annMatchesDimension(size_t dim) const {
+    return cache_->ann_matches_dimension(dim);
+  }
 
   /// Nearest neighbours with distances; `exact` forces the brute-force scan.
   std::vector<std::pair<K, float>> vectorSearchScored(const std::vector<float> &query,
-                                                      size_t k, size_t ef = 0,
+                                                      size_t k,
+                                                      size_t ef = 0,
                                                       bool exact = false) {
     return cache_->vectorSearchScored(query, k, ef, exact);
   }

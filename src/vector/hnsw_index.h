@@ -24,10 +24,10 @@ enum class AnnMetric { L2, COSINE };
  * @brief HNSW 构建参数
  */
 struct HnswConfig {
-  size_t dim = 0;                ///< 向量维度，0 视为非法配置
-  size_t M = 16;                 ///< 非零层的邻居上限
-  size_t M0 = 32;                ///< 第 0 层的邻居上限，惯例为 2*M
-  size_t ef_construction = 200;  ///< 建图时候选队列宽度
+  size_t dim = 0;               ///< 向量维度，0 视为非法配置
+  size_t M = 16;                ///< 非零层的邻居上限
+  size_t M0 = 32;               ///< 第 0 层的邻居上限，惯例为 2*M
+  size_t ef_construction = 200; ///< 建图时候选队列宽度
   AnnMetric metric = AnnMetric::L2;
   uint64_t seed = 0x9e3779b97f4a7c15ull; ///< 层级抽样种子，固定后可复现
 };
@@ -125,12 +125,19 @@ public:
   const float *vector_of(uint32_t id) const;
 
   const HnswConfig &config() const { return config_; }
+
   size_t dim() const { return config_.dim; }
+
   size_t size() const { return live_.load(std::memory_order_relaxed); } ///< 存活节点数
+
   size_t capacity() const { return next_id_.load(std::memory_order_relaxed); }
+
   size_t tombstone_count() const { return capacity() - size(); }
+
   int max_level() const { return max_level_.load(std::memory_order_relaxed); }
+
   uint32_t entry_point() const { return entry_point_.load(std::memory_order_relaxed); }
+
   size_t memory_bytes() const;
 
   /**
@@ -155,15 +162,19 @@ private:
   std::mutex &stripe_for(uint32_t node) const {
     return stripes_[node & (kStripeCount - 1)];
   }
+
   size_t max_degree(int level) const { return level == 0 ? config_.M0 : config_.M; }
 
   float distance(const float *a, const float *b) const;
   float distance_to(uint32_t id, const float *query) const;
+
   bool alive(uint32_t id) const { return deleted_[id] == 0; }
 
   int random_level();
   uint32_t greedy_descend(uint32_t entry, const float *query, int level) const;
-  std::vector<AnnHit> search_layer(const float *query, uint32_t entry, size_t ef,
+  std::vector<AnnHit> search_layer(const float *query,
+                                   uint32_t entry,
+                                   size_t ef,
                                    int level) const;
   std::vector<uint32_t> select_neighbors(const std::vector<AnnHit> &candidates,
                                          size_t m) const;
@@ -187,10 +198,10 @@ private:
   mutable std::shared_mutex structure_mu_; ///< 保护下面的数组容量与生命周期
   mutable std::mutex entry_mu_;            ///< 保护 entry_point_ / max_level_
 
-  std::vector<float> data_;   ///< id * dim 连续存放的向量副本
-  std::vector<int> levels_;   ///< 每个节点的最高层
+  std::vector<float> data_; ///< id * dim 连续存放的向量副本
+  std::vector<int> levels_; ///< 每个节点的最高层
   std::vector<uint8_t> deleted_;
-  size_t capacity_ = 0;       ///< 已分配的节点槽位数（受 structure_mu_ 保护）
+  size_t capacity_ = 0; ///< 已分配的节点槽位数（受 structure_mu_ 保护）
 
   std::unique_ptr<std::atomic<uint32_t>[]> l0_slots_;  ///< [node * M0 + i]
   std::unique_ptr<std::atomic<uint32_t>[]> l0_counts_; ///< 每节点当前邻居数

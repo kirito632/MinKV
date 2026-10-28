@@ -1,7 +1,6 @@
 #include "http_server.h"
 
 #include <chrono>
-
 #include <iostream>
 #include <sstream>
 
@@ -251,9 +250,9 @@ void HttpServer::handle_vector_search(const httplib::Request &req,
     const auto started = std::chrono::steady_clock::now();
     const std::vector<std::pair<std::string, float>> hits =
         kv_->vectorSearchScored(query, top_k, ef, exact);
-    const double latency_us =
-        std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started)
-            .count();
+    const double latency_us = std::chrono::duration<double, std::micro>(
+                                  std::chrono::steady_clock::now() - started)
+                                  .count();
 
     // results 保持「key 字符串数组」以兼容既有客户端；scores 是它的平行数组
     json results_json = json::array();

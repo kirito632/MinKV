@@ -78,8 +78,12 @@ struct Result {
  *                value size, so a plain workload can be measured against an
  *                index that does not happen to match its values)
  */
-Result run_workload(size_t threads, size_t ops_per_thread, size_t value_size, size_t key_range,
-                    bool enable_ann, size_t ann_dim) {
+Result run_workload(size_t threads,
+                    size_t ops_per_thread,
+                    size_t value_size,
+                    size_t key_range,
+                    bool enable_ann,
+                    size_t ann_dim) {
   const size_t total_ops = threads * ops_per_thread;
   Cache cache(total_ops / kShards + key_range / kShards + 1024, kShards);
 
@@ -155,9 +159,15 @@ Result run_workload(size_t threads, size_t ops_per_thread, size_t value_size, si
 }
 
 void print_row(const char *label, size_t value_size, bool announce, const Result &result) {
-  std::printf("%-22s %5zu  %-3s | %8.2f %8.2f %8.2f | %7.2f %7.2f | %9.0f\n", label,
-              value_size, announce ? "on" : "off", result.put.p50_us, result.put.p95_us,
-              result.put.p99_us, result.get.p50_us, result.get.p99_us,
+  std::printf("%-22s %5zu  %-3s | %8.2f %8.2f %8.2f | %7.2f %7.2f | %9.0f\n",
+              label,
+              value_size,
+              announce ? "on" : "off",
+              result.put.p50_us,
+              result.put.p95_us,
+              result.put.p99_us,
+              result.get.p50_us,
+              result.get.p99_us,
               result.ops_per_second);
 }
 
@@ -165,20 +175,34 @@ void print_row(const char *label, size_t value_size, bool announce, const Result
 
 int main(int argc, char **argv) {
   const size_t threads = argc > 1 ? static_cast<size_t>(std::stoul(argv[1])) : 4;
-  const size_t ops_per_thread = argc > 2 ? static_cast<size_t>(std::stoul(argv[2])) : 20000;
+  const size_t ops_per_thread =
+      argc > 2 ? static_cast<size_t>(std::stoul(argv[2])) : 20000;
   const size_t dim = argc > 3 ? static_cast<size_t>(std::stoul(argv[3])) : 128;
   const size_t key_range = 50000;
 
-  std::printf("MinKV KV-write overhead with the vector index, threads=%zu ops=%zu key_range=%zu "
-              "dim=%zu\n",
-              threads, ops_per_thread, key_range, dim);
-  std::printf("%-22s %5s  %-3s | %8s %8s %8s | %7s %7s | %9s\n", "case", "bytes", "ann",
-              "put50", "put95", "put99", "get50", "get99", "ops/s");
+  std::printf(
+      "MinKV KV-write overhead with the vector index, threads=%zu ops=%zu key_range=%zu "
+      "dim=%zu\n",
+      threads,
+      ops_per_thread,
+      key_range,
+      dim);
+  std::printf("%-22s %5s  %-3s | %8s %8s %8s | %7s %7s | %9s\n",
+              "case",
+              "bytes",
+              "ann",
+              "put50",
+              "put95",
+              "put99",
+              "get50",
+              "get99",
+              "ops/s");
 
   struct Case {
     const char *label;
     size_t value_size;
   };
+
   // 32B cannot be mistaken for a vector; dim*4 can, by length alone.
   const Case cases[] = {{"small-value", 32}, {"vector-sized-value", dim * sizeof(float)}};
 
@@ -193,7 +217,10 @@ int main(int argc, char **argv) {
     print_row(item.label, item.value_size, true, on);
     std::fflush(stdout);
 
-    std::printf("%-22s %5s  %-3s | put x%.1f slower, throughput x%.2f\n\n", "", "", "gap",
+    std::printf("%-22s %5s  %-3s | put x%.1f slower, throughput x%.2f\n\n",
+                "",
+                "",
+                "gap",
                 off.put.p50_us > 0 ? on.put.p50_us / off.put.p50_us : 0.0,
                 off.ops_per_second > 0 ? off.ops_per_second / on.ops_per_second : 0.0);
     std::fflush(stdout);

@@ -76,8 +76,13 @@ float point_distance(AnnMetric metric, const float *a, const float *b, size_t di
 } // namespace
 
 #ifdef HNSW_TRACE_DISTANCE
-uint64_t trace_distance_calls() { return g_distance_calls; }
-void trace_reset_distance_calls() { g_distance_calls = 0; }
+uint64_t trace_distance_calls() {
+  return g_distance_calls;
+}
+
+void trace_reset_distance_calls() {
+  g_distance_calls = 0;
+}
 #endif
 
 HnswIndex::HnswIndex(const HnswConfig &config)
@@ -161,8 +166,10 @@ void HnswIndex::ensure_capacity_locked(size_t needed) {
 }
 
 void HnswIndex::write_node_locked(uint32_t id, const float *vec, int level) {
-  std::copy(vec, vec + config_.dim,
-            data_.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(id) * config_.dim));
+  std::copy(
+      vec,
+      vec + config_.dim,
+      data_.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(id) * config_.dim));
   levels_[id] = level;
   deleted_[id] = 0;
   l0_counts_[id].store(0, std::memory_order_relaxed);
@@ -175,7 +182,8 @@ std::vector<uint32_t> HnswIndex::read_links(uint32_t node, int level) const {
     neighbors.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
       const uint32_t neighbor =
-          l0_slots_[static_cast<size_t>(node) * config_.M0 + i].load(std::memory_order_relaxed);
+          l0_slots_[static_cast<size_t>(node) * config_.M0 + i].load(
+              std::memory_order_relaxed);
       if (neighbor != kInvalidNeighbor) {
         neighbors.push_back(neighbor);
       }
@@ -190,13 +198,14 @@ std::vector<uint32_t> HnswIndex::read_links(uint32_t node, int level) const {
   return neighbors;
 }
 
-void HnswIndex::write_links_locked(uint32_t node, int level,
+void HnswIndex::write_links_locked(uint32_t node,
+                                   int level,
                                    const std::vector<uint32_t> &ids) {
   if (level == 0) {
     const size_t limit = std::min(ids.size(), config_.M0);
     for (size_t i = 0; i < limit; ++i) {
-      l0_slots_[static_cast<size_t>(node) * config_.M0 + i].store(ids[i],
-                                                                 std::memory_order_relaxed);
+      l0_slots_[static_cast<size_t>(node) * config_.M0 + i].store(
+          ids[i], std::memory_order_relaxed);
     }
     l0_counts_[node].store(static_cast<uint32_t>(limit), std::memory_order_release);
     return;
@@ -226,7 +235,9 @@ uint32_t HnswIndex::greedy_descend(uint32_t entry, const float *query, int level
   return current;
 }
 
-std::vector<AnnHit> HnswIndex::search_layer(const float *query, uint32_t entry, size_t ef,
+std::vector<AnnHit> HnswIndex::search_layer(const float *query,
+                                            uint32_t entry,
+                                            size_t ef,
                                             int level) const {
   std::vector<AnnHit> results;
   if (entry == kInvalidId || ef == 0) {
@@ -240,7 +251,8 @@ std::vector<AnnHit> HnswIndex::search_layer(const float *query, uint32_t entry, 
   const float infinity = std::numeric_limits<float>::max();
 
   const auto consider = [&](uint32_t neighbor) {
-    if (neighbor == kInvalidNeighbor || neighbor >= nodes || !mark_visited(scratch, neighbor)) {
+    if (neighbor == kInvalidNeighbor || neighbor >= nodes ||
+        !mark_visited(scratch, neighbor)) {
       return;
     }
     const float distance = distance_to(neighbor, query);
@@ -333,7 +345,8 @@ std::vector<uint32_t> HnswIndex::select_neighbors(const std::vector<AnnHit> &can
   return chosen;
 }
 
-void HnswIndex::prune_locked(uint32_t owner, int level,
+void HnswIndex::prune_locked(uint32_t owner,
+                             int level,
                              std::vector<uint32_t> candidates) {
   std::sort(candidates.begin(), candidates.end());
   candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
@@ -347,8 +360,9 @@ void HnswIndex::prune_locked(uint32_t owner, int level,
     }
     scored.push_back({candidate, distance_to(candidate, owner_vector)});
   }
-  std::sort(scored.begin(), scored.end(),
-            [](const AnnHit &lhs, const AnnHit &rhs) { return lhs.score < rhs.score; });
+  std::sort(scored.begin(), scored.end(), [](const AnnHit &lhs, const AnnHit &rhs) {
+    return lhs.score < rhs.score;
+  });
   write_links_locked(owner, level, select_neighbors(scored, max_degree(level)));
 }
 
@@ -377,8 +391,8 @@ void HnswIndex::add_back_link(uint32_t owner, int level, uint32_t id) {
     std::vector<uint32_t> merged;
     merged.reserve(count + 1);
     for (uint32_t i = 0; i < count; ++i) {
-      merged.push_back(
-          l0_slots_[static_cast<size_t>(owner) * config_.M0 + i].load(std::memory_order_relaxed));
+      merged.push_back(l0_slots_[static_cast<size_t>(owner) * config_.M0 + i].load(
+          std::memory_order_relaxed));
     }
     merged.push_back(id);
     prune_locked(owner, 0, std::move(merged));
@@ -538,9 +552,10 @@ void HnswIndex::build_parallel(const float *flat, size_t count, size_t threads) 
     ensure_capacity_locked(base + count);
     for (size_t i = 0; i < count; ++i) {
       const uint32_t id = static_cast<uint32_t>(base + i);
-      std::copy(flat + i * config_.dim, flat + (i + 1) * config_.dim,
-                data_.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(id) *
-                                                            config_.dim));
+      std::copy(flat + i * config_.dim,
+                flat + (i + 1) * config_.dim,
+                data_.begin() +
+                    static_cast<std::ptrdiff_t>(static_cast<size_t>(id) * config_.dim));
       levels_[id] = levels[i];
       deleted_[id] = 0;
       l0_counts_[id].store(0, std::memory_order_relaxed);
@@ -555,8 +570,8 @@ void HnswIndex::build_parallel(const float *flat, size_t count, size_t threads) 
     return;
   }
 
-  const size_t workers = std::max<size_t>(
-      1, std::min(threads == 0 ? 1 : threads, count - 1));
+  const size_t workers =
+      std::max<size_t>(1, std::min(threads == 0 ? 1 : threads, count - 1));
   if (workers == 1) {
     for (size_t i = 1; i < count; ++i) {
       link_node(static_cast<uint32_t>(base + i));
