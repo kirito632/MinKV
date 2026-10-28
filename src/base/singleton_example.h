@@ -53,8 +53,7 @@ public:
   void RecordOperation(const std::string &operation, double latency_ms) {
     operation_count_++;
     total_latency_ms_ += latency_ms;
-    std::cout << "Recorded: " << operation << " took " << latency_ms << "ms"
-              << std::endl;
+    std::cout << "Recorded: " << operation << " took " << latency_ms << "ms" << std::endl;
   }
 
   double GetAverageLatency() const {
@@ -64,8 +63,7 @@ public:
   void PrintStats() const {
     std::cout << "=== Performance Stats ===" << std::endl;
     std::cout << "Operations: " << operation_count_ << std::endl;
-    std::cout << "Average Latency: " << GetAverageLatency() << "ms"
-              << std::endl;
+    std::cout << "Average Latency: " << GetAverageLatency() << "ms" << std::endl;
   }
 
 private:

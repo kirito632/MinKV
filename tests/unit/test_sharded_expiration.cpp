@@ -30,7 +30,8 @@ int main() {
   assert(removed_by_manual == remaining_after_background);
   assert(cache.size() == 0);
 
-  std::cout << "[Pass] Background expiration stayed bounded and manual cleanup removed the remainder"
+  std::cout << "[Pass] Background expiration stayed bounded and manual cleanup removed "
+               "the remainder"
             << std::endl;
   return 0;
 }

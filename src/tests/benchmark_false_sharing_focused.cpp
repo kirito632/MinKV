@@ -28,7 +28,7 @@ constexpr size_t TOTAL_OPERATIONS_PER_THREAD = 1'000'000; // 每个线程操作�
 constexpr int WRITE_PERCENTAGE = 50;                      // 写操作百分比
 
 // 线程安全的随机数生成器（每个线程独立）
-thread_local std::mt19937 rng(std::random_device{}());
+thread_local std::mt19937 rng(std::random_device {}());
 
 /**
  * @brief 运行单个缓存实例的基准测试
@@ -36,10 +36,10 @@ thread_local std::mt19937 rng(std::random_device{}());
  * @param thread_count 线程数
  * @return 吞吐量（ops/sec）
  */
-template <bool EnableCacheAlign> double run_benchmark(int thread_count) {
+template <bool EnableCacheAlign>
+double run_benchmark(int thread_count) {
   // 创建缓存实例
-  ShardedCache<int, int, EnableCacheAlign> cache(CAPACITY_PER_SHARD,
-                                                 SHARD_COUNT);
+  ShardedCache<int, int, EnableCacheAlign> cache(CAPACITY_PER_SHARD, SHARD_COUNT);
 
   // 预热：预填充 50% 容量
   const size_t warmup_keys = CAPACITY_PER_SHARD * SHARD_COUNT / 2;
@@ -47,10 +47,10 @@ template <bool EnableCacheAlign> double run_benchmark(int thread_count) {
     cache.put(i, i * 10);
   }
 
-  std::atomic<bool> start_flag{false};
-  std::atomic<int> ready_count{0};
+  std::atomic<bool> start_flag {false};
+  std::atomic<int> ready_count {0};
   std::vector<std::thread> threads;
-  std::atomic<uint64_t> total_ops{0};
+  std::atomic<uint64_t> total_ops {0};
 
   auto worker = [&](int thread_id) {
     // 准备线程本地随机分布
@@ -99,9 +99,8 @@ template <bool EnableCacheAlign> double run_benchmark(int thread_count) {
   auto end_time = std::chrono::high_resolution_clock::now();
 
   // 计算耗时
-  auto duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                         end_time - start_time)
-                         .count();
+  auto duration_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count();
   double duration_sec = static_cast<double>(duration_ns) / 1e9;
   double throughput = total_ops.load() / duration_sec;
 
@@ -136,12 +135,10 @@ int main() {
   // 输出结果
   std::cout << std::fixed << std::setprecision(2);
   std::cout << "\n--- 测试结果 ---\n";
-  std::cout << "普通版本（无对齐）:     " << throughput_normal / 1e6
-            << " M ops/sec\n";
-  std::cout << "对齐版本（64字节对齐）: " << throughput_aligned / 1e6
-            << " M ops/sec\n";
-  std::cout << "性能提升:               "
-            << (throughput_aligned / throughput_normal) << "x\n";
+  std::cout << "普通版本（无对齐）:     " << throughput_normal / 1e6 << " M ops/sec\n";
+  std::cout << "对齐版本（64字节对齐）: " << throughput_aligned / 1e6 << " M ops/sec\n";
+  std::cout << "性能提升:               " << (throughput_aligned / throughput_normal)
+            << "x\n";
 
   // 判断性能提升
   if (throughput_aligned > throughput_normal * 1.05) {

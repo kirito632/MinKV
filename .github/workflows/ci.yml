@@ -247,7 +247,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang-format-18 cppcheck
       - name: Verify clang-format
         run: |
-          find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format-18 --dry-run --Werror
+          find src tests \( -name '*.cpp' -o -name '*.h' \) ! -path 'src/server/httplib.h' -print0 \
+            | xargs -0 clang-format-18 --dry-run --Werror
       - name: Run cppcheck
         run: |
           cppcheck src/ --suppressions-list=.cppcheckignore --enable=warning,performance --error-exitcode=1

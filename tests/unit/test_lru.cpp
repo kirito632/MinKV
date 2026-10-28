@@ -2,8 +2,8 @@
 #include <chrono>
 #include <iostream>
 #include <random>
-#include <unordered_set>
 #include <thread>
+#include <unordered_set>
 
 #include "../../src/core/lru_cache.h"
 
@@ -74,8 +74,7 @@ int main() {
   size_t remaining_removed = expiration_cache.cleanup_expired_keys();
   assert(remaining_removed == 7);
   assert(expiration_cache.size() == 0);
-  std::cout << "[Pass] Sampled expiration only removes sampled expired keys"
-            << std::endl;
+  std::cout << "[Pass] Sampled expiration only removes sampled expired keys" << std::endl;
 
   // Test 6: sample_size > cache_size should return all keys once without looping
   minkv::db::LruCache<std::string, std::string> small_cache(8);
@@ -117,8 +116,7 @@ int main() {
   auto cleanup_raii_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - cleanup_raii_start);
   assert(cleanup_raii_elapsed < std::chrono::milliseconds(1000));
-  std::cout << "[Pass] Cleanup thread stops automatically on destruction"
-            << std::endl;
+  std::cout << "[Pass] Cleanup thread stops automatically on destruction" << std::endl;
 
   std::cout << "All tests passed!" << std::endl;
   return 0;
