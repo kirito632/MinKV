@@ -66,6 +66,30 @@ Environment: Tencent Cloud Shanghai, 4 cores / 8 threads, Ubuntu 22.04, g++ 11, 
 
 ---
 
+## 🔍 Vector Search (HNSW)
+
+`ShardedCache` ships an HNSW index (`src/vector/`). It is off by default; enable it
+with `enableAnnIndex(dim, ...)`. One metric per index instance (L2 or cosine),
+tombstone deletes with automatic compaction, and a four-thread parallel build.
+Design notes, measurements and the traps found along the way live in
+[docs/HNSW_DESIGN.md](docs/HNSW_DESIGN.md).
+
+Headline numbers (100K real text embeddings, 256 dimensions, `potion-base-8M`,
+L2-normalised, medians of three runs):
+
+| Configuration | recall@10 | P50 | Build | Index memory |
+|---|---|---|---|---|
+| Exact scan (contiguous array) | 1.0000 | 4.15 ms | — | — |
+| M=16, ef=32 | 0.9780 | 0.169 ms | 33.5 s | 113 MB |
+| M=16, ef=64 | 0.9870 | 0.282 ms | 33.5 s | 113 MB |
+| M=24, ef=64 | 0.9905 | 0.363 ms | 54.1 s | 120 MB |
+| M=32, ef=64 | 0.9935 | 0.428 ms | 81.0 s | 126 MB |
+
+Two caveats belong next to that table: raising `ef_search` is the cheaper lever
+than raising `M` on these corpora, and on adversarial uniform data HNSW can end up
+slower than a plain scan once 0.95 recall is required. Both are quantified in the
+design doc rather than asserted here.
+
 ## 🕸 Graph-on-KV & GraphRAG
 
 MinKV provides a Graph-on-KV layer on top of `ShardedCache<string, string>`. Nodes, edges, adjacency lists, and embeddings share the same KV instance, making it useful for lightweight knowledge graph storage and two-stage GraphRAG queries: vector search -> K-hop graph expansion.

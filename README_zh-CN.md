@@ -66,6 +66,28 @@ int main() {
 
 ---
 
+## 🔍 向量检索（HNSW）
+
+`ShardedCache` 内置一套 HNSW 索引（`src/vector/`），默认关闭，用
+`enableAnnIndex(dim, ...)` 开启。每个索引实例固定一种度量（L2 或余弦），
+支持 tombstone 删除与自动压缩，建图可并行。设计、实测与踩坑记录见
+[docs/HNSW_DESIGN.md](docs/HNSW_DESIGN.md)。
+
+核心结果（10 万条真实文本 embedding，256 维，`potion-base-8M`，L2 归一化，
+每组 3 次取中位）：
+
+| 配置 | recall@10 | P50 | 建图 | 索引内存 |
+|---|---|---|---|---|
+| 精确扫描（连续数组） | 1.0000 | 4.15 ms | — | — |
+| M=16, ef=32 | 0.9780 | 0.169 ms | 33.5 s | 113 MB |
+| M=16, ef=64 | 0.9870 | 0.282 ms | 33.5 s | 113 MB |
+| M=24, ef=64 | 0.9905 | 0.363 ms | 54.1 s | 120 MB |
+| M=32, ef=64 | 0.9935 | 0.428 ms | 81.0 s | 126 MB |
+
+两点必须和表一起说：这组语料上「提 ef_search」比「提 M」更划算；而在对抗性的
+均匀分布数据上，一旦要求 0.95 召回，HNSW 反而可能比暴力扫描更慢。两者都在设计
+文档里量化过，这里不再展开。
+
 ## 🕸 Graph-on-KV 与 GraphRAG
 
 MinKV 在 `ShardedCache<string, string>` 之上提供 Graph-on-KV 层，节点、边、邻接表和 Embedding 共用同一个 KV 实例。它适合用作轻量知识图谱存储，或在 GraphRAG 场景中执行“向量检索 -> K-hop 图扩展”的两阶段查询。

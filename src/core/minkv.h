@@ -167,6 +167,51 @@ public:
   }
 
   /**
+   * @brief Enable the HNSW index over vectors of one dimension.
+   *
+   * @return false when dim is 0 or the cache refused to build the index
+   */
+  bool enableAnnIndex(size_t dim,
+                      size_t M = 16,
+                      size_t M0 = 32,
+                      size_t ef_construction = 200,
+                      size_t ef_search = 64) {
+    typename db::ShardedCache<K, V>::AnnConfig config;
+    config.dim = dim;
+    config.M = M;
+    config.M0 = M0;
+    config.ef_construction = ef_construction;
+    config.ef_search = ef_search;
+    return cache_->enable_ann_index(config);
+  }
+
+  void disableAnnIndex() { cache_->disable_ann_index(); }
+
+  bool annEnabled() const { return cache_->ann_enabled(); }
+
+  bool annMatchesDimension(size_t dim) const {
+    return cache_->ann_matches_dimension(dim);
+  }
+
+  /// Nearest neighbours with distances; `exact` forces the brute-force scan.
+  std::vector<std::pair<K, float>> vectorSearchScored(const std::vector<float> &query,
+                                                      size_t k,
+                                                      size_t ef = 0,
+                                                      bool exact = false) {
+    return cache_->vectorSearchScored(query, k, ef, exact);
+  }
+
+  std::vector<K> vectorSearchExact(const std::vector<float> &query, int k) {
+    return cache_->vectorSearchExact(query, k);
+  }
+
+  /// Cosine index query restricted to "vec:" keys (graph retrieval).
+  std::optional<std::vector<std::pair<K, float>>> vectorSearchGraph(
+      const std::vector<float> &query, size_t k) {
+    return cache_->vectorSearchGraph(query, k);
+  }
+
+  /**
    * @brief 获取性能统计
    */
   db::CacheStats getStats() const { return cache_->getStats(); }

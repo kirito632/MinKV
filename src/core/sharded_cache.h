@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstring>
 #include <functional>
 #include <future>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -18,6 +20,7 @@
 #include "../base/serializer.h"
 #include "../persistence/group_commit.h"
 #include "../persistence/wal.h"
+#include "../vector/vector_ann_index.h"
 #include "../vector/vector_ops.h"
 #include "lru_cache.h"
 
@@ -195,6 +198,111 @@ public:
   std::vector<K> vectorSearch(const std::vector<float> &query, int k);
 
   /**
+   * @brief HNSW index configuration.
+   *
+   * One ShardedCache indexes one dimension only. Queries for any other
+   * dimension fall back to the exact scan, so a dimension is never silently
+   * omitted from results.
+   *
+   * `M` and `ef_search` are not independent knobs and must be tuned together:
+   *
+   * - `M` is the graph connectivity - how many neighbours each node keeps. It
+   *   decides whether the right candidates are reachable at all.
+   * - `ef_search` is the exploration width - how far the search walks on the
+   *   graph it was given. Raising it cannot rescue a graph that does not link
+   *   the right neighbourhood.
+   *
+   * Measured in docs/HNSW_DESIGN.md section 6.11 on three text corpora
+   * (256-dimensional potion-base-8M embeddings, medians of three runs). On the
+   * independent 50K corpus:
+   *
+   *   M=16   ef=16/32/64   recall@10 0.9550 / 0.9785 / 0.9905   build 14.5 s
+   *   M=24   ef=16/32/64   recall@10 0.9710 / 0.9880 / 0.9940   build 23.8 s
+   *   M=32   ef=16/32/64   recall@10 0.9735 / 0.9875 / 0.9940   build 38.1 s
+   *
+   * The lesson is that ef_search is the cheaper lever at scale: at comparable
+   * latency, M=16 with a wider ef matches M=32 with a narrow one, and raising
+   * M costs 1.6x-2.6x the build time for a few tenths of a recall point once
+   * ef is wide. Index memory barely moves (56.7 -> 62.8 MB) because the vector
+   * copies dominate, unlike the graph links.
+   *
+   * A small 3.2K corpus showed the opposite - M=16 saturated at 0.96 no matter
+   * how wide ef got - which is why a parameter choice must be measured on the
+   * target corpus rather than inferred from one dataset.
+   *
+   * The defaults below are cost-optimised starting points: M=16 with
+   * ef_search 32..64 covers the corpora measured here. Raise M only when an ef
+   * sweep on your own data has already plateaued below the recall target.
+   */
+  struct AnnConfig {
+    size_t dim = 0;               ///< indexed dimension, must be > 0
+    size_t M = 16;                ///< neighbours per upper level
+    size_t M0 = 32;               ///< neighbours at level 0
+    size_t ef_construction = 200; ///< build candidate width
+    size_t ef_search = 64;        ///< query candidate width
+    double compact_ratio = 0.3;   ///< tombstone ratio that triggers a rebuild
+    /// Optional key prefix.
+    ///
+    /// The startup scan can only judge a value by its length, so without this
+    /// a plain blob of the right size is indexed once and then eroded on its
+    /// first overwrite. Setting a prefix makes the rebuild rule coherent:
+    /// only keys under that namespace are rebuilt, and a plain put may only
+    /// add keys under it. Empty keeps the legacy length-only behaviour.
+    std::string key_prefix;
+  };
+
+  /**
+   * @brief Enable approximate search over the vectors already stored.
+   *
+   * Performs one full scan to build the graph; afterwards put / remove / TTL
+   * expiry / capacity eviction keep the index in sync. Keys with the "vec:"
+   * prefix also enter the cosine index used by graph retrieval.
+   *
+   * @return false when dim is 0 or K/V are not std::string
+   */
+  bool enable_ann_index(const AnnConfig &config);
+
+  /// Disable approximate search; vectorSearch goes back to the exact scan.
+  void disable_ann_index();
+
+  bool ann_enabled() const { return ann_enabled_.load(std::memory_order_acquire); }
+
+  /// Statistics of the L2 index and, when present, the cosine index.
+  std::vector<vector::AnnStats> ann_stats() const;
+
+  /**
+   * @brief Nearest neighbours with distances (smaller is closer).
+   *
+   * Uses the ANN path when enabled and the query dimension matches; the
+   * candidates are then re-checked against the cache outside the index lock
+   * so an evicted key is never returned.
+   *
+   * @param ef search width, 0 means config.ef_search
+   */
+  std::vector<std::pair<K, float>> vectorSearchScored(const std::vector<float> &query,
+                                                      size_t k,
+                                                      size_t ef = 0,
+                                                      bool exact = false);
+
+  /// Exact nearest neighbours (brute force): ground truth, tests, fallback.
+  std::vector<K> vectorSearchExact(const std::vector<float> &query, int k);
+
+  /**
+   * @brief Query the cosine index, which holds only the "vec:" keys.
+   *
+   * Returns nullopt when the index is disabled or the query dimension differs,
+   * so the graph layer can fall back to its exact scan.
+   */
+  std::optional<std::vector<std::pair<K, float>>> vectorSearchGraph(
+      const std::vector<float> &query, size_t k);
+
+  /// Whether an enabled index covers this dimension.
+  bool ann_matches_dimension(size_t dim) const {
+    std::shared_lock<std::shared_mutex> lock(ann_mu_);
+    return ann_enabled_.load(std::memory_order_acquire) && ann_config_.dim == dim;
+  }
+
+  /**
    * @brief 启动定期删除服务
    * @param check_interval 检查间隔，默认100ms
    * @param sample_size 每次采样大小，默认20
@@ -295,6 +403,7 @@ public:
    * 仅供 recover_from_disk 调用，此时无并发写入。
    */
   void put_for_recovery(const K &key, const V &value) {
+    note_mutation();
     size_t shard_idx = get_shard_index(key);
     shards_[shard_idx]->put(key, value, 0);
   }
@@ -303,6 +412,7 @@ public:
    * @brief 恢复专用删除：直接删分片，不触发 WAL
    */
   void remove_for_recovery(const K &key) {
+    note_mutation();
     size_t shard_idx = get_shard_index(key);
     shards_[shard_idx]->remove(key);
   }
@@ -326,7 +436,19 @@ private:
     CacheStats getStats() const;
     void resetStats();
     void clear();
+
     /** @brief 返回该分片所有键值对的快照（加锁，用于导出/快照） */
+    /// Register the removal callback (forwarded to LruCache).
+    void set_on_erase(std::function<void(const K &)> callback) {
+      cache_->set_on_erase(std::move(callback));
+    }
+
+    /// Whether the key exists and has not expired (does not promote it).
+    bool contains(const K &key) const {
+      std::lock_guard<std::mutex> lock(mutex_wrapper_.mutex);
+      return cache_->contains(key);
+    }
+
     std::map<K, V> get_all() const;
 
     // 定期删除接口
@@ -397,6 +519,28 @@ private:
 
   std::vector<std::unique_ptr<EnhancedLruShard>> shards_;
 
+  // ---- HNSW approximate search ----
+  // A value is indexed only when its byte size equals dim * sizeof(float).
+  // Every other dimension takes the exact path: slower rather than silently
+  // returning incomplete results.
+  mutable std::shared_mutex ann_mu_; ///< guards swapping the two index pointers
+  std::unique_ptr<vector::VectorAnnIndex> ann_l2_;
+  std::unique_ptr<vector::VectorAnnIndex> ann_cosine_;
+  AnnConfig ann_config_;
+  std::atomic<bool> ann_enabled_ {false};
+  /// Bumped by every mutation. enable_ann_index snapshots this around the
+  /// rebuild: if it moved, writes landed in the window the build cannot see,
+  /// and publishing would leave a silently incomplete index.
+  std::atomic<uint64_t> write_epoch_ {0};
+
+  void note_mutation() { write_epoch_.fetch_add(1, std::memory_order_acq_rel); }
+
+  void ann_on_put(const K &key, const V &value, bool typed);
+  void ann_on_erase(const K &key);
+  void ann_on_clear();
+  std::vector<std::pair<K, float>> vector_search_exact_scored(
+      const std::vector<float> &query, size_t k);
+
   std::unique_ptr<WriteAheadLog> wal_;
   std::unique_ptr<base::GroupCommitManager> gcm_;
   std::atomic<bool> persistence_enabled_ {false};
@@ -434,7 +578,11 @@ ShardedCache<K, V, EnableCacheAlign>::ShardedCache(size_t capacity_per_shard,
 
   // 创建分片
   for (size_t i = 0; i < shard_count; ++i) {
-    shards_.push_back(std::make_unique<EnhancedLruShard>(capacity_per_shard));
+    auto shard = std::make_unique<EnhancedLruShard>(capacity_per_shard);
+    // remove, TTL expiry and capacity eviction all reach LruCache::erase_node,
+    // so a single hook keeps the vector index free of ghost keys.
+    shard->set_on_erase([this](const K &key) { this->ann_on_erase(key); });
+    shards_.push_back(std::move(shard));
   }
 }
 
@@ -464,6 +612,7 @@ template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
                                                const V &value,
                                                int64_t ttl_ms) {
+  note_mutation();
   const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
 
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
@@ -502,6 +651,7 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
   // 写内存
   try {
     shards_[shard_idx]->put(key, value, ttl_ms);
+    ann_on_put(key, value, false); // shard lock already released
   } catch (const std::exception &e) {
     // Shard put 是 noexcept 操作，仅捕获极端异常
     recordShardError(shard_idx);
@@ -511,6 +661,7 @@ void ShardedCache<K, V, EnableCacheAlign>::put(const K &key,
 template <typename K, typename V, bool EnableCacheAlign>
 template <typename F>
 V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&updater) {
+  note_mutation();
   const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
 
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
@@ -525,8 +676,9 @@ V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&update
       persistence_active && persistence_enabled_.load(std::memory_order_acquire) && gcm_;
 
   bool wal_precommit_failed = false;
+  std::optional<V> updated_value;
   try {
-    return shards_[shard_idx]->update_in_place_with_precommit(
+    updated_value = shards_[shard_idx]->update_in_place_with_precommit(
         key, std::forward<F>(updater), [&](const V &new_val) {
           if (!write_wal) [[likely]] {
             return;
@@ -558,10 +710,14 @@ V ShardedCache<K, V, EnableCacheAlign>::update_in_place(const K &key, F &&update
     }
     throw;
   }
+
+  ann_on_put(key, *updated_value, false);
+  return *updated_value;
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
 bool ShardedCache<K, V, EnableCacheAlign>::remove(const K &key) {
+  note_mutation();
   const bool persistence_active = persistence_enabled_.load(std::memory_order_acquire);
 
   std::shared_lock<std::shared_mutex> consistency_lock(global_consistency_lock_,
@@ -629,6 +785,9 @@ size_t ShardedCache<K, V, EnableCacheAlign>::capacity() const {
 template <typename K, typename V, bool EnableCacheAlign>
 void ShardedCache<K, V, EnableCacheAlign>::clear() {
   std::unique_lock<std::shared_mutex> consistency_lock(global_consistency_lock_);
+
+  note_mutation();
+  ann_on_clear();
 
   for (size_t i = 0; i < shards_.size(); ++i) {
     if (!isShardDisabled(i)) {
@@ -843,6 +1002,9 @@ void ShardedCache<K, V, EnableCacheAlign>::vectorPut(const K &key,
 
   // 使用基础 put 接口存储
   put(key, serialized_vec, ttl_ms);
+
+  // 显式声明这是向量：普通 put 不再按长度猜（见 ann_on_put 的说明）
+  ann_on_put(key, serialized_vec, true);
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
@@ -857,91 +1019,328 @@ std::vector<float> ShardedCache<K, V, EnableCacheAlign>::vectorGet(const K &key)
 }
 
 template <typename K, typename V, bool EnableCacheAlign>
-std::vector<K> ShardedCache<K, V, EnableCacheAlign>::vectorSearch(
-    const std::vector<float> &query, int k) {
-  struct SearchResult {
-    K key;
-    float distance;
+std::vector<std::pair<K, float>>
+ShardedCache<K, V, EnableCacheAlign>::vector_search_exact_scored(
+    const std::vector<float> &query, size_t k) {
+  std::vector<std::pair<K, float>> results;
+  if (query.empty() || k == 0) {
+    return results;
+  }
 
-    SearchResult(const K &k, float d) : key(k), distance(d) {}
-
-    bool operator<(const SearchResult &other) const {
-      return distance < other.distance; // 大顶堆
-    }
-  };
-
-  // 并行搜索所有分片
-  std::vector<std::future<std::vector<SearchResult>>> futures;
+  // Max-heap: the top is the worst kept hit, so eviction is O(log k).
+  using Entry = std::pair<float, K>;
+  std::priority_queue<Entry> heap;
 
   for (size_t shard_idx = 0; shard_idx < shards_.size(); ++shard_idx) {
     if (isShardDisabled(shard_idx)) {
-      continue; // 跳过被禁用的分片
+      continue;
     }
-
-    futures.push_back(std::async(std::launch::async, [this, shard_idx, &query, k]() {
-      std::vector<SearchResult> local_results;
-      std::priority_queue<SearchResult> heap;
-
-      try {
-        auto all_data = shards_[shard_idx]->get_all();
-
-        for (const auto &[key, raw_data] : all_data) {
-          auto vec_data = VectorOps::DeserializeCopy(raw_data);
-
-          if (vec_data.empty() || vec_data.size() != query.size()) {
-            continue; // 维度不匹配
-          }
-
-          float distance =
-              VectorOps::L2DistanceSquare(query.data(), vec_data.data(), vec_data.size());
-
-          heap.push(SearchResult(key, distance));
-          if ((int)heap.size() > k) {
-            heap.pop();
-          }
-        }
-
-        while (!heap.empty()) {
-          local_results.push_back(heap.top());
-          heap.pop();
-        }
-
-      } catch (const std::exception &e) {
-        // 单个分片错误不影响整体搜索
-        std::cerr << "[VectorSearch] Shard " << shard_idx << " error: " << e.what()
-                  << std::endl;
-      }
-
-      return local_results;
-    }));
-  }
-
-  // 收集所有分片结果
-  std::priority_queue<SearchResult> global_heap;
-
-  for (auto &f : futures) {
     try {
-      auto shard_results = f.get();
-      for (const auto &res : shard_results) {
-        global_heap.push(res);
-        if ((int)global_heap.size() > k) {
-          global_heap.pop();
+      const auto all_data = shards_[shard_idx]->get_all();
+      for (const auto &[key, raw_data] : all_data) {
+        if (raw_data.size() != query.size() * sizeof(float)) {
+          continue; // dimension mismatch
+        }
+        const float *vec = reinterpret_cast<const float *>(raw_data.data());
+        const float distance =
+            VectorOps::L2DistanceSquare(query.data(), vec, query.size());
+        if (heap.size() < k) {
+          heap.push({distance, key});
+        } else if (distance < heap.top().first) {
+          heap.pop();
+          heap.push({distance, key});
         }
       }
     } catch (const std::exception &e) {
-      std::cerr << "[VectorSearch] Future error: " << e.what() << std::endl;
+      std::cerr << "[VectorSearch] Shard " << shard_idx << " error: " << e.what()
+                << std::endl;
     }
   }
 
-  // 整理最终结果
-  std::vector<K> final_results;
-  while (!global_heap.empty()) {
-    final_results.push_back(global_heap.top().key);
-    global_heap.pop();
+  results.reserve(heap.size());
+  while (!heap.empty()) {
+    results.emplace_back(heap.top().second, heap.top().first);
+    heap.pop();
   }
-  std::reverse(final_results.begin(), final_results.end());
+  std::reverse(results.begin(), results.end()); // ascending distance
+  return results;
+}
 
-  return final_results;
+template <typename K, typename V, bool EnableCacheAlign>
+std::vector<K> ShardedCache<K, V, EnableCacheAlign>::vectorSearch(
+    const std::vector<float> &query, int k) {
+  std::vector<K> keys;
+  if (k <= 0) {
+    return keys;
+  }
+  for (auto &hit : vectorSearchScored(query, static_cast<size_t>(k), 0)) {
+    keys.push_back(std::move(hit.first));
+  }
+  return keys;
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+std::vector<K> ShardedCache<K, V, EnableCacheAlign>::vectorSearchExact(
+    const std::vector<float> &query, int k) {
+  std::vector<K> keys;
+  if (k <= 0) {
+    return keys;
+  }
+  for (auto &hit : vector_search_exact_scored(query, static_cast<size_t>(k))) {
+    keys.push_back(std::move(hit.first));
+  }
+  return keys;
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vectorSearchScored(
+    const std::vector<float> &query, size_t k, size_t ef, bool exact) {
+  if (query.empty() || k == 0) {
+    return {};
+  }
+  if constexpr (!std::is_same_v<K, std::string> || !std::is_same_v<V, std::string>) {
+    return vector_search_exact_scored(query, k);
+  } else {
+    std::vector<vector::AnnMatch> approximate;
+    {
+      std::shared_lock<std::shared_mutex> lock(ann_mu_);
+      if (exact || !ann_enabled_.load(std::memory_order_acquire) || !ann_l2_ ||
+          query.size() != ann_config_.dim) {
+        lock.unlock();
+        // Disabled, or a dimension this cache does not index: exact scan.
+        return vector_search_exact_scored(query, k);
+      }
+      const size_t width = ef == 0 ? ann_config_.ef_search : ef;
+      approximate = ann_l2_->search(query, k, width);
+    }
+
+    // Index lock released; re-check existence in the cache. Eviction and index
+    // maintenance leave a very short window where the graph still holds a key
+    // the cache has already dropped.
+    std::vector<std::pair<K, float>> results;
+    results.reserve(approximate.size());
+    for (const auto &match : approximate) {
+      const K key = match.key;
+      if (shards_[get_shard_index(key)]->contains(key)) {
+        results.emplace_back(key, match.score);
+      }
+    }
+    return results;
+  }
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+bool ShardedCache<K, V, EnableCacheAlign>::enable_ann_index(const AnnConfig &config) {
+  if (config.dim == 0) {
+    return false;
+  }
+  if constexpr (!std::is_same_v<K, std::string> || !std::is_same_v<V, std::string>) {
+    return false;
+  } else {
+    vector::HnswConfig l2_config;
+    l2_config.dim = config.dim;
+    l2_config.M = config.M;
+    l2_config.M0 = config.M0;
+    l2_config.ef_construction = config.ef_construction;
+    l2_config.metric = vector::AnnMetric::L2;
+
+    vector::HnswConfig cosine_config = l2_config;
+    cosine_config.metric = vector::AnnMetric::COSINE;
+
+    auto l2_index =
+        std::make_unique<vector::VectorAnnIndex>(l2_config, config.compact_ratio);
+    auto cosine_index =
+        std::make_unique<vector::VectorAnnIndex>(cosine_config, config.compact_ratio);
+
+    // One full scan of what is already stored. "vec:" keys also go into the
+    // cosine index used by graph retrieval.
+    std::vector<std::string> keys;
+    std::vector<float> vectors;
+    std::vector<std::string> graph_keys;
+    std::vector<float> graph_vectors;
+
+    const auto all_data = export_all_data();
+    // Anything written from here on is invisible to the build below.
+    const uint64_t epoch_after_snapshot = write_epoch_.load(std::memory_order_acquire);
+    const size_t expected_bytes = config.dim * sizeof(float);
+    for (const auto &[key, value] : all_data) {
+      if (value.size() != expected_bytes) {
+        continue;
+      }
+      if (!config.key_prefix.empty() && key.rfind(config.key_prefix, 0) != 0) {
+        continue;
+      }
+      const float *raw = reinterpret_cast<const float *>(value.data());
+      keys.push_back(key);
+      vectors.insert(vectors.end(), raw, raw + config.dim);
+      if (key.rfind("vec:", 0) == 0) {
+        graph_keys.push_back(key);
+        graph_vectors.insert(graph_vectors.end(), raw, raw + config.dim);
+      }
+    }
+
+    const size_t threads = std::max<size_t>(1, std::thread::hardware_concurrency());
+    if (!keys.empty()) {
+      l2_index->build(keys, vectors.data(), keys.size(), threads);
+    }
+    if (!graph_keys.empty()) {
+      cosine_index->build(graph_keys, graph_vectors.data(), graph_keys.size(), threads);
+    }
+
+    if (write_epoch_.load(std::memory_order_acquire) != epoch_after_snapshot) {
+      std::fprintf(
+          stderr,
+          "[ANN] enable_ann_index aborted: the cache was mutated while the index "
+          "was being built, so the result would be silently incomplete. Enable at "
+          "startup, or quiesce writes first.\n");
+      return false;
+    }
+
+    {
+      std::unique_lock<std::shared_mutex> lock(ann_mu_);
+      ann_l2_ = std::move(l2_index);
+      ann_cosine_ = std::move(cosine_index);
+      ann_config_ = config;
+    }
+    ann_enabled_.store(true, std::memory_order_release);
+    return true;
+  }
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+std::optional<std::vector<std::pair<K, float>>>
+ShardedCache<K, V, EnableCacheAlign>::vectorSearchGraph(const std::vector<float> &query,
+                                                        size_t k) {
+  if constexpr (!std::is_same_v<K, std::string> || !std::is_same_v<V, std::string>) {
+    return std::nullopt;
+  } else {
+    if (query.empty() || k == 0) {
+      return std::nullopt;
+    }
+    std::vector<vector::AnnMatch> matches;
+    {
+      std::shared_lock<std::shared_mutex> lock(ann_mu_);
+      if (!ann_enabled_.load(std::memory_order_acquire) || !ann_cosine_ ||
+          query.size() != ann_config_.dim) {
+        return std::nullopt;
+      }
+      matches = ann_cosine_->search(query, k, ann_config_.ef_search);
+    }
+
+    // Index lock released; drop candidates the cache no longer holds.
+    std::vector<std::pair<K, float>> results;
+    results.reserve(matches.size());
+    for (const auto &match : matches) {
+      const K key = match.key;
+      if (shards_[get_shard_index(key)]->contains(key)) {
+        results.emplace_back(key, match.score);
+      }
+    }
+    return results;
+  }
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::disable_ann_index() {
+  ann_enabled_.store(false, std::memory_order_release);
+  std::unique_lock<std::shared_mutex> lock(ann_mu_);
+  ann_l2_.reset();
+  ann_cosine_.reset();
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+std::vector<vector::AnnStats> ShardedCache<K, V, EnableCacheAlign>::ann_stats() const {
+  std::vector<vector::AnnStats> stats;
+  std::shared_lock<std::shared_mutex> lock(ann_mu_);
+  if (ann_l2_) {
+    stats.push_back(ann_l2_->stats());
+  }
+  if (ann_cosine_) {
+    stats.push_back(ann_cosine_->stats());
+  }
+  return stats;
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::ann_on_put(const K &key,
+                                                      const V &value,
+                                                      bool typed) {
+  if (!ann_enabled_.load(std::memory_order_acquire)) {
+    return;
+  }
+  if constexpr (std::is_same_v<K, std::string> && std::is_same_v<V, std::string>) {
+    try {
+      std::shared_lock<std::shared_mutex> lock(ann_mu_);
+      if (!ann_l2_) {
+        return;
+      }
+      const size_t expected_bytes = ann_config_.dim * sizeof(float);
+      // A value enters the graph only when the caller declared it a vector
+      // (vectorPut) or it lives in the "vec:" namespace owned by the graph
+      // layer. Length alone is not evidence: a plain 512-byte blob used to be
+      // inserted as a 128d vector, which benchmark_kv_overhead measured at
+      // ~23000x the cost of a normal put.
+      const bool is_graph_key = key.rfind("vec:", 0) == 0;
+      // A configured prefix is an explicit ownership contract: keys under it
+      // may enter through a plain put as well, which is what makes a restart
+      // rebuild meaningful.
+      const bool matches_prefix =
+          !ann_config_.key_prefix.empty() && key.rfind(ann_config_.key_prefix, 0) == 0;
+      if (value.size() != expected_bytes ||
+          (!typed && !is_graph_key && !matches_prefix)) {
+        // Retire an earlier version so a key that stopped being a vector
+        // stops being returned. Probe first: the exclusive lock is only worth
+        // taking when there is something to erase.
+        if (ann_l2_->contains(key)) {
+          ann_l2_->erase_without_compaction(key);
+        }
+        if (ann_cosine_ && ann_cosine_->contains(key)) {
+          ann_cosine_->erase_without_compaction(key);
+        }
+        return;
+      }
+      std::vector<float> vec(ann_config_.dim);
+      std::memcpy(vec.data(), value.data(), expected_bytes);
+      ann_l2_->upsert(key, vec);
+      if (ann_cosine_ && is_graph_key) {
+        ann_cosine_->upsert(key, vec);
+      }
+    } catch (const std::exception &) {
+      // An index failure must never fail the KV write itself.
+    }
+  }
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::ann_on_erase(const K &key) {
+  if (!ann_enabled_.load(std::memory_order_acquire)) {
+    return;
+  }
+  if constexpr (std::is_same_v<K, std::string>) {
+    // Called under the shard lock: only O(1) erasure here. Never compact -
+    // a rebuild costs a whole graph and would stall the shard.
+    std::shared_lock<std::shared_mutex> lock(ann_mu_);
+    if (ann_l2_) {
+      ann_l2_->erase_without_compaction(key);
+    }
+    if (ann_cosine_) {
+      ann_cosine_->erase_without_compaction(key);
+    }
+  }
+}
+
+template <typename K, typename V, bool EnableCacheAlign>
+void ShardedCache<K, V, EnableCacheAlign>::ann_on_clear() {
+  if (!ann_enabled_.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::unique_lock<std::shared_mutex> lock(ann_mu_);
+  if (ann_l2_) {
+    ann_l2_->clear();
+  }
+  if (ann_cosine_) {
+    ann_cosine_->clear();
+  }
 }
 
 template <typename K, typename V, bool EnableCacheAlign>

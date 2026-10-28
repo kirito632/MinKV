@@ -299,3 +299,73 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/http_server_example.cpp")
     )
     target_link_libraries(http_server_example pthread)
 endif()
+
+# ==========================================
+# HNSW 索引测试 (ANN Index Tests)
+# 只测算法层：召回率、删除语义、图重建、可复现性
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hnsw_index.cpp")
+    add_executable(test_hnsw_index
+        tests/test_hnsw_index.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(test_hnsw_index pthread)
+endif()
+
+# ==========================================
+# ?? ANN ????? (VectorAnnIndex)
+# key ????????Tombstone ???????????
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vector_ann_index.cpp")
+    add_executable(test_vector_ann_index
+        tests/test_vector_ann_index.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(test_vector_ann_index pthread)
+endif()
+
+# ==========================================
+# ?? ANN ????? (ShardedCache + HNSW)
+# ?? / TTL / remove ?????????????
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ann_consistency.cpp")
+    add_executable(test_ann_consistency
+        tests/test_ann_consistency.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(test_ann_consistency pthread)
+endif()
+
+# ==========================================
+# HNSW A/B ?? (exact vs approximate)
+# Release ???????Debug ???????? 7 ?
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_hnsw.cpp")
+    add_executable(benchmark_hnsw
+        tests/benchmark_hnsw.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(benchmark_hnsw pthread)
+endif()
+
+# ==========================================
+# HNSW ?????????????????
+# ??????????????????????????????
+# ==========================================
+option(HNSW_TRACE_DISTANCE "Count HNSW distance evaluations (benchmark only)" OFF)
+if(HNSW_TRACE_DISTANCE)
+    add_compile_definitions(HNSW_TRACE_DISTANCE)
+    message(STATUS "HNSW_TRACE_DISTANCE enabled - distance counts available")
+endif()
+
+# ==========================================
+# KV ?????????????????
+# Release ??????
+# ==========================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_kv_overhead.cpp")
+    add_executable(benchmark_kv_overhead
+        tests/benchmark_kv_overhead.cpp
+        ${SOURCES}
+    )
+    target_link_libraries(benchmark_kv_overhead pthread)
+endif()

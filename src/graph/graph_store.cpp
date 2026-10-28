@@ -528,6 +528,42 @@ std::vector<float> GraphStore::GetNodeEmbedding(const std::string &node_id) cons
  */
 std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodes(
     const std::vector<float> &query_embedding, int top_k) const {
+  if (query_embedding.empty() || top_k <= 0) {
+    return {};
+  }
+
+  // Fast path: the cosine index holds exactly the "vec:" entries, which turns
+  // the previous export-the-whole-KV-and-scan into a graph walk.
+  if (const auto indexed =
+          kv_->vectorSearchGraph(query_embedding, static_cast<size_t>(top_k))) {
+    std::vector<std::pair<std::string, float>> results;
+    results.reserve(indexed->size());
+    for (const auto &hit : *indexed) {
+      // Key format is "vec:" + EscapeId(node_id); undo the escaping.
+      if (hit.first.size() <= 4) {
+        continue;
+      }
+      const std::string escaped = hit.first.substr(4);
+      std::string node_id;
+      node_id.reserve(escaped.size());
+      for (size_t i = 0; i < escaped.size(); ++i) {
+        if (escaped[i] == '\\' && i + 1 < escaped.size()) {
+          ++i;
+          node_id += escaped[i];
+        } else {
+          node_id += escaped[i];
+        }
+      }
+      results.emplace_back(node_id, 1.0f - hit.second); // score is a similarity
+    }
+    return results;
+  }
+
+  return SearchSimilarNodesExact(query_embedding, top_k);
+}
+
+std::vector<std::pair<std::string, float>> GraphStore::SearchSimilarNodesExact(
+    const std::vector<float> &query_embedding, int top_k) const {
   if (query_embedding.empty() || top_k <= 0)
     return {};
 

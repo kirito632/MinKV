@@ -136,6 +136,23 @@ public:
    */
   bool remove(const K &key);
 
+  /**
+   * @brief Register a callback fired whenever a node is removed.
+   *
+   * Explicit remove, TTL expiry and capacity eviction all funnel through
+   * erase_node, so one hook here covers all three. The vector index relies on
+   * it to avoid returning keys that are no longer cached. The callback runs
+   * under the shard lock, so it must stay cheap.
+   */
+  void set_on_erase(std::function<void(const K &)> callback) {
+    on_erase_ = std::move(callback);
+  }
+
+  /**
+   * @brief Whether the key exists and has not expired (does not promote it).
+   */
+  bool contains(const K &key) const;
+
   // 获取当前缓存大小
   size_t size() const;
 
@@ -324,6 +341,9 @@ private:
   // 辅助函数：删除指定节点并维护游标
   ListIterator erase_node(ListIterator it);
 
+  /// Removal notification: erase_node calls it before unlinking the node.
+  std::function<void(const K &)> on_erase_;
+
   // 渐进式过期清理游标，避免每轮都从头全量扫描
   ListIterator expiration_cursor_;
 };
@@ -490,6 +510,16 @@ bool LruCache<K, V, ThreadSafe>::remove(const K &key) {
 }
 
 template <typename K, typename V, bool ThreadSafe>
+bool LruCache<K, V, ThreadSafe>::contains(const K &key) const {
+  std::lock_guard<MutexType> lock(mutex_);
+  auto it = map_.find(key);
+  if (it == map_.end()) {
+    return false;
+  }
+  return !is_expired(*it->second);
+}
+
+template <typename K, typename V, bool ThreadSafe>
 size_t LruCache<K, V, ThreadSafe>::size() const {
   std::lock_guard<MutexType> lock(mutex_);
   return map_.size();
@@ -553,6 +583,9 @@ void LruCache<K, V, ThreadSafe>::clear() {
 template <typename K, typename V, bool ThreadSafe>
 typename LruCache<K, V, ThreadSafe>::ListIterator LruCache<K, V, ThreadSafe>::erase_node(
     ListIterator it) {
+  if (on_erase_) {
+    on_erase_(it->key); // read-only: the node is still linked here
+  }
   auto next = std::next(it);
   if (expiration_cursor_ == it) {
     expiration_cursor_ = next;
