@@ -706,9 +706,26 @@ void ShardedCache<K, V, EnableCacheAlign>::enable_persistence(const std::string 
     persistence_enabled_.store(true, std::memory_order_release);
   } catch (const std::exception &e) {
     std::cerr << "[Persistence] Failed to enable: " << e.what() << std::endl;
-    if (new_gcm) {
-      new_gcm->stop();
-    }
+    // Unwind completely. A failure after gcm_ and wal_ were published leaves
+    // the locals moved-from, so the live objects are the members: leaving them
+    // running while persistence_enabled_ is false would strand a commit thread
+    // on a WAL that the write path no longer feeds.
+    auto stop_quietly = [](std::unique_ptr<base::GroupCommitManager> &manager) {
+      if (!manager) {
+        return;
+      }
+      try {
+        manager->stop();
+      } catch (...) {
+        // Nothing useful to do while unwinding.
+      }
+      manager.reset();
+    };
+    stop_quietly(new_gcm);
+    stop_quietly(gcm_);
+    new_wal.reset();
+    wal_.reset();
+    persistence_data_dir_.clear();
     persistence_enabled_.store(false, std::memory_order_release);
   }
 }
