@@ -1102,6 +1102,7 @@ std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vectorSea
     return vector_search_exact_scored(query, k);
   } else {
     std::vector<vector::AnnMatch> approximate;
+    size_t indexed_dim = 0;
     {
       std::shared_lock<std::shared_mutex> lock(ann_mu_);
       if (exact || !ann_enabled_.load(std::memory_order_acquire) || !ann_l2_ ||
@@ -1111,19 +1112,41 @@ std::vector<std::pair<K, float>> ShardedCache<K, V, EnableCacheAlign>::vectorSea
         return vector_search_exact_scored(query, k);
       }
       const size_t width = ef == 0 ? ann_config_.ef_search : ef;
+      indexed_dim = ann_config_.dim;
       approximate = ann_l2_->search(query, k, width);
     }
 
     // Index lock released; re-check existence in the cache. Eviction and index
     // maintenance leave a very short window where the graph still holds a key
     // the cache has already dropped.
+    //
+    // Existence alone is not enough. The same key can be rewritten between the
+    // graph walk and this loop: the index then reports the distance of the
+    // vector it captured, while the cache holds a different one, and the pair
+    // (key, stale score) misleads whatever ranks on that score. Re-read the
+    // current value and recompute the distance, so key and score always
+    // describe the same bytes. It costs one distance per candidate (k of them),
+    // which is noise next to the graph walk.
     std::vector<std::pair<K, float>> results;
     results.reserve(approximate.size());
     for (const auto &match : approximate) {
       const K key = match.key;
-      if (shards_[get_shard_index(key)]->contains(key)) {
-        results.emplace_back(key, match.score);
+      // vectorGet decodes the stored representation: the cache holds a
+      // serialised vector, not raw floats.
+      const std::vector<float> current = vectorGet(key);
+      if (current.size() != indexed_dim) {
+        continue; // evicted, or no longer a vector of the indexed dimension
       }
+      results.emplace_back(
+          key, VectorOps::L2DistanceSquare(query.data(), current.data(), indexed_dim));
+    }
+    std::sort(results.begin(),
+              results.end(),
+              [](const std::pair<K, float> &lhs, const std::pair<K, float> &rhs) {
+                return lhs.second < rhs.second;
+              });
+    if (results.size() > k) {
+      results.resize(k);
     }
     return results;
   }
