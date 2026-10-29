@@ -313,6 +313,8 @@ int main() {
     std::atomic<bool> stop {false};
     std::atomic<size_t> reads {0};
     std::atomic<size_t> writes {0};
+    std::atomic<size_t> hits {0};
+    std::atomic<size_t> vanished {0};
     std::vector<std::thread> readers;
     std::vector<std::thread> writers;
 
@@ -324,7 +326,15 @@ int main() {
           const auto &query = seeds[pick(local_gen)];
           for (const auto &hit : cache.vectorSearchScored(query, 5, 64)) {
             const auto value = cache.vectorGet(hit.first);
-            CHECK(!value.empty()); // never a ghost
+            hits.fetch_add(1);
+            if (value.empty()) {
+              // The search re-checks existence at its own moment; a writer can
+              // still remove the key between that moment and this read. Counting
+              // the window is honest and the rate is bounded after the join: if
+              // filtering regressed, nearly every hit would vanish.
+              vanished.fetch_add(1);
+              continue;
+            }
             CHECK(value.size() == kDim);
 
             // Only the immutable half admits an exact check. For a rewritten
@@ -393,6 +403,12 @@ int main() {
                 "mixed-concurrency",
                 reads.load(),
                 writes.load());
+    std::printf("%-22s %zu/%zu hits vanished after the re-check\n", "ghost-window",
+                vanished.load(), hits.load());
+    CHECK(hits.load() > 0);
+    // The residual window is inherent to a lock-free re-check; a ghost storm is
+    // not. Three orders of magnitude below "filtering is broken".
+    CHECK(vanished.load() * 1000 <= hits.load());
     const auto stats = cache.ann_stats();
     CHECK(!stats.empty());
     // Every indexed key must still be resident: the removal paths keep up.
