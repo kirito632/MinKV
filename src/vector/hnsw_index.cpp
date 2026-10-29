@@ -605,6 +605,11 @@ std::vector<AnnHit> HnswIndex::knn(const float *query, size_t k, size_t ef) cons
   }
   std::shared_lock<std::shared_mutex> lock(structure_mu_);
 
+  // Clamp before touching anything: k and ef are caller-controlled, and ef
+  // must stay >= k so the queue can still hold enough candidates to answer.
+  const size_t want = std::min(k, kMaxK);
+  const size_t width = std::min(std::max(ef, want), kMaxEf);
+
   const uint32_t entry = entry_point_.load(std::memory_order_relaxed);
   int top = max_level_.load(std::memory_order_relaxed);
   if (entry == kInvalidId || top < 0 || size() == 0) {
@@ -616,9 +621,9 @@ std::vector<AnnHit> HnswIndex::knn(const float *query, size_t k, size_t ef) cons
     current = greedy_descend(current, query, level);
   }
 
-  results = search_layer(query, current, std::max(ef, k), 0);
-  if (results.size() > k) {
-    results.resize(k);
+  results = search_layer(query, current, width, 0);
+  if (results.size() > want) {
+    results.resize(want);
   }
   return results;
 }
