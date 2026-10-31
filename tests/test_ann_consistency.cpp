@@ -403,8 +403,10 @@ int main() {
                 "mixed-concurrency",
                 reads.load(),
                 writes.load());
-    std::printf("%-22s %zu/%zu hits vanished after the re-check\n", "ghost-window",
-                vanished.load(), hits.load());
+    std::printf("%-22s %zu/%zu hits vanished after the re-check\n",
+                "ghost-window",
+                vanished.load(),
+                hits.load());
     CHECK(hits.load() > 0);
     // The residual window is inherent to a lock-free re-check; a ghost storm is
     // not. Three orders of magnitude below "filtering is broken".
