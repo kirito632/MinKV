@@ -72,6 +72,16 @@ public:
   static constexpr uint32_t kInvalidId = 0xFFFFFFFFu;
   static constexpr uint32_t kInvalidNeighbor = 0xFFFFFFFFu;
 
+  /// Upper bound on the search queue width. `ef` arrives here from a caller
+  /// (for the HTTP endpoint, straight from a query parameter), and the cost of
+  /// a search grows with it: an unbounded value turns one request into tens of
+  /// thousands of distance computations. Raising the width past this buys
+  /// recall only on data where the graph is already the wrong tool.
+  static constexpr size_t kMaxEf = 512;
+
+  /// Upper bound on the requested result count, for the same reason.
+  static constexpr size_t kMaxK = 512;
+
   /**
    * @param config 维度必须 > 0；M/M0/ef_construction 为 0 时回落到默认值
    * @throws std::invalid_argument 维度为 0

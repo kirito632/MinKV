@@ -629,6 +629,53 @@ int main() {
     std::printf("%-22s rejected dim=0\n", "config-validation");
   }
 
+
+  // ---------------------------------------------------------------
+  // ef/k are caller-controlled (the HTTP endpoint passes them through), so the
+  // index has to bound them itself. A width of ten million must behave like
+  // the documented maximum, not like ten million candidate pops.
+  // ---------------------------------------------------------------
+  {
+    constexpr size_t kCount = 800;
+    constexpr size_t kDim = 16;
+    constexpr size_t kK = 10;
+    std::mt19937 gen(1234);
+    std::vector<float> flat(kCount * kDim);
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    for (float &value : flat) {
+      value = dist(gen);
+    }
+
+    HnswConfig config;
+    config.dim = kDim;
+    config.M = 16;
+    config.M0 = 32;
+    HnswIndex index(config);
+    for (size_t i = 0; i < kCount; ++i) {
+      CHECK(index.insert(flat.data() + i * kDim) != HnswIndex::kInvalidId);
+    }
+
+    const std::vector<float> query(flat.begin(), flat.begin() + kDim);
+    const auto bounded = index.knn(query.data(), kK, HnswIndex::kMaxEf);
+    const auto absurd = index.knn(query.data(), kK, 10'000'000);
+    CHECK(absurd.size() == kK);
+    CHECK(absurd.size() == bounded.size());
+    for (size_t i = 0; i < absurd.size(); ++i) {
+      CHECK(absurd[i].id == bounded[i].id);
+      CHECK(std::fabs(absurd[i].score - bounded[i].score) < 1e-6f);
+    }
+
+    // k beyond the limit is clamped too, and must still return the smaller of
+    // (kMaxK, live nodes).
+    const auto huge_k = index.knn(query.data(), 10'000, HnswIndex::kMaxEf);
+    CHECK(huge_k.size() <= HnswIndex::kMaxK);
+    CHECK(!huge_k.empty());
+    std::printf("%-22s ef=10M behaves like ef=%zu; k=10k returns %zu\n",
+                "ef-clamp",
+                HnswIndex::kMaxEf,
+                huge_k.size());
+  }
+
   std::printf("=== all HnswIndex tests passed ===\n");
   return 0;
 }

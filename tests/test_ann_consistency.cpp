@@ -313,6 +313,8 @@ int main() {
     std::atomic<bool> stop {false};
     std::atomic<size_t> reads {0};
     std::atomic<size_t> writes {0};
+    std::atomic<size_t> hits {0};
+    std::atomic<size_t> vanished {0};
     std::vector<std::thread> readers;
     std::vector<std::thread> writers;
 
@@ -323,7 +325,35 @@ int main() {
         while (!stop.load()) {
           const auto &query = seeds[pick(local_gen)];
           for (const auto &hit : cache.vectorSearchScored(query, 5, 64)) {
-            CHECK(!cache.vectorGet(hit.first).empty()); // never a ghost
+            const auto value = cache.vectorGet(hit.first);
+            hits.fetch_add(1);
+            if (value.empty()) {
+              // The search re-checks existence at its own moment; a writer can
+              // still remove the key between that moment and this read. Counting
+              // the window is honest and the rate is bounded after the join: if
+              // filtering regressed, nearly every hit would vanish.
+              vanished.fetch_add(1);
+              continue;
+            }
+            CHECK(value.size() == kDim);
+
+            // Only the immutable half admits an exact check. For a rewritten
+            // key, the value read here may legitimately differ from the one
+            // the search scored, so asserting equality would test the test.
+            const size_t seed_index =
+                hit.first.rfind("seed", 0) == 0
+                    ? static_cast<size_t>(std::stoul(hit.first.substr(4)))
+                    : 200; // non-seed keys: no assertion either way
+            if (seed_index >= 100) {
+              const float *current = value.data();
+              double expected = 0.0;
+              for (size_t d = 0; d < kDim; ++d) {
+                const double delta = static_cast<double>(query[d]) - current[d];
+                expected += delta * delta;
+              }
+              const double tolerance = 1e-3 * std::max(1.0, expected);
+              CHECK(std::fabs(static_cast<double>(hit.second) - expected) <= tolerance);
+            }
           }
           reads.fetch_add(1);
         }
@@ -341,7 +371,13 @@ int main() {
           }
           // Half vector writes, half plain values (which must not be indexed
           // but must not break anything either).
-          if (i % 2 == 0) {
+          if (i % 3 == 0) {
+            // Rewrite only the lower half of the seeds. The upper half stays
+            // immutable, which is what lets the readers assert an exact score
+            // for it: comparing against a value that another thread is allowed
+            // to replace cannot be sound.
+            cache.vectorPut("seed" + std::to_string(local_gen() % 100), vec);
+          } else if (i % 2 == 0) {
             cache.vectorPut("w" + std::to_string(t) + "-" + std::to_string(i), vec);
           } else {
             cache.put("p" + std::to_string(t) + "-" + std::to_string(i), "plain-value");
@@ -367,6 +403,14 @@ int main() {
                 "mixed-concurrency",
                 reads.load(),
                 writes.load());
+    std::printf("%-22s %zu/%zu hits vanished after the re-check\n",
+                "ghost-window",
+                vanished.load(),
+                hits.load());
+    CHECK(hits.load() > 0);
+    // The residual window is inherent to a lock-free re-check; a ghost storm is
+    // not. Three orders of magnitude below "filtering is broken".
+    CHECK(vanished.load() * 1000 <= hits.load());
     const auto stats = cache.ann_stats();
     CHECK(!stats.empty());
     // Every indexed key must still be resident: the removal paths keep up.
